@@ -1,0 +1,18 @@
+[package]
+name = "bee-hardening"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Pre-exec / pre-main process hardening for bee: no core dumps, non-dumpable, LD_* stripping (FR-011)."
+
+[dependencies]
+nix = { workspace = true }
+libc = { workspace = true }
+ctor = { version = "0.2", optional = true }
+
+[features]
+default = []
+# Install a #[ctor] that hardens the process before main() — for agents embedding bee in-process.
+ctor = ["dep:ctor"]

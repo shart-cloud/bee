@@ -1,0 +1,91 @@
+//! Host-environment [`bee_core::Resolver`] used to compile policies against the real machine.
+//!
+//! The `Resolver` trait lives in `bee-core` (pure, no ambient I/O — NFR-005); this concrete
+//! implementation — reading cwd / `$HOME` / `PATH` / system DNS — lives here in `bee-userspace`, the
+//! crate that owns host-facing operations and already provides [`crate::spawn::resolve_in_path`].
+//! Shared by `bee-cli` and `bee-harness` (the standard abstract-trait-in-core, concrete-impl-in-a-
+//! higher-crate pattern). Sync only — no async runtime; `resolve_host` blocks at policy-compile
+//! time, before any agent loop runs.
+
+use std::net::IpAddr;
+use std::path::PathBuf;
+
+use bee_core::{CompileError, Resolver};
+
+/// Resolver backed by the real host environment (cwd, `$HOME`, `PATH`, system DNS).
+pub struct SystemResolver {
+    root: String,
+    home: String,
+}
+
+impl SystemResolver {
+    /// Capture the current host environment: cwd as project root (fallback `"."`) and `$HOME`
+    /// (fallback `"/root"`).
+    pub fn current() -> Self {
+        let root = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| ".".into());
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+        SystemResolver { root, home }
+    }
+}
+
+impl Resolver for SystemResolver {
+    fn project_root(&self) -> &str {
+        &self.root
+    }
+    fn home(&self) -> &str {
+        &self.home
+    }
+    fn resolve_exec(&self, name: &str) -> Result<PathBuf, CompileError> {
+        crate::spawn::resolve_in_path(name)
+            .ok_or_else(|| CompileError::UnresolvableExec(name.into(), "not found on PATH".into()))
+    }
+    fn resolve_host(&self, host: &str) -> Result<Vec<IpAddr>, CompileError> {
+        use std::net::ToSocketAddrs;
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            return Ok(vec![ip]);
+        }
+        let addrs = (host, 0u16)
+            .to_socket_addrs()
+            .map_err(|e| CompileError::UnresolvableHost(host.into(), e.to_string()))?;
+        let ips: Vec<IpAddr> = addrs.map(|sa| sa.ip()).collect();
+        if ips.is_empty() {
+            return Err(CompileError::UnresolvableHost(host.into(), "no addresses".into()));
+        }
+        Ok(ips)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_returns_nonempty_paths() {
+        let r = SystemResolver::current();
+        assert!(!r.project_root().is_empty());
+        assert!(!r.home().is_empty());
+    }
+
+    #[test]
+    fn resolve_exec_finds_sh() {
+        let r = SystemResolver::current();
+        let p = r.resolve_exec("sh").expect("sh resolves on PATH");
+        assert!(p.is_absolute(), "expected an absolute path, got {p:?}");
+    }
+
+    #[test]
+    fn resolve_exec_rejects_missing() {
+        let r = SystemResolver::current();
+        let err = r.resolve_exec("definitely-not-a-binary-xyz").unwrap_err();
+        assert!(matches!(err, CompileError::UnresolvableExec(..)));
+    }
+
+    #[test]
+    fn resolve_host_parses_ip_literal() {
+        let r = SystemResolver::current();
+        let ips = r.resolve_host("127.0.0.1").expect("ip literal resolves");
+        assert_eq!(ips, vec!["127.0.0.1".parse::<IpAddr>().unwrap()]);
+    }
+}

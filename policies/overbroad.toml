@@ -1,0 +1,8 @@
+[policy]
+name = "overbroad"
+description = "Illegal child: grabs write to a path the parent cannot write"
+mode = "enforce"
+
+[policy.filesystem]
+":project_root/src" = "read"
+"/etc/passwd" = "write"

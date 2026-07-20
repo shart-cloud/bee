@@ -1,0 +1,8 @@
+# A permissive-ish bee policy for the hello scenario: read anywhere (default), write only under the
+# working directory. Used only when running under --features enforce (compiled into the scope).
+[policy]
+name = "hello"
+mode = "enforce"
+
+[policy.filesystem]
+"/home/ubuntu/epwork" = "write"

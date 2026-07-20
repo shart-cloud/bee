@@ -1,0 +1,7 @@
+# Deny the SSH directory; everything else reads normally.
+[policy]
+name = "read-denied"
+mode = "enforce"
+
+[policy.filesystem]
+"/home/ubuntu/.ssh" = "deny"

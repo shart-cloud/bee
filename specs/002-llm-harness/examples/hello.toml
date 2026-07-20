@@ -1,0 +1,11 @@
+# Scenario: a trivial "hello" task. Pair with any provider (ollama.toml, anthropic.toml, or the
+# self-contained mock-hello.toml). On the host (no --features enforce) the tools run as hardened
+# host processes; on the BPF-LSM VM they run inside the enforced scope.
+[scenario]
+id            = "hello"
+policy_path   = "hello.policy.toml"   # resolved relative to this file
+system_prompt = "You are a coding agent operating in a sandbox. Use tools to accomplish the task, then stop."
+task          = "List the files in the current directory and print a one-line greeting."
+turn_limit    = 5
+timeout_secs  = 60
+tools         = ["bash", "read_file", "write_file", "list_directory"]

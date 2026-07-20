@@ -1,0 +1,27 @@
+[package]
+name = "bee-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "bee policy types, TOML parsing, compiler, attenuation validator, and audit types (no eBPF, no async runtime)."
+
+[dependencies]
+bee-common = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "compile"
+harness = false
+
+[features]
+default = []

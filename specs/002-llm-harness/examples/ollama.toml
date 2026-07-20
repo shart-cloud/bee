@@ -1,0 +1,8 @@
+# Provider: an OpenAI-compatible endpoint. Points at a local Ollama (`ollama serve`, a small coder
+# model pulled) — no paid key needed. Swap base_url/model for OpenRouter, vLLM, or real OpenAI.
+[provider]
+provider    = "openai-compat"
+base_url    = "http://localhost:11434/v1"
+model       = "qwen2.5-coder"
+api_key_env = "OPENAI_API_KEY"   # may be unset for local endpoints
+max_tokens  = 4096

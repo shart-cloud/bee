@@ -1,0 +1,13 @@
+[policy]
+name = "parent"
+description = "Broad project access held by the parent agent"
+mode = "enforce"
+
+[policy.filesystem]
+":project_root" = "write"
+
+[policy.exec]
+allow = ["cargo", "rustc", "cc"]
+
+[policy.network]
+allow = ["crates.io:443"]

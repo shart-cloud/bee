@@ -1,0 +1,19 @@
+[package]
+name = "bee-ebpf"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+aya-ebpf = "0.2"
+bee-common = { path = "../bee-common" }
+
+[[bin]]
+name = "bee"
+path = "src/main.rs"
+
+[profile.dev]
+opt-level = 3
+debug = false
+[profile.release]
+lto = true

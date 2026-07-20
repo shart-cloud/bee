@@ -1,0 +1,16 @@
+[package]
+name = "bee-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Shared #[repr(C)] map layouts and verifier-safe matcher primitives for bee (no_std)."
+
+[features]
+default = []
+# Enables `unsafe impl aya::Pod` for the map layout structs (user-space loader side).
+aya = ["dep:aya"]
+
+[dependencies]
+aya = { workspace = true, optional = true }

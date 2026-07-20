@@ -1,0 +1,25 @@
+# Rust
+/target/
+**/target/
+debug/
+release/
+*.rs.bk
+*.rlib
+*.prof*
+Cargo.lock
+
+# eBPF build artifacts
+*.o
+*.bpf.o
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+*.tmp
+
+# Env / logs
+*.log
+.env*

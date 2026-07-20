@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jaredgore/bee/contracts/audit-event.schema.json",
+  "title": "bee AuditEvent",
+  "description": "One structured record of a denied (enforce) or would-be-denied (observe) operation, emitted from the kernel ring buffer to user space (FR-007).",
+  "type": "object",
+  "required": ["ts", "cgroup_id", "op", "decision"],
+  "additionalProperties": false,
+  "properties": {
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 wall-clock time, mapped from the kernel monotonic ts_ns at the user-space boundary."
+    },
+    "scope_id": {
+      "type": "string",
+      "description": "bee scope identifier (unique within the owning process)."
+    },
+    "cgroup_id": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "cgroup v2 inode id of the scope (map key; from bpf_get_current_cgroup_id)."
+    },
+    "pid": { "type": "integer", "minimum": 0 },
+    "tgid": { "type": "integer", "minimum": 0 },
+    "op": {
+      "type": "string",
+      "enum": ["file_open", "exec", "connect", "exfil"],
+      "description": "Operation the LSM hook was evaluating."
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["denied", "observed"],
+      "description": "denied = blocked (enforce mode). observed = would-deny but allowed (observe/dry-run mode, FR-016)."
+    },
+    "errno": {
+      "type": "integer",
+      "description": "Negative errno the hook returned on deny (e.g. -13 EACCES, -1 EPERM). 0 in observe mode."
+    },
+    "target": {
+      "type": "string",
+      "description": "Resolved path (file_open/exec) or 'addr:port' (connect). May be truncated to 255 bytes."
+    }
+  },
+  "examples": [
+    {
+      "ts": "2026-07-19T14:32:07.512Z",
+      "scope_id": "cargo-test-1a2b",
+      "cgroup_id": 74213,
+      "pid": 40122,
+      "tgid": 40122,
+      "op": "file_open",
+      "decision": "denied",
+      "errno": -13,
+      "target": "/home/jg/.ssh/id_rsa"
+    },
+    {
+      "ts": "2026-07-19T14:32:09.004Z",
+      "scope_id": "cargo-test-1a2b",
+      "cgroup_id": 74213,
+      "pid": 40125,
+      "tgid": 40125,
+      "op": "connect",
+      "decision": "denied",
+      "errno": -1,
+      "target": "93.184.216.34:443"
+    }
+  ]
+}

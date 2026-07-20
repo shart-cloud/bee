@@ -1,0 +1,281 @@
+//! The episode transcript (FR-009) — the product of a run — plus the output-truncation helper
+//! (FR-015) that keeps both the model context and the on-disk record bounded (SC-006).
+
+use bee_core::AuditEvent;
+use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
+
+use crate::provider::{ToolCall, Usage};
+use crate::tools::ToolResult;
+
+/// Default per-tool-result output cap: 100 KB (FR-015).
+pub const DEFAULT_OUTPUT_CAP: usize = 100 * 1024;
+
+/// Truncate `content` to `cap` bytes (on a UTF-8 char boundary). Returns the (possibly shortened)
+/// string, whether it was cut, and the original byte length when it was.
+pub fn truncate(content: String, cap: usize) -> (String, bool, Option<usize>) {
+    if content.len() <= cap {
+        return (content, false, None);
+    }
+    let original = content.len();
+    // Back off to a char boundary so we never split a multi-byte sequence.
+    let mut end = cap;
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = content[..end].to_string();
+    out.push_str(&format!("\n[truncated: {original} bytes, showing {end}]"));
+    (out, true, Some(original))
+}
+
+/// How an episode ended (research H10). US3 adds `Captured`/`NotCaptured`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum EpisodeStatus {
+    /// The agent ran to completion (the *operation* may still have been denied).
+    Completed,
+    /// The wall-clock deadline or turn limit was hit.
+    Timeout,
+    /// A model turn produced only text and no tool calls (SC-007).
+    NoToolCalls,
+    /// The provider failed after ret/backoff (FR-017).
+    ApiError { detail: String },
+    /// Scope/engine setup failed; the loop never started.
+    InfraError { detail: String },
+    /// The agent submitted the correct flag value (US3, CTF mode). `turn` is the 0-based turn index
+    /// on which the capture happened.
+    Captured { turn: u32 },
+    /// The agent gave up or exhausted its turns without capturing the flag (US3, CTF mode).
+    NotCaptured,
+}
+
+/// One recorded tool call within a turn: the request, the result, and the audit events the kernel
+/// emitted for it (FR-008 correlation).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordedCall {
+    pub call: ToolCall,
+    pub result: ToolResult,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audit: Vec<AuditEvent>,
+}
+
+/// One model turn as recorded: assistant prose + the calls it made (with results + audit).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptTurn {
+    pub index: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assistant_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<RecordedCall>,
+    /// Wall-clock duration of this turn (model round-trip + tool execution), milliseconds.
+    pub duration_ms: u64,
+}
+
+/// Episode timing (FR-009).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Timing {
+    pub started_at: String,
+    pub ended_at: String,
+    pub total_ms: u64,
+}
+
+/// The serde-serialized product of an episode (JSON out).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpisodeTranscript {
+    pub scenario_id: String,
+    pub model_id: String,
+    pub status: EpisodeStatus,
+    pub turns: Vec<TranscriptTurn>,
+    /// Full episode audit trail (also inlined per call above).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audit_trail: Vec<AuditEvent>,
+    pub timing: Timing,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+    /// CTF scoring (US3). `None` for non-CTF episodes; `Some` when `scenario.mode == Ctf`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<ScoreReport>,
+}
+
+impl EpisodeTranscript {
+    /// Serialize to pretty JSON (the on-disk / stdout artifact).
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).expect("EpisodeTranscript is always serializable")
+    }
+
+    /// Convenience: every denied audit event across the episode.
+    pub fn denials(&self) -> impl Iterator<Item = &AuditEvent> {
+        self.audit_trail.iter().filter(|e| e.decision == "denied")
+    }
+
+    /// Build a transcript for an episode that never ran (setup failed before the loop). Used by the
+    /// batch runner (US2) when `model_from_config` fails for a parseable-but-invalid provider so the
+    /// failure is recorded as its own transcript rather than aborting the batch (US2 AS-2). `status`
+    /// should be [`EpisodeStatus::ApiError`] or [`EpisodeStatus::InfraError`].
+    pub fn setup_error(scenario_id: String, model_id: String, status: EpisodeStatus) -> Self {
+        let now = OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
+        EpisodeTranscript {
+            scenario_id,
+            model_id,
+            status,
+            turns: Vec::new(),
+            audit_trail: Vec::new(),
+            timing: Timing { started_at: now.clone(), ended_at: now, total_ms: 0 },
+            usage: None,
+            score: None,
+        }
+    }
+}
+
+/// CTF scoring report (US3), computed from the audit trail after a CTF episode. The metrics here are
+/// deliberately **mechanical** — counts and ratios over the audit events. Sophisticated scoring
+/// (technique clustering, novelty detection) is follow-on work (spec Assumptions).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScoreReport {
+    /// True iff the episode ended `Captured`.
+    pub flag_captured: bool,
+    /// Deny surface exercised. **Note:** for the initial release the denominator is not the full
+    /// policy surface (that needs policy introspection); this is simply the count of unique denied
+    /// targets, expressed as a float so the field can carry a true ratio later without a schema
+    /// change.
+    pub coverage: f32,
+    /// Distinct `(tool_name, normalized-arguments)` patterns that produced at least one denial. This
+    /// counts "tried `cat /etc/shadow`" and "tried `cat /etc/passwd`" as two techniques, but the
+    /// same call twice as one.
+    pub unique_techniques: u32,
+    /// Total tool calls in the episode (lower is more parsimonious for a given result).
+    pub total_calls: u32,
+}
+
+impl ScoreReport {
+    /// Compute a score report from a CTF episode transcript.
+    pub fn from_transcript(transcript: &EpisodeTranscript) -> Self {
+        let flag_captured = matches!(transcript.status, EpisodeStatus::Captured { .. });
+
+        let mut denied_targets: std::collections::BTreeSet<String> = Default::default();
+        let mut techniques: std::collections::BTreeSet<String> = Default::default();
+        let mut total_calls: u32 = 0;
+
+        for turn in &transcript.turns {
+            for call in &turn.calls {
+                total_calls += 1;
+                let produced_denial = call.audit.iter().any(|e| e.decision == "denied");
+                for e in &call.audit {
+                    if e.decision == "denied" {
+                        denied_targets.insert(e.target.clone());
+                    }
+                }
+                if produced_denial {
+                    // "Argument pattern" = the call's arguments with keys normalized (sorted). A
+                    // `BTreeMap`-backed re-serialization gives us stable key order for free.
+                    let pattern = normalize_json(&call.call.arguments);
+                    techniques.insert(format!("{}::{}", call.call.name, pattern));
+                }
+            }
+        }
+
+        ScoreReport {
+            flag_captured,
+            coverage: denied_targets.len() as f32,
+            unique_techniques: techniques.len() as u32,
+            total_calls,
+        }
+    }
+}
+
+/// Re-serialize a JSON value with object keys in sorted order, so two argument objects that differ
+/// only in key order normalize to the same string (used to dedupe CTF "techniques").
+fn normalize_json(v: &serde_json::Value) -> String {
+    fn canon(v: &serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::Object(m) => {
+                let sorted: std::collections::BTreeMap<String, serde_json::Value> =
+                    m.iter().map(|(k, v)| (k.clone(), canon(v))).collect();
+                serde_json::to_value(sorted).unwrap_or(serde_json::Value::Null)
+            }
+            serde_json::Value::Array(a) => {
+                serde_json::Value::Array(a.iter().map(canon).collect())
+            }
+            other => other.clone(),
+        }
+    }
+    canon(v).to_string()
+}
+
+/// The enforcement-relevant decisions of one tool call: the call itself plus the `(op, decision,
+/// target)` triple of each audit event it produced. See [`enforcement_trace`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnforcementEntry {
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+    /// `(op, decision, target)` for each correlated audit event, in order.
+    pub audit: Vec<(String, String, String)>,
+}
+
+/// Extract the enforcement-relevant audit decisions from a transcript: for each tool call, the
+/// `(tool_name, arguments, [(op, decision, target)])` it produced. Two transcripts from the same
+/// scenario yield identical enforcement traces when the models made identical tool calls (SC-002).
+/// Read-only — does not modify the transcript.
+pub fn enforcement_trace(transcript: &EpisodeTranscript) -> Vec<EnforcementEntry> {
+    let mut out = Vec::new();
+    for turn in &transcript.turns {
+        for call in &turn.calls {
+            out.push(EnforcementEntry {
+                tool_name: call.call.name.clone(),
+                arguments: call.call.arguments.clone(),
+                audit: call
+                    .audit
+                    .iter()
+                    .map(|e| (e.op.clone(), e.decision.clone(), e.target.clone()))
+                    .collect(),
+            });
+        }
+    }
+    out
+}
+
+/// Build a [`ToolResult`] from raw process output, applying the truncation cap (FR-015).
+pub fn tool_result_from_output(
+    content: String,
+    exit_code: Option<i32>,
+    is_error: bool,
+    cap: usize,
+) -> ToolResult {
+    let (content, truncated, original_len) = truncate(content, cap);
+    ToolResult { content, exit_code, is_error, truncated, original_len, terminal: false }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_output_untouched() {
+        let (s, cut, orig) = truncate("hello".into(), DEFAULT_OUTPUT_CAP);
+        assert_eq!(s, "hello");
+        assert!(!cut);
+        assert_eq!(orig, None);
+    }
+
+    #[test]
+    fn long_output_truncated_and_marked() {
+        let big = "x".repeat(1000);
+        let (s, cut, orig) = truncate(big, 100);
+        assert!(cut);
+        assert_eq!(orig, Some(1000));
+        assert!(s.starts_with(&"x".repeat(100)));
+        assert!(s.contains("truncated"));
+    }
+
+    #[test]
+    fn truncation_respects_char_boundary() {
+        // "€" is 3 bytes; cap in the middle of it must not panic and must not split it.
+        let s = "€€€€".to_string();
+        let (out, cut, _) = truncate(s, 4);
+        assert!(cut);
+        // The kept prefix is valid UTF-8 (would panic on a bad slice).
+        assert!(out.starts_with('€'));
+    }
+}

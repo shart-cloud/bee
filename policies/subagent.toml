@@ -1,0 +1,10 @@
+[policy]
+name = "subagent"
+description = "Attenuated: read-only source, exec cargo only, no network"
+mode = "enforce"
+
+[policy.filesystem]
+":project_root/src" = "read"
+
+[policy.exec]
+allow = ["cargo"]

@@ -1,0 +1,49 @@
+[package]
+name = "bee-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Drives an LLM agent through a multi-turn tool loop confined by a bee scope, producing an auditable episode transcript."
+
+[[bin]]
+name = "bee-episode"
+path = "src/bin/bee-episode.rs"
+
+[[bin]]
+name = "bee-repl"
+path = "src/bin/bee-repl.rs"
+
+[features]
+default = []
+# Real kernel enforcement. Pulls bee-userspace's eBPF-LSM path (nightly bpf toolchain + BPF-LSM
+# kernel to build/attach). WITHOUT this feature the harness runs tools as hardened, credential-
+# stripped host processes with NO scope — enough for offline (MockModel) tests and live-provider
+# smoke, and keeping the default workspace build runtime-/bpf-toolchain-free (Constitution V, SC-005).
+enforce = ["bee-userspace/enforce"]
+# Concurrent episodes (US4): the async audit demux + shared-engine runner. Pulls bee-userspace's
+# `tokio` feature (which implies `enforce`) and turns on the harness `enforce` path it builds on.
+# Kept separate from `enforce` so the plain enforce build stays async-runtime-free (SC-005).
+concurrent = ["enforce", "bee-userspace/tokio"]
+
+[dependencies]
+bee-core = { workspace = true }
+bee-userspace = { workspace = true }
+
+rig-core = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+rustyline = "18"
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+libc = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "time"] }

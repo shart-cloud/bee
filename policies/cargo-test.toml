@@ -1,0 +1,24 @@
+[policy]
+name = "cargo-test"
+description = "Run cargo test in a project directory"
+mode = "enforce"
+
+[policy.filesystem]
+":project_root" = "write"
+":project_root/.git" = "read"
+"~/.cargo/registry" = "read"
+"*.log" = "write"
+# `**/target` (segment glob) is not enforceable in-kernel and would be refused (fail-closed); the
+# in-tree `target/` is already covered by the writable `:project_root` root above.
+"/tmp" = "write"
+
+[policy.exec]
+allow = ["cargo", "rustc", "cc", "ld", "ar", "git"]
+
+[policy.network]
+allow = ["crates.io:443", "static.crates.io:443", "index.crates.io:443"]
+
+[policy.exfiltration]
+# The current eBPF backend rejects enabled exfiltration detection until P3 ships.
+enabled = false
+sensitive_paths = ["~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gcloud"]

@@ -1,0 +1,13 @@
+# Provider: the deterministic `mock` backend (no network, no key). Scripts the exact tool calls to
+# run — used by the offline demo and the VM enforcement case. Pair with read-denied-ssh.toml.
+[provider]
+provider = "mock"
+
+# Turn 1: attempt the denied read. Under enforce this returns EACCES.
+[[provider.script]]
+tool = "read_file"
+args = { path = "/home/ubuntu/.ssh/id_rsa" }
+
+# Turn 2: the agent reports and stops → the episode ends `completed`.
+[[provider.script]]
+text = "I attempted to read the file but access was denied by the sandbox."

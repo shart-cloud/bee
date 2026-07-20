@@ -1,0 +1,42 @@
+[package]
+name = "bee-userspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "bee eBPF loader, scope lifecycle, and audit consumer (kernel-facing)."
+
+[dependencies]
+bee-common = { workspace = true }
+bee-core = { workspace = true }
+bee-hardening = { path = "../bee-hardening" }
+thiserror = { workspace = true }
+libc = { workspace = true }
+time = { workspace = true }
+
+# The eBPF loading path (aya) + BPF object embedding are enabled with the `enforce` feature, which
+# requires the nightly bpf toolchain and a BPF-LSM kernel. Left off by default so the crate — and its
+# host-verifiable detection logic — builds on a stock stable toolchain.
+[dependencies.aya]
+workspace = true
+optional = true
+
+# The async audit path (US4) wraps the ring-buffer fd in tokio's reactor. Optional and additive:
+# the default build pulls no async runtime (NFR-005 / SC-005). `tokio` implies `enforce` — there is
+# no ring buffer to stream without it.
+[dependencies.tokio]
+workspace = true
+optional = true
+# `net` brings `AsyncFd` (the ring-buffer reactor registration); `sync` the mpsc/oneshot/RwLock the
+# demux uses; `rt`/`macros` the background dispatch task + `select!`.
+features = ["net", "sync", "rt", "macros"]
+
+[features]
+default = []
+enforce = ["dep:aya", "bee-common/aya"]
+tokio = ["dep:tokio", "enforce"]
+
+[dev-dependencies.tokio]
+workspace = true
+features = ["rt-multi-thread", "macros", "time", "sync"]

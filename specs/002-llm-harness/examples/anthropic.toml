@@ -1,0 +1,7 @@
+# Provider: Anthropic. The key is read from ANTHROPIC_API_KEY at startup and never written here or
+# into the transcript. `model` is a CURRENT id passed verbatim to the client (H8).
+[provider]
+provider    = "anthropic"
+model       = "claude-opus-4-8"   # or claude-sonnet-5, claude-haiku-4-5
+api_key_env = "ANTHROPIC_API_KEY"
+max_tokens  = 4096

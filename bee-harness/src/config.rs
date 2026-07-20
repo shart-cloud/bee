@@ -1,0 +1,189 @@
+//! Provider configuration (contracts/scenario-schema.md). Declarative, Constitution IV. The key is
+//! named by env var (`api_key_env`), never embedded — FR-018.
+
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Errors from loading/validating a scenario or provider TOML.
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("cannot read {path}: {source}")]
+    Io {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("cannot parse {path}: {source}")]
+    Parse {
+        path: String,
+        #[source]
+        source: toml::de::Error,
+    },
+    #[error("invalid config: {0}")]
+    Invalid(String),
+}
+
+impl ConfigError {
+    pub(crate) fn read(path: &Path, source: std::io::Error) -> Self {
+        ConfigError::Io { path: path.display().to_string(), source }
+    }
+    pub(crate) fn parse(path: &Path, source: toml::de::Error) -> Self {
+        ConfigError::Parse { path: path.display().to_string(), source }
+    }
+}
+
+/// Which provider shape the factory should build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProviderType {
+    Anthropic,
+    #[serde(rename = "openai-compat")]
+    OpenAiCompat,
+    /// A deterministic scripted backend (no network / no key) — drives the offline demo and the VM
+    /// enforcement case. Steps come from `provider.script`.
+    Mock,
+}
+
+/// One scripted model turn for the `mock` provider: either a tool call or a final text turn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MockStep {
+    /// Tool name to call this turn (mutually exclusive with `text`).
+    #[serde(default)]
+    pub tool: Option<String>,
+    /// Arguments for `tool` (JSON object).
+    #[serde(default)]
+    pub args: Option<serde_json::Value>,
+    /// A text-only turn (ends the episode).
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
+/// A provider selection (which model / endpoint / key var).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderConfig {
+    pub provider: ProviderType,
+    /// Required for `openai-compat` (Ollama/OpenRouter/vLLM/OpenAI); ignored for Anthropic.
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Passed verbatim to Rig's `completion_model()` — use CURRENT ids (H8). Optional for `mock`.
+    #[serde(default)]
+    pub model: String,
+    /// The **name** of the env var holding the key (never the key itself). Optional for `mock`.
+    #[serde(default)]
+    pub api_key_env: String,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    /// Scripted turns for the `mock` provider (ignored otherwise).
+    #[serde(default)]
+    pub script: Vec<MockStep>,
+}
+
+#[derive(Deserialize)]
+struct ProviderFile {
+    provider: ProviderConfig,
+}
+
+impl ProviderConfig {
+    /// Load + validate a provider TOML.
+    pub fn from_path(path: &Path) -> Result<ProviderConfig, ConfigError> {
+        let cfg = Self::parse_unchecked(path)?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    /// Read + parse a provider TOML **without** semantic validation. The batch runner (US2) uses
+    /// this so a config that parses but is semantically invalid (e.g. `openai-compat` with no
+    /// `base_url`) surfaces at model construction as a per-episode error transcript rather than
+    /// aborting the whole batch. A genuine *parse* failure (unreadable / malformed TOML) is still an
+    /// error here — that becomes a `BatchError`, since we can't even name the model.
+    pub fn parse_unchecked(path: &Path) -> Result<ProviderConfig, ConfigError> {
+        let text = std::fs::read_to_string(path).map_err(|e| ConfigError::read(path, e))?;
+        let file: ProviderFile = toml::from_str(&text).map_err(|e| ConfigError::parse(path, e))?;
+        Ok(file.provider)
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.provider == ProviderType::Mock {
+            if self.script.is_empty() {
+                return Err(ConfigError::Invalid(
+                    "provider = \"mock\" requires a non-empty provider.script".into(),
+                ));
+            }
+            return Ok(());
+        }
+        if self.model.trim().is_empty() {
+            return Err(ConfigError::Invalid("provider.model is required".into()));
+        }
+        if self.api_key_env.trim().is_empty() {
+            return Err(ConfigError::Invalid("provider.api_key_env is required".into()));
+        }
+        if self.provider == ProviderType::OpenAiCompat && self.base_url.as_deref().unwrap_or("").trim().is_empty() {
+            return Err(ConfigError::Invalid(
+                "provider.base_url is required for openai-compat".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The stable `"<provider>/<model>"` id recorded in the transcript.
+    pub fn model_id(&self) -> String {
+        let p = match self.provider {
+            ProviderType::Anthropic => "anthropic",
+            ProviderType::OpenAiCompat => "openai-compat",
+            ProviderType::Mock => "mock",
+        };
+        let model = if self.model.is_empty() { "scripted" } else { &self.model };
+        format!("{p}/{model}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(tmp: &Path, body: &str) -> std::path::PathBuf {
+        let p = tmp.join("provider.toml");
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    #[test]
+    fn anthropic_ok() {
+        let tmp = std::env::temp_dir().join(format!("bee-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let p = write(
+            &tmp,
+            r#"
+[provider]
+provider    = "anthropic"
+model       = "claude-opus-4-8"
+api_key_env = "ANTHROPIC_API_KEY"
+max_tokens  = 4096
+"#,
+        );
+        let cfg = ProviderConfig::from_path(&p).unwrap();
+        assert_eq!(cfg.provider, ProviderType::Anthropic);
+        assert_eq!(cfg.model_id(), "anthropic/claude-opus-4-8");
+    }
+
+    #[test]
+    fn openai_compat_requires_base_url() {
+        let tmp = std::env::temp_dir().join(format!("bee-cfg2-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let p = write(
+            &tmp,
+            r#"
+[provider]
+provider    = "openai-compat"
+model       = "qwen2.5-coder"
+api_key_env = "OPENAI_API_KEY"
+"#,
+        );
+        let err = ProviderConfig::from_path(&p).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)), "got: {err:?}");
+    }
+}

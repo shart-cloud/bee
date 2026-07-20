@@ -1,0 +1,10 @@
+# User-space crates build on STABLE (constitution Principle V / NFR-003).
+# The bee-ebpf crate requires nightly + rust-src + the bpfel-unknown-none target;
+# it selects its own toolchain via its own rust-toolchain.toml. bpf-linker (LLVM-matched)
+# must be installed: `cargo install bpf-linker`.
+#
+# Top build-break risk (research R1): nightly <-> bpf-linker <-> LLVM version skew.
+# Pin all three together when bumping.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
