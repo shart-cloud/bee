@@ -244,7 +244,7 @@ pub fn tool_result_from_output(
     cap: usize,
 ) -> ToolResult {
     let (content, truncated, original_len) = truncate(content, cap);
-    ToolResult { content, exit_code, is_error, truncated, original_len, terminal: false }
+    ToolResult { content, exit_code, is_error, truncated, original_len, terminal: false, render_spec: None }
 }
 
 #[cfg(test)]

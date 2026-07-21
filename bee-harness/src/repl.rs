@@ -34,6 +34,7 @@ use time::OffsetDateTime;
 
 use crate::provider::{Conversation, Message, Model, ModelError, StreamEvent, ToolSchema, Turn, Usage};
 use crate::sandbox::Sandbox;
+use crate::render_spec::RenderSpec;
 use crate::tools::{ToolRegistry, ToolResult};
 use crate::transcript::{EpisodeStatus, EpisodeTranscript, RecordedCall, Timing, TranscriptTurn};
 
@@ -59,6 +60,9 @@ pub struct ReplConfig {
     pub max_retries: u32,
     /// Human-readable label for the active policy/enforcement mode, shown by `/policy`.
     pub policy_label: String,
+    /// Play the bee mascot animation once at startup (003-visual-render, Slice 2, FR-032). Opt-in via
+    /// `--bee` / `BEE_MASCOT=1`; off by default.
+    pub mascot: bool,
 }
 
 impl Default for ReplConfig {
@@ -72,6 +76,7 @@ impl Default for ReplConfig {
             tool_timeout_secs: 30,
             max_retries: 3,
             policy_label: "none".to_string(),
+            mascot: false,
         }
     }
 }
@@ -107,6 +112,14 @@ pub trait ReplOutput: Send + Sync {
     /// End the "working" indicator — called when the first token/tool arrives or the call fails.
     /// Defaults to a no-op.
     fn busy_stop(&self) {}
+    /// Render a visualization produced by the `render` tool (003-visual-render, FR-024). The default
+    /// emits a plain-text ASCII fallback through [`ReplOutput::info`] — a text table, never a blank
+    /// (US6 AS-5). `TerminalOutput` overrides this to draw the widget as ANSI art.
+    fn render_widget(&self, spec: &RenderSpec) {
+        for line in spec.to_ascii().lines() {
+            self.info(line);
+        }
+    }
 }
 
 /// Why one user→agent exchange ended.
@@ -477,6 +490,11 @@ pub async fn run_exchange(
             let audit = sandbox.drain_audit();
             denials += audit.iter().filter(|e| e.decision == "denied").count() as u32;
             output.tool_result(&result, &audit);
+            // If the tool produced a visualization (the `render` tool), draw it inline. The model
+            // still receives only `result.content` (the text summary) — never the ANSI art (FR-023).
+            if let Some(spec) = &result.render_spec {
+                output.render_widget(spec);
+            }
 
             conversation.push(Message::ToolResult {
                 call_id: tc.id.clone(),
@@ -729,6 +747,12 @@ pub async fn run_repl(
     };
     let output = TerminalOutput::new(Box::new(printer));
 
+    // Opt-in bee mascot: play the wing-flap once beside the session line, then it reclaims its rows
+    // (003-visual-render, Slice 2, FR-032).
+    if config.mascot {
+        output.render_widget(&RenderSpec::Animation { spec: crate::viz::bee::animation() });
+    }
+
     output.info(&format!("interactive session — {} — type /help for commands", model.id()));
 
     // One metrics recorder for the whole session (None if no metrics path is resolvable).
@@ -919,6 +943,8 @@ mod tests {
     struct Collector {
         lines: Mutex<Vec<String>>,
         partial: Mutex<String>,
+        /// Widgets captured via `render_widget` (003-visual-render, US6 Independent Test).
+        widgets: Mutex<Vec<RenderSpec>>,
     }
 
     impl Collector {
@@ -953,6 +979,9 @@ mod tests {
         }
         fn info(&self, msg: &str) {
             self.lines.lock().unwrap().push(format!("INFO {msg}"));
+        }
+        fn render_widget(&self, spec: &RenderSpec) {
+            self.widgets.lock().unwrap().push(spec.clone());
         }
     }
 

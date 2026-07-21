@@ -265,6 +265,11 @@ async fn run_batch_mode(args: &Args) -> ExitCode {
         );
     }
 
+    // Human-facing status grid to stderr (stdout carries the JSON artifact) — 003-visual-render US7.
+    if !result.transcripts.is_empty() {
+        eprint!("{}", bee_harness::batch::status_grid_summary(&result.transcripts));
+    }
+
     if let Err(code) = emit_transcripts(&result.transcripts, &args.out) {
         return code;
     }

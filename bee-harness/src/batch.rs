@@ -19,6 +19,26 @@ use crate::transcript::{EpisodeStatus, EpisodeTranscript};
 /// A progress sink shared across every episode in a batch (cloned per pair).
 type SharedSink = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// Render a batch's transcripts as a honeycomb status grid (003-visual-render, US7): one row per
+/// scenario, its per-provider outcomes as colored dots, `N/M pass` on the right. Meant for the
+/// human-facing summary (stderr), never the JSON artifact.
+pub fn status_grid_summary(transcripts: &[EpisodeTranscript]) -> String {
+    use crate::viz::grid::{status_grid, Status};
+    // Group by scenario in first-seen order so multiple providers appear as attempts on one row.
+    let mut order: Vec<String> = Vec::new();
+    let mut by_scenario: std::collections::HashMap<String, Vec<Status>> = std::collections::HashMap::new();
+    for t in transcripts {
+        by_scenario.entry(t.scenario_id.clone()).or_insert_with(|| {
+            order.push(t.scenario_id.clone());
+            Vec::new()
+        });
+        by_scenario.get_mut(&t.scenario_id).unwrap().push(Status::from_episode(&t.status));
+    }
+    let rows: Vec<(String, Vec<Status>)> =
+        order.into_iter().map(|s| { let v = by_scenario.remove(&s).unwrap(); (s, v) }).collect();
+    status_grid(&rows)
+}
+
 /// What to run: the scenario and provider TOMLs to cross.
 pub struct BatchConfig {
     /// Paths to scenario TOMLs.

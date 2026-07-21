@@ -15,6 +15,9 @@ pub mod bash;
 pub mod ctf;
 pub mod exec;
 pub mod files;
+pub mod render;
+
+use crate::render_spec::RenderSpec;
 
 /// The default tool set advertised to the model (contracts/scenario-schema.md). The CTF terminal
 /// tools (`submit_flag`, `give_up`) are **not** here — a scenario opts into them via its `tools`
@@ -24,10 +27,14 @@ pub const DEFAULT_TOOLS: &[&str] = &["bash", "read_file", "write_file", "list_di
 /// The CTF terminal tools (US3), enabled only when a scenario lists them.
 pub const CTF_TOOLS: &[&str] = &["submit_flag", "give_up"];
 
+/// The visualization tools (003-visual-render, US6). **Not** in `DEFAULT_TOOLS` (NFR-003): a
+/// scenario or the REPL config opts in by listing `"render"`.
+pub const RENDER_TOOLS: &[&str] = &["render"];
+
 /// Every tool name the harness knows how to build. A scenario may only list names from this set
 /// (scenario validation rejects the rest before a run).
 pub fn is_known_tool(name: &str) -> bool {
-    DEFAULT_TOOLS.contains(&name) || CTF_TOOLS.contains(&name)
+    DEFAULT_TOOLS.contains(&name) || CTF_TOOLS.contains(&name) || RENDER_TOOLS.contains(&name)
 }
 
 /// The outcome of one tool call.
@@ -50,6 +57,11 @@ pub struct ToolResult {
     /// US3). The loop is otherwise tool-name-agnostic — it reads this flag, not the name.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub terminal: bool,
+    /// The visualization to render, when this result came from the `render` tool (003-visual-render,
+    /// FR-023). **Never sent to the model** — `content` carries the human-readable summary instead;
+    /// recorded in the transcript for later re-rendering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_spec: Option<RenderSpec>,
 }
 
 impl ToolResult {
@@ -62,6 +74,7 @@ impl ToolResult {
             truncated: false,
             original_len: None,
             terminal: false,
+            render_spec: None,
         }
     }
 
@@ -74,7 +87,14 @@ impl ToolResult {
             truncated: false,
             original_len: None,
             terminal: false,
+            render_spec: None,
         }
+    }
+
+    /// A successful `render`-tool result: `content` is the text summary, `render_spec` the widget
+    /// (003-visual-render, FR-023).
+    pub fn rendered(summary: impl Into<String>, spec: RenderSpec) -> Self {
+        ToolResult { render_spec: Some(spec), ..ToolResult::ok(summary) }
     }
 
     /// A successful **terminal** result (a CTF tool that ends the episode, US3). `terminal = true`,
@@ -162,6 +182,7 @@ pub fn registry_for(enabled: &[String], flag: Option<&str>) -> ToolRegistry {
                 }
             }
             "give_up" => r.insert(Box::new(ctf::GiveUp)),
+            "render" => r.insert(Box::new(render::RenderTool::new())),
             _ => {}
         }
     }
