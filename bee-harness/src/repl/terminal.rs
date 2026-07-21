@@ -17,7 +17,9 @@ use rustyline::ExternalPrinter;
 use tokio::task::JoinHandle;
 
 use super::ReplOutput;
+use crate::render_spec::RenderSpec;
 use crate::tools::ToolResult;
+use crate::viz::{glyph, palette};
 
 /// Width to word-wrap assistant prose to.
 const WRAP_WIDTH: usize = 88;
@@ -90,13 +92,11 @@ impl TerminalOutput {
         }
     }
 
-    /// Wrap `text` in an ANSI SGR sequence, or return it unchanged when color is disabled.
+    /// Wrap `text` in an ANSI SGR sequence, or return it unchanged when color is disabled. Delegates
+    /// to the honeycomb palette (003-visual-render, FR-027) — byte-identical to the pre-migration
+    /// inline form (SC-012).
     fn paint(&self, code: &str, text: &str) -> String {
-        if self.color {
-            format!("\x1b[{code}m{text}\x1b[0m")
-        } else {
-            text.to_string()
-        }
+        palette::paint_if(self.color, code, text)
     }
 
     /// Print one line above the input line. A trailing newline is added; the external printer
@@ -162,12 +162,16 @@ impl ReplOutput for TerminalOutput {
 
     fn tool_call(&self, name: &str, arguments: &serde_json::Value) {
         let args = clip(&arguments.to_string(), MAX_ARG_CHARS);
-        let line = format!("  ▸ {name} {args}");
-        self.emit(&self.paint("2", &line)); // dim
+        let line = format!("  {} {name} {args}", glyph::ARROW);
+        self.emit(&self.paint(palette::SMOKE, &line)); // dim
     }
 
     fn tool_result(&self, result: &ToolResult, audit: &[AuditEvent]) {
-        let (glyph, code) = if result.is_error { ("✗", "31") } else { ("✓", "32") };
+        let (mark, code) = if result.is_error {
+            (glyph::CROSS, palette::STING)
+        } else {
+            (glyph::CHECK, palette::POLLEN)
+        };
         let content = if result.content.trim().is_empty() {
             "(no output)".to_string()
         } else {
@@ -178,7 +182,7 @@ impl ReplOutput for TerminalOutput {
         let shown = lines.len().min(MAX_RESULT_LINES);
         for (i, line) in lines.iter().take(shown).enumerate() {
             let prefixed = if i == 0 {
-                format!("  {glyph} {line}")
+                format!("  {mark} {line}")
             } else {
                 format!("    {line}")
             };
@@ -186,32 +190,42 @@ impl ReplOutput for TerminalOutput {
         }
         if lines.len() > shown {
             let more = lines.len() - shown;
-            self.emit(&self.paint("2", &format!("    … {more} more line(s)")));
+            self.emit(&self.paint(palette::SMOKE, &format!("    … {more} more line(s)")));
         }
 
         // Kernel denials stand out in bold red regardless of the result glyph above.
         for e in audit {
             if e.decision == "denied" {
-                let line = format!("  ⚠ DENIED {} {}", e.op, e.target);
-                self.emit(&self.paint("1;31", &line)); // bold red
+                let line = format!("  {} DENIED {} {}", glyph::WARN, e.op, e.target);
+                self.emit(&palette::bold_if(self.color, palette::STING, &line)); // bold red
             }
         }
     }
 
     fn error(&self, msg: &str) {
-        self.emit(&self.paint("31", &format!("error: {msg}"))); // red
+        self.emit(&self.paint(palette::STING, &format!("error: {msg}"))); // red
     }
 
     fn info(&self, msg: &str) {
-        self.emit(&self.paint("33", msg)); // yellow
+        self.emit(&self.paint(palette::HONEY, msg)); // yellow
     }
 
     fn footer(&self, msg: &str) {
-        self.emit(&self.paint("2", msg)); // dim
+        self.emit(&self.paint(palette::SMOKE, msg)); // dim
     }
 
     fn steering(&self, msg: &str) {
-        self.emit(&self.paint("36", msg)); // cyan — user's steering nudge
+        self.emit(&self.paint(palette::ROYAL, msg)); // cyan — user's steering nudge
+    }
+
+    fn render_widget(&self, spec: &RenderSpec) {
+        // Draw the widget as inline ANSI art via the headless ratatui pipeline (FR-025). Width comes
+        // from the terminal; height is capped at 40 rows. Each row goes through the same
+        // `ExternalPrinter` path as every other line — no alt-screen, no raw mode (SC-011).
+        let (width, _tty) = crate::viz::terminal_dims();
+        for line in crate::viz::render_to_ansi(spec, width, 40) {
+            self.emit(&line);
+        }
     }
 
     fn busy_start(&self) {

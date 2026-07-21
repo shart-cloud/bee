@@ -23,11 +23,14 @@ pub mod concurrent;
 pub mod episode;
 pub mod metrics;
 pub mod provider;
+pub mod render_api;
+pub mod render_spec;
 pub mod repl;
 pub mod sandbox;
 pub mod scenario;
 pub mod tools;
 pub mod transcript;
+pub mod viz;
 
 pub use batch::{run_batch, BatchConfig, BatchError, BatchResult};
 #[cfg(feature = "concurrent")]
@@ -38,6 +41,7 @@ pub use metrics::{CallRecord, Recorder};
 pub use provider::{
     model_from_config, Conversation, Message, Model, ModelError, ToolCall, ToolSchema, Turn,
 };
+pub use render_spec::RenderSpec;
 pub use repl::{run_repl, ReplConfig, ReplOutput, ReplSession};
 
 /// Mark the current process **non-dumpable** (FR-018, research H7): `/proc/<pid>/environ`, `mem`,
