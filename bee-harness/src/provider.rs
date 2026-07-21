@@ -117,11 +117,27 @@ pub enum StopReason {
     Other(String),
 }
 
-/// Token usage as reported by the provider.
+/// Token usage as reported by the provider. Beyond the plain input/output counts, this captures the
+/// tokens that dominate cost on cache-aware providers: `cache_read_tokens` bill at ~0.1× input,
+/// `cache_write_tokens` at 1.25×–2× input, and `reasoning_tokens` (extended thinking) bill as output.
+/// The extra fields default to 0 for providers (or older transcripts) that don't report them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
+    /// Input tokens served from the provider's prompt cache (billed at a large discount).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_read_tokens: u32,
+    /// Input tokens written to the provider's prompt cache (billed at a premium).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_write_tokens: u32,
+    /// Reasoning / extended-thinking tokens (billed as output).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub reasoning_tokens: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl std::ops::Add for Usage {
@@ -131,6 +147,9 @@ impl std::ops::Add for Usage {
         Usage {
             input_tokens: self.input_tokens + other.input_tokens,
             output_tokens: self.output_tokens + other.output_tokens,
+            cache_read_tokens: self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens: self.cache_write_tokens + other.cache_write_tokens,
+            reasoning_tokens: self.reasoning_tokens + other.reasoning_tokens,
         }
     }
 }

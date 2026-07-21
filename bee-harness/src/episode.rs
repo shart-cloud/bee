@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use time::OffsetDateTime;
 
+use crate::metrics::{stop_label, Recorder};
 use crate::provider::{Conversation, Message, Model, ModelError, Turn, Usage};
 use crate::sandbox::{self, Sandbox};
 use crate::scenario::{Scenario, ScoringMode, WorkdirSetup};
@@ -26,6 +27,9 @@ pub struct LoopOptions {
     pub max_retries: u32,
     /// Optional live-progress sink (per-turn / per-tool-call / per-denial lines).
     pub progress: Option<ProgressSink>,
+    /// Optional metrics recorder — one [`crate::metrics::CallRecord`] per model call. `None` (the
+    /// default, and what host tests use) records nothing.
+    pub metrics: Option<Recorder>,
 }
 
 impl Default for LoopOptions {
@@ -33,6 +37,7 @@ impl Default for LoopOptions {
         LoopOptions {
             max_retries: 5,
             progress: None,
+            metrics: None,
         }
     }
 }
@@ -165,14 +170,36 @@ pub async fn run_loop(
             break;
         }
 
+        let call_start = Instant::now();
         let turn =
             match complete_with_retry(model, &convo, &schemas, opts.max_retries, deadline).await {
                 Ok(t) => t,
                 Err(detail) => {
+                    if let Some(rec) = &opts.metrics {
+                        rec.record(
+                            model.id(),
+                            Usage::default(),
+                            ms_since(call_start),
+                            None,
+                            "error",
+                            "error",
+                        );
+                    }
                     status = EpisodeStatus::ApiError { detail };
                     break;
                 }
             };
+        // Non-streaming path, so no time-to-first-token — record the whole round-trip as latency.
+        if let Some(rec) = &opts.metrics {
+            rec.record(
+                model.id(),
+                turn.usage.unwrap_or_default(),
+                ms_since(call_start),
+                None,
+                stop_label(&turn.stop),
+                "ok",
+            );
+        }
 
         if let Some(u) = turn.usage {
             usage_total = Some(usage_total.map_or(u, |acc| acc + u));
@@ -418,6 +445,7 @@ pub async fn run_episode(
     let strip_env = sandbox::key_vars(provider_key_env);
     let opts = LoopOptions {
         progress,
+        metrics: Recorder::new("episode", format!("episode:{}:{}", scenario.id, std::process::id())),
         ..LoopOptions::default()
     };
 

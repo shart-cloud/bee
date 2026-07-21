@@ -266,18 +266,21 @@ fn drain_steering(queue: &SteeringQueue, convo: &mut Conversation, output: &dyn 
     drained
 }
 
-/// Consume one model stream: render text deltas live and return the assembled [`Turn`]. The "working"
+/// Consume one model stream: render text deltas live and return the assembled [`Turn`] plus the
+/// time-to-first-token (ms since `call_start`, the dispatch instant), for metrics. The "working"
 /// indicator (started by the caller when the call was dispatched) is stopped the instant the first
 /// event arrives. `saw_text` reports whether any prose was rendered (so the caller can close the
 /// assistant block).
 async fn consume_stream(
     mut stream: crate::provider::EventStream,
     output: &dyn ReplOutput,
-) -> Result<Turn, String> {
+    call_start: Instant,
+) -> Result<(Turn, Option<u64>), String> {
     // Wait for the first event, then drop the "working" indicator — from here on the stream itself
     // (tokens, tool calls) shows liveness.
     let first = stream.next().await;
     output.busy_stop();
+    let ttft = first.is_some().then(|| call_start.elapsed().as_millis() as u64);
 
     let mut saw_text = false;
     let mut ev = first;
@@ -293,7 +296,7 @@ async fn consume_stream(
                 if saw_text {
                     output.assistant_end();
                 }
-                return Ok(turn);
+                return Ok((turn, ttft));
             }
             Some(Err(e)) => {
                 if saw_text {
@@ -306,7 +309,7 @@ async fn consume_stream(
                 if saw_text {
                     output.assistant_end();
                 }
-                return Ok(Turn::text(String::new()));
+                return Ok((Turn::text(String::new()), ttft));
             }
         }
         ev = stream.next().await;
@@ -330,6 +333,7 @@ pub async fn run_exchange(
     config: &ReplConfig,
     output: &dyn ReplOutput,
     steering: &SteeringQueue,
+    recorder: Option<&crate::metrics::Recorder>,
 ) -> ExchangeResult {
     conversation.push(Message::User { text: user_message.to_string() });
 
@@ -356,6 +360,16 @@ pub async fn run_exchange(
             Err(detail) => {
                 output.busy_stop();
                 output.error(&detail);
+                if let Some(rec) = recorder {
+                    rec.record(
+                        model.id(),
+                        Usage::default(),
+                        turn_start.elapsed().as_millis() as u64,
+                        None,
+                        "error",
+                        "error",
+                    );
+                }
                 return ExchangeResult {
                     outcome: ExchangeOutcome::ApiError(detail),
                     model_calls,
@@ -367,10 +381,20 @@ pub async fn run_exchange(
                 };
             }
         };
-        let turn = match consume_stream(stream, output).await {
+        let (turn, ttft_ms) = match consume_stream(stream, output, turn_start).await {
             Ok(t) => t,
             Err(detail) => {
                 output.error(&detail);
+                if let Some(rec) = recorder {
+                    rec.record(
+                        model.id(),
+                        Usage::default(),
+                        turn_start.elapsed().as_millis() as u64,
+                        None,
+                        "error",
+                        "error",
+                    );
+                }
                 return ExchangeResult {
                     outcome: ExchangeOutcome::ApiError(detail),
                     model_calls,
@@ -383,6 +407,16 @@ pub async fn run_exchange(
             }
         };
         model_calls += 1;
+        if let Some(rec) = recorder {
+            rec.record(
+                model.id(),
+                turn.usage.unwrap_or_default(),
+                turn_start.elapsed().as_millis() as u64,
+                ttft_ms,
+                crate::metrics::stop_label(&turn.stop),
+                "ok",
+            );
+        }
         if let Some(u) = turn.usage {
             usage_total = Some(usage_total.map_or(u, |acc| acc + u));
         }
@@ -495,20 +529,28 @@ fn human_tokens(n: u32) -> String {
     }
 }
 
-/// The dim one-line summary printed after each exchange.
-fn exchange_footer(result: &ExchangeResult, elapsed: Duration) -> String {
-    let usage = match result.usage {
-        Some(u) => format!("{}→{} tok", human_tokens(u.input_tokens), human_tokens(u.output_tokens)),
-        None => "usage n/a".to_string(),
-    };
-    format!(
-        "— {} · {} · {} · {} · {:.1}s",
+/// The dim one-line summary printed after each exchange, including derived cost for priced models.
+fn exchange_footer(result: &ExchangeResult, elapsed: Duration, model_id: &str) -> String {
+    let mut parts = vec![
         plural(result.model_calls, "turn"),
         plural(result.tool_calls, "tool call"),
         plural(result.denials, "denial"),
-        usage,
-        elapsed.as_secs_f64()
-    )
+    ];
+    match &result.usage {
+        Some(u) => {
+            let mut tok = format!("{}→{} tok", human_tokens(u.input_tokens), human_tokens(u.output_tokens));
+            if u.cache_read_tokens > 0 {
+                tok.push_str(&format!(" ({} cached)", human_tokens(u.cache_read_tokens)));
+            }
+            parts.push(tok);
+            if let Some(cost) = crate::metrics::pricing::cost(model_id, u) {
+                parts.push(format!("${cost:.4}"));
+            }
+        }
+        None => parts.push("usage n/a".to_string()),
+    }
+    parts.push(format!("{:.1}s", elapsed.as_secs_f64()));
+    format!("— {}", parts.join(" · "))
 }
 
 fn rfc3339(t: OffsetDateTime) -> String {
@@ -689,6 +731,9 @@ pub async fn run_repl(
 
     output.info(&format!("interactive session — {} — type /help for commands", model.id()));
 
+    // One metrics recorder for the whole session (None if no metrics path is resolvable).
+    let recorder = crate::metrics::Recorder::new("repl", format!("repl:{}", std::process::id()));
+
     let steering: SteeringQueue = Arc::new(Mutex::new(VecDeque::new()));
     let prompt = "bee> ".to_string();
     // Exactly one readline is outstanding at all times.
@@ -793,6 +838,7 @@ pub async fn run_repl(
                 config,
                 &output,
                 &steering,
+                recorder.as_ref(),
             );
             tokio::pin!(fut);
             loop {
@@ -827,7 +873,7 @@ pub async fn run_repl(
         if let Some(u) = result.usage {
             usage_total = Some(usage_total.map_or(u, |acc| acc + u));
         }
-        output.footer(&exchange_footer(&result, ex_start.elapsed()));
+        output.footer(&exchange_footer(&result, ex_start.elapsed(), model.id()));
         // Re-index the exchange's turns into the session-wide sequence before accumulating.
         for mut t in result.turns {
             t.index = turns.len() as u32;
@@ -933,7 +979,7 @@ mod tests {
         let out = Collector::default();
         let steering = empty_steering();
         let res = run_exchange(
-            "hello", model, &mut convo, &registry, &mut sb, config, &out, &steering,
+            "hello", model, &mut convo, &registry, &mut sb, config, &out, &steering, None,
         )
         .await;
         (res, out)
@@ -1012,6 +1058,7 @@ mod tests {
 
         let res = run_exchange(
             "start", &model, &mut convo, &registry, &mut sb, &ReplConfig::default(), &out, &steering,
+            None,
         )
         .await;
 
@@ -1054,7 +1101,7 @@ mod tests {
         let out = Collector::default();
 
         let res = run_exchange(
-            "go", &model, &mut convo, &registry, &mut sb, &ReplConfig::default(), &out, &steering,
+            "go", &model, &mut convo, &registry, &mut sb, &ReplConfig::default(), &out, &steering, None,
         )
         .await;
 
@@ -1111,13 +1158,30 @@ mod tests {
             denials: 0,
             turns: Vec::new(),
             audit: Vec::new(),
-            usage: Some(Usage { input_tokens: 1234, output_tokens: 340 }),
+            usage: Some(Usage { input_tokens: 1234, output_tokens: 340, ..Default::default() }),
         };
-        let footer = exchange_footer(&result, Duration::from_millis(4100));
+        let footer = exchange_footer(&result, Duration::from_millis(4100), "anthropic/claude-opus-4-8");
         assert!(footer.contains("2 turns"), "{footer}");
         assert!(footer.contains("1 tool call"), "{footer}");
         assert!(footer.contains("1.2k→340 tok"), "{footer}");
         assert!(footer.contains("4.1s"), "{footer}");
+        // priced model → cost appears; 1234·$5/M + 340·$25/M = $0.0147
+        assert!(footer.contains("$0.01"), "{footer}");
+    }
+
+    #[test]
+    fn footer_omits_cost_for_unpriced_model() {
+        let result = ExchangeResult {
+            outcome: ExchangeOutcome::Responded,
+            model_calls: 1,
+            tool_calls: 0,
+            denials: 0,
+            turns: Vec::new(),
+            audit: Vec::new(),
+            usage: Some(Usage { input_tokens: 100, output_tokens: 50, ..Default::default() }),
+        };
+        let footer = exchange_footer(&result, Duration::from_millis(500), "mock/scripted");
+        assert!(!footer.contains('$'), "{footer}");
     }
 
     #[test]

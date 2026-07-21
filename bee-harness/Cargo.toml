@@ -16,6 +16,10 @@ path = "src/bin/bee-episode.rs"
 name = "bee-repl"
 path = "src/bin/bee-repl.rs"
 
+[[bin]]
+name = "bee-metrics"
+path = "src/bin/bee-metrics.rs"
+
 [features]
 default = []
 # Real kernel enforcement. Pulls bee-userspace's eBPF-LSM path (nightly bpf toolchain + BPF-LSM

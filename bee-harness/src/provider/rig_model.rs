@@ -112,11 +112,7 @@ where
                     yield Ok(StreamEvent::ToolCall(tc));
                 }
                 Ok(StreamedAssistantContent::Final(r)) => {
-                    let u = r.token_usage();
-                    usage = Usage {
-                        input_tokens: u.input_tokens as u32,
-                        output_tokens: u.output_tokens as u32,
-                    };
+                    usage = usage_from_rig(&r.token_usage());
                 }
                 // Partial tool-call deltas, reasoning, and provider-native items are not surfaced.
                 Ok(_) => {}
@@ -131,11 +127,7 @@ where
         // not as a `Final` event; fall back to it when no `Final` carried usage.
         if usage == Usage::default() {
             if let Some(r) = &resp.response {
-                let u = r.token_usage();
-                usage = Usage {
-                    input_tokens: u.input_tokens as u32,
-                    output_tokens: u.output_tokens as u32,
-                };
+                usage = usage_from_rig(&r.token_usage());
             }
         }
 
@@ -286,11 +278,20 @@ fn to_turn(rt: RigTurn) -> Turn {
         }
     }
     let stop = if tool_calls.is_empty() { StopReason::EndTurn } else { StopReason::ToolUse };
-    let usage = Some(Usage {
-        input_tokens: rt.usage.input_tokens as u32,
-        output_tokens: rt.usage.output_tokens as u32,
-    });
+    let usage = Some(usage_from_rig(&rt.usage));
     Turn { text, tool_calls, stop, usage }
+}
+
+/// Map Rig's usage into the harness [`Usage`], carrying the cache and reasoning counts (dropped by
+/// the older mapping) so cost can be computed accurately downstream.
+fn usage_from_rig(u: &rig_core::completion::Usage) -> Usage {
+    Usage {
+        input_tokens: u.input_tokens as u32,
+        output_tokens: u.output_tokens as u32,
+        cache_read_tokens: u.cached_input_tokens as u32,
+        cache_write_tokens: u.cache_creation_input_tokens as u32,
+        reasoning_tokens: u.reasoning_tokens as u32,
+    }
 }
 
 /// Map a Rig `CompletionError` into the harness [`ModelError`] (429/5xx → transient; the loop owns

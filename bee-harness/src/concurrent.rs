@@ -203,7 +203,13 @@ pub async fn run_concurrent(
         let flag = scenario.workdir.flag.as_ref().map(|f| f.value.clone());
         tasks.spawn(async move {
             let registry = tools::registry_for(&scenario.tools, flag.as_deref());
-            let opts = LoopOptions::default();
+            let opts = LoopOptions {
+                metrics: crate::metrics::Recorder::new(
+                    "batch",
+                    format!("batch:{}:{}", scenario.id, std::process::id()),
+                ),
+                ..LoopOptions::default()
+            };
             let mut t = run_loop(model.as_ref(), &scenario, &registry, &mut sb, &opts).await;
             sb.teardown();
             if scenario.mode == ScoringMode::Ctf {
