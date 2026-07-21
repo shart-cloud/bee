@@ -1,15 +1,25 @@
 //! `McpBridge` — owns the connected MCP servers for one episode/REPL session and registers their
-//! tools into the shared [`ToolRegistry`] (004-mcp-client, T011).
+//! tools into the shared [`ToolRegistry`] (004-mcp-client).
 //!
 //! The bridge holds each server's `rmcp` [`RunningService`] (which owns the stdio child + background
 //! task); dropping the bridge kills the children (kill-on-drop). `McpToolProxy`s in the registry
 //! hold only a cheap [`Peer`] clone, so a late call after teardown returns a disconnected error
-//! (FR-042). The per-transport `connect` bodies land in US8 (stdio, T018) and US9 (remote, T026).
+//! (FR-042).
+//!
+//! ## `tools/list_changed` (FR-043)
+//! Each connected server is served with a [`NotifyHandler`] whose `on_tool_list_changed` re-fetches
+//! the tool list and updates a shared cache, then sets the bridge-wide **dirty** flag. The agent
+//! loop calls [`McpBridge::take_dirty`] each turn and, when set, re-registers the current tools so
+//! the change reaches the model on its next turn.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rmcp::service::{Peer, RoleClient, RunningService};
+use rmcp::handler::client::ClientHandler;
+use rmcp::model::Tool as RmcpTool;
+use rmcp::service::{NotificationContext, Peer, RoleClient, RunningService};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::ServiceExt;
@@ -27,6 +37,37 @@ use super::transport::spawn_stdio;
 const STDIO_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 /// Remote TCP + TLS + `initialize` handshake budget (NFR-005).
 const REMOTE_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// A server's current tools: `(bare_name, namespaced_schema)`. Shared between the server's
+/// [`NotifyHandler`] (which refreshes it on `tools/list_changed`) and the bridge (which reads it to
+/// (re-)register proxies).
+type SharedTools = Arc<Mutex<Vec<(String, ToolSchema)>>>;
+
+/// Apply `allowed_tools`/`denied_tools` (FR-039) and namespace the surviving schemas (FR-036).
+fn filter_tools(cfg: &McpServerConfig, tools: &[RmcpTool]) -> Vec<(String, ToolSchema)> {
+    tools
+        .iter()
+        .filter(|t| cfg.tool_allowed(&t.name))
+        .map(|t| (t.name.to_string(), tool_schema(&cfg.name, t)))
+        .collect()
+}
+
+/// The `rmcp` client handler for one server. On a `tools/list_changed` notification it re-fetches the
+/// tool list, re-filters/namespaces it into the shared cache, and flags the bridge dirty (FR-043).
+struct NotifyHandler {
+    cfg: McpServerConfig,
+    tools: SharedTools,
+    dirty: Arc<AtomicBool>,
+}
+
+impl ClientHandler for NotifyHandler {
+    async fn on_tool_list_changed(&self, context: NotificationContext<RoleClient>) {
+        if let Ok(tools) = context.peer.list_all_tools().await {
+            *self.tools.lock().expect("mcp tools lock") = filter_tools(&self.cfg, &tools);
+            self.dirty.store(true, Ordering::SeqCst);
+        }
+    }
+}
 
 /// Lifecycle state of a configured MCP server.
 #[derive(Debug, Clone)]
@@ -52,18 +93,18 @@ impl ServerStatus {
 /// The live `rmcp` handle for a connected server. Held for its RAII kill-on-drop; the `peer` is
 /// cloned into each tool proxy.
 struct ServerHandle {
-    /// Owns the child + background task. Held, not read — dropping it tears the connection down.
+    /// Owns the child + background task (+ the [`NotifyHandler`]). Held, not read — dropping it tears
+    /// the connection down.
     #[allow(dead_code)]
-    service: RunningService<RoleClient, ()>,
+    service: RunningService<RoleClient, NotifyHandler>,
     peer: Peer<RoleClient>,
 }
 
 /// One configured server and whatever we learned when connecting.
 pub struct ConnectedServer {
     config: McpServerConfig,
-    /// The surviving tools after `allowed_tools`/`denied_tools` filtering: `(bare_name, schema)`
-    /// where `schema.name` is already the namespaced `mcp__{server}__{tool}`.
-    tools: Vec<(String, ToolSchema)>,
+    /// The server's current (filtered, namespaced) tools — refreshed on `tools/list_changed`.
+    tools: SharedTools,
     status: ServerStatus,
     handle: Option<ServerHandle>,
 }
@@ -76,7 +117,7 @@ impl ConnectedServer {
         &self.status
     }
     pub fn tool_count(&self) -> usize {
-        self.tools.len()
+        self.tools.lock().expect("mcp tools lock").len()
     }
 }
 
@@ -84,39 +125,51 @@ impl ConnectedServer {
 pub struct McpBridge {
     policy: McpPolicy,
     servers: BTreeMap<String, ConnectedServer>,
+    /// Set by any server's [`NotifyHandler`] on `tools/list_changed`; the loop consumes it via
+    /// [`McpBridge::take_dirty`] to re-register tools for the next turn (FR-043).
+    dirty: Arc<AtomicBool>,
 }
 
 impl McpBridge {
     /// A disabled bridge (no servers). Used when `[mcp]` is absent or `enabled = false`.
     pub fn disabled() -> Self {
-        McpBridge { policy: McpPolicy::default(), servers: BTreeMap::new() }
+        McpBridge {
+            policy: McpPolicy::default(),
+            servers: BTreeMap::new(),
+            dirty: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     /// Connect the configured servers under `policy`, spawning stdio children in `sandbox`.
     ///
     /// Never fails the episode: a server that cannot connect is recorded as [`ServerStatus::Failed`]
-    /// and simply contributes no tools (Constitution I, fail-closed capability absence). The
-    /// per-transport connection bodies are filled in US8 (stdio) and US9 (remote); today every
-    /// declared server is recorded as `Failed("transport not yet implemented")`.
+    /// and simply contributes no tools (Constitution I, fail-closed capability absence).
     pub async fn connect(policy: McpPolicy, sandbox: &Sandbox) -> Self {
+        let dirty = Arc::new(AtomicBool::new(false));
         let mut servers = BTreeMap::new();
         if policy.enabled {
             let max = policy.max_servers as usize;
             for cfg in policy.servers.iter().take(max) {
                 let server = match cfg.transport {
-                    McpTransport::Stdio => connect_stdio(cfg, sandbox).await,
+                    McpTransport::Stdio => connect_stdio(cfg, sandbox, dirty.clone()).await,
                     McpTransport::Sse | McpTransport::StreamableHttp => {
-                        connect_remote(cfg, &policy).await
+                        connect_remote(cfg, &policy, dirty.clone()).await
                     }
                 };
                 servers.insert(cfg.name.clone(), server);
             }
         }
-        McpBridge { policy, servers }
+        McpBridge { policy, servers, dirty }
+    }
+
+    /// Consume the dirty flag: returns `true` (and resets it) if a `tools/list_changed` notification
+    /// arrived since the last call. The loop uses this to decide whether to re-register tools.
+    pub fn take_dirty(&self) -> bool {
+        self.dirty.swap(false, Ordering::SeqCst)
     }
 
     /// Register one [`McpToolProxy`] per surviving tool of each connected server into `registry`
-    /// (FR-036/FR-039). Filtering already happened at connect time (`ConnectedServer.tools`).
+    /// (FR-036/FR-039). Reads each server's current (possibly refreshed) tool cache.
     pub fn register_into(&self, registry: &mut ToolRegistry) {
         let timeout = self.policy.tool_timeout();
         for (name, srv) in &self.servers {
@@ -124,14 +177,9 @@ impl McpBridge {
                 continue;
             }
             let Some(handle) = &srv.handle else { continue };
-            for (bare, schema) in &srv.tools {
-                let proxy = McpToolProxy::new(
-                    name,
-                    bare.clone(),
-                    schema.clone(),
-                    handle.peer.clone(),
-                    timeout,
-                );
+            let tools = srv.tools.lock().expect("mcp tools lock").clone();
+            for (bare, schema) in tools {
+                let proxy = McpToolProxy::new(name, bare, schema, handle.peer.clone(), timeout);
                 registry.insert(Box::new(proxy));
             }
         }
@@ -163,7 +211,7 @@ impl McpBridge {
             out.push_str(&format!(
                 "\n  {name} [{transport}] — {} ({} tools)",
                 srv.status.label(),
-                srv.tools.len()
+                srv.tool_count()
             ));
         }
         let join = |ps: &[super::policy::DomainPattern]| {
@@ -181,57 +229,69 @@ impl McpBridge {
 }
 
 fn failed_server(cfg: &McpServerConfig, why: String) -> ConnectedServer {
-    ConnectedServer { config: cfg.clone(), tools: Vec::new(), status: ServerStatus::Failed(why), handle: None }
+    ConnectedServer {
+        config: cfg.clone(),
+        tools: Arc::new(Mutex::new(Vec::new())),
+        status: ServerStatus::Failed(why),
+        handle: None,
+    }
 }
 
-/// After the `initialize` handshake, fetch + filter the server's tools and build the connected
-/// record. Shared by the stdio and remote paths.
+/// After the `initialize` handshake, fetch + filter the server's tools into `shared` and build the
+/// connected record. Shared by the stdio and remote paths.
 async fn finalize_connection(
     cfg: &McpServerConfig,
-    running: RunningService<RoleClient, ()>,
+    running: RunningService<RoleClient, NotifyHandler>,
+    shared: SharedTools,
 ) -> ConnectedServer {
     let tools = match running.list_all_tools().await {
         Ok(t) => t,
         Err(e) => return failed_server(cfg, format!("list_tools failed: {e}")),
     };
-    // Apply allowed_tools/denied_tools (FR-039) and namespace the surviving schemas (FR-036).
-    let filtered: Vec<(String, ToolSchema)> = tools
-        .iter()
-        .filter(|t| cfg.tool_allowed(&t.name))
-        .map(|t| (t.name.to_string(), tool_schema(&cfg.name, t)))
-        .collect();
+    *shared.lock().expect("mcp tools lock") = filter_tools(cfg, &tools);
     let peer = running.peer().clone();
     ConnectedServer {
         config: cfg.clone(),
-        tools: filtered,
+        tools: shared,
         status: ServerStatus::Connected,
         handle: Some(ServerHandle { service: running, peer }),
     }
 }
 
+/// Build the `NotifyHandler` + shared cache for a server about to connect.
+fn handler_for(cfg: &McpServerConfig, dirty: Arc<AtomicBool>) -> (NotifyHandler, SharedTools) {
+    let shared: SharedTools = Arc::new(Mutex::new(Vec::new()));
+    let handler = NotifyHandler { cfg: cfg.clone(), tools: shared.clone(), dirty };
+    (handler, shared)
+}
+
 /// Connect one stdio MCP server: spawn it sandboxed, run the `initialize` handshake under the
 /// startup budget, then finalize. Never panics — any failure yields a [`ServerStatus::Failed`]
 /// server with no tools (fail-closed, Constitution I).
-async fn connect_stdio(cfg: &McpServerConfig, sandbox: &Sandbox) -> ConnectedServer {
+async fn connect_stdio(cfg: &McpServerConfig, sandbox: &Sandbox, dirty: Arc<AtomicBool>) -> ConnectedServer {
     let transport = match spawn_stdio(sandbox, cfg) {
         Ok(t) => t,
         Err(e) => return failed_server(cfg, e),
     };
-    // `()` is the no-op client handler; `on_tool_list_changed` support lands in T031.
-    let running = match tokio::time::timeout(STDIO_STARTUP_TIMEOUT, ().serve(transport)).await {
+    let (handler, shared) = handler_for(cfg, dirty);
+    let running = match tokio::time::timeout(STDIO_STARTUP_TIMEOUT, handler.serve(transport)).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => return failed_server(cfg, format!("initialize failed: {e}")),
         Err(_) => {
             return failed_server(cfg, format!("initialize timed out (>{}s)", STDIO_STARTUP_TIMEOUT.as_secs()))
         }
     };
-    finalize_connection(cfg, running).await
+    finalize_connection(cfg, running, shared).await
 }
 
 /// Connect one remote MCP server over Streamable HTTP. The domain gate is checked **first** — a
 /// refused domain yields a `Failed` server with **no transport opened** (SC-021). The `token_env`
 /// value (if any) becomes the `Authorization: Bearer` header (FR-041); it is never logged.
-async fn connect_remote(cfg: &McpServerConfig, policy: &McpPolicy) -> ConnectedServer {
+async fn connect_remote(
+    cfg: &McpServerConfig,
+    policy: &McpPolicy,
+    dirty: Arc<AtomicBool>,
+) -> ConnectedServer {
     let url = match cfg.url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
         Some(u) => u,
         None => return failed_server(cfg, "remote transport requires `url`".into()),
@@ -255,14 +315,15 @@ async fn connect_remote(cfg: &McpServerConfig, policy: &McpPolicy) -> ConnectedS
     }
 
     let transport = StreamableHttpClientTransport::from_config(config);
-    let running = match tokio::time::timeout(REMOTE_STARTUP_TIMEOUT, ().serve(transport)).await {
+    let (handler, shared) = handler_for(cfg, dirty);
+    let running = match tokio::time::timeout(REMOTE_STARTUP_TIMEOUT, handler.serve(transport)).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => return failed_server(cfg, format!("initialize failed: {e}")),
         Err(_) => {
             return failed_server(cfg, format!("initialize timed out (>{}s)", REMOTE_STARTUP_TIMEOUT.as_secs()))
         }
     };
-    finalize_connection(cfg, running).await
+    finalize_connection(cfg, running, shared).await
 }
 
 #[cfg(test)]
@@ -275,6 +336,7 @@ mod tests {
         let mut registry = ToolRegistry::new();
         bridge.register_into(&mut registry);
         assert!(registry.schemas().is_empty());
+        assert!(!bridge.take_dirty());
     }
 
     #[tokio::test]

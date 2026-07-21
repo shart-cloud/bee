@@ -86,11 +86,7 @@ async fn main() -> ExitCode {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    // `mut` only when MCP may register proxies into it (mirrors run_episode).
-    #[cfg(feature = "mcp")]
     let mut registry = registry_for(&tools, None);
-    #[cfg(not(feature = "mcp"))]
-    let registry = registry_for(&tools, None);
 
     let key_env = (!provider.api_key_env.is_empty()).then_some(provider.api_key_env.as_str());
     // Strip provider key vars plus any MCP token_env names from tool children (FR-018/FR-041).
@@ -126,17 +122,26 @@ async fn main() -> ExitCode {
         }
     };
 
-    // Connect MCP servers (if configured) and register their tools alongside the built-ins. The
-    // bridge owns the stdio children for the session; it is torn down before the scope (US10).
+    // Connect MCP servers (if configured), register their tools alongside the built-ins, and build
+    // the per-turn refresh hook (FR-043). The bridge (Arc so the hook can hold a clone) owns the
+    // stdio children for the session; it is dropped before the scope (US10).
     #[cfg(feature = "mcp")]
-    let (mcp_bridge, mcp_summary) = match mcp_policy {
+    let (mcp_bridge, mcp_summary, mcp_refresh) = match mcp_policy {
         Some(policy) => {
-            let bridge = bee_harness::mcp::McpBridge::connect(policy, &sbox).await;
+            let bridge = std::sync::Arc::new(bee_harness::mcp::McpBridge::connect(policy, &sbox).await);
             bridge.register_into(&mut registry);
             let summary = bridge.summary();
-            (Some(bridge), Some(summary))
+            let hook = bridge.clone();
+            let refresh: Box<dyn Fn(&mut bee_harness::ToolRegistry) + Send + Sync> =
+                Box::new(move |reg| {
+                    if hook.take_dirty() {
+                        reg.remove_mcp_tools();
+                        hook.register_into(reg);
+                    }
+                });
+            (Some(bridge), Some(summary), Some(refresh))
         }
-        None => (None, None),
+        None => (None, None, None),
     };
 
     let config = ReplConfig {
@@ -149,6 +154,8 @@ async fn main() -> ExitCode {
         mascot: args.bee || std::env::var_os("BEE_MASCOT").is_some_and(|v| v == "1"),
         #[cfg(feature = "mcp")]
         mcp_summary,
+        #[cfg(feature = "mcp")]
+        refresh_tools: mcp_refresh,
         ..ReplConfig::default()
     };
 
@@ -163,12 +170,14 @@ async fn main() -> ExitCode {
     }
     println!();
 
-    let session = run_repl(model.as_ref(), &registry, &mut sbox, &config).await;
+    let session = run_repl(model.as_ref(), &mut registry, &mut sbox, &config).await;
 
-    // Tear the MCP children down (they live in the scope cgroup) before the scope itself.
+    // Drop the refresh hook (its bridge clone lives in `config`) then the bridge, killing the MCP
+    // children (they live in the scope cgroup) before the scope itself is torn down.
     #[cfg(feature = "mcp")]
-    if let Some(bridge) = mcp_bridge {
-        bridge.teardown();
+    {
+        drop(config);
+        drop(mcp_bridge);
     }
     sbox.teardown();
 

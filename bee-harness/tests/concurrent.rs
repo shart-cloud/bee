@@ -10,7 +10,7 @@ use bee_harness::provider::mock_model::MockModel;
 use bee_harness::provider::{ToolCall, Turn};
 use bee_harness::sandbox::{self, Sandbox};
 use bee_harness::scenario::Scenario;
-use bee_harness::tools::{registry_for, ToolRegistry};
+use bee_harness::tools::registry_for;
 use bee_harness::{run_loop, EpisodeStatus, EpisodeTranscript, LoopOptions};
 
 fn scenario() -> Scenario {
@@ -41,28 +41,30 @@ fn sleeper(secs: &str) -> Vec<Turn> {
     ]
 }
 
-async fn one_episode(registry: Arc<ToolRegistry>, scn: Arc<Scenario>) -> EpisodeTranscript {
+async fn one_episode(scn: Arc<Scenario>) -> EpisodeTranscript {
+    // Each episode builds its own registry (run_loop takes `&mut` since 004-mcp-client's per-turn
+    // tool refresh; the registries are cheap and independent).
+    let mut registry = registry_for(&["bash".to_string()], None);
     let model = MockModel::scripted(sleeper("0.4"));
     let mut sb = Sandbox::host(sandbox::key_vars(None));
-    run_loop(&model, &scn, &registry, &mut sb, &LoopOptions::default()).await
+    run_loop(&model, &scn, &mut registry, &mut sb, &LoopOptions::default()).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn four_concurrent_mock_episodes() {
-    let registry = Arc::new(registry_for(&["bash".to_string()], None));
     let scn = Arc::new(scenario());
 
     // Baseline: one episode on its own.
     let t0 = Instant::now();
-    let _ = one_episode(registry.clone(), scn.clone()).await;
+    let _ = one_episode(scn.clone()).await;
     let single = t0.elapsed();
 
-    // Four episodes concurrently, sharing the registry.
+    // Four episodes concurrently.
     let t1 = Instant::now();
     let mut set = tokio::task::JoinSet::new();
     for _ in 0..4 {
-        let (r, s) = (registry.clone(), scn.clone());
-        set.spawn(async move { one_episode(r, s).await });
+        let s = scn.clone();
+        set.spawn(async move { one_episode(s).await });
     }
     let mut transcripts = Vec::new();
     while let Some(res) = set.join_next().await {

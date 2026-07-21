@@ -95,6 +95,52 @@ async fn call_read_returns_content() {
     bridge.teardown();
 }
 
+/// T031 / FR-043: a `tools/list_changed` notification re-fetches the tool list and the loop's
+/// refresh hook surfaces the new tool. Uses the notifying fixture server (grows `alpha` → `alpha`+
+/// `beta`), driving the exact refresh the agent loop runs each turn.
+#[tokio::test]
+#[ignore = "needs Node (tests/fixtures/notify_server.mjs)"]
+async fn tools_list_changed_refreshes_registry() {
+    use std::time::Duration;
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/notify_server.mjs");
+    let cfg = McpServerConfig {
+        name: "nf".into(),
+        transport: McpTransport::Stdio,
+        command: Some("node".into()),
+        args: vec![script.into()],
+        env: Default::default(),
+        url: None,
+        token_env: None,
+        allowed_tools: None,
+        denied_tools: None,
+    };
+    let sandbox = Sandbox::host(vec![]);
+    let bridge = McpBridge::connect(policy(cfg), &sandbox).await;
+
+    let mut reg = ToolRegistry::new();
+    bridge.register_into(&mut reg);
+    let names0: Vec<String> = reg.schemas().into_iter().map(|s| s.name).collect();
+    assert!(names0.iter().any(|n| n == "mcp__nf__alpha"), "initial set: {names0:?}");
+    assert!(!names0.iter().any(|n| n == "mcp__nf__beta"), "beta should not be present yet");
+
+    // The loop's per-turn refresh: poll for the notification, then re-register (as run_loop does).
+    let mut refreshed = false;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        if bridge.take_dirty() {
+            reg.remove_mcp_tools();
+            bridge.register_into(&mut reg);
+            refreshed = true;
+            break;
+        }
+    }
+    assert!(refreshed, "no tools/list_changed observed within budget");
+
+    let names1: Vec<String> = reg.schemas().into_iter().map(|s| s.name).collect();
+    assert!(names1.iter().any(|n| n == "mcp__nf__beta"), "beta should appear after refresh: {names1:?}");
+    bridge.teardown();
+}
+
 /// T014: `denied_tools` removes a tool from the model-facing schema (FR-039).
 #[tokio::test]
 #[ignore = "needs Node + @modelcontextprotocol/server-filesystem on PATH (MCP_FS_BIN)"]

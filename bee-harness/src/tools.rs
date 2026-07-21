@@ -154,6 +154,12 @@ impl ToolRegistry {
         self.tools.values().map(|t| t.schema()).collect()
     }
 
+    /// Drop every `mcp__…` tool. Used to rebuild the MCP set after a `tools/list_changed`
+    /// notification (004-mcp-client, FR-043) — the bridge then re-registers the current tools.
+    pub fn remove_mcp_tools(&mut self) {
+        self.tools.retain(|name, _| !name.starts_with("mcp__"));
+    }
+
     /// Execute a model-requested call. An unknown tool name yields an error result (fed back to the
     /// model), never a panic (FR-016).
     pub async fn execute(&self, call: &ToolCall, sandbox: &Sandbox) -> ToolResult {
