@@ -1,0 +1,11 @@
+[provider]
+provider = "mock"
+
+# Turn 1: call the MCP filesystem read tool on the kernel-denied secret path.
+[[provider.script]]
+tool = "mcp__fs__read_text_file"
+args = { path = "/home/ubuntu/mcpws/secrets/key.pem" }
+
+# Turn 2: report and end.
+[[provider.script]]
+text = "The read was denied by the sandbox."

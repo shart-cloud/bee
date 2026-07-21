@@ -63,6 +63,10 @@ pub struct Scenario {
     pub mode: ScoringMode,
     #[serde(default)]
     pub workdir: WorkdirSetup,
+    /// MCP client policy (004-mcp-client). Sourced from the **top-level** `[mcp]` table (a sibling of
+    /// `[scenario]`), not `[scenario.mcp]` — see [`Scenario::from_path`]. Defaults to disabled.
+    #[serde(default)]
+    pub mcp: crate::mcp::McpPolicy,
 }
 
 fn default_tools() -> Vec<String> {
@@ -72,6 +76,10 @@ fn default_tools() -> Vec<String> {
 #[derive(Deserialize)]
 struct ScenarioFile {
     scenario: Scenario,
+    /// The top-level `[mcp]` table, a sibling of `[scenario]` (research R10). Folded onto
+    /// `Scenario::mcp` in [`Scenario::from_path`] so callers see a single `Scenario`.
+    #[serde(default)]
+    mcp: Option<crate::mcp::McpPolicy>,
 }
 
 impl Scenario {
@@ -85,6 +93,10 @@ impl Scenario {
         let text = std::fs::read_to_string(path).map_err(|e| ConfigError::read(path, e))?;
         let file: ScenarioFile = toml::from_str(&text).map_err(|e| ConfigError::parse(path, e))?;
         let mut s = file.scenario;
+        // Fold the top-level `[mcp]` table (sibling of `[scenario]`) onto the scenario (research R10).
+        if let Some(mcp) = file.mcp {
+            s.mcp = mcp;
+        }
         // Resolve a relative policy_path against the scenario file's directory for portability.
         if s.policy_path.is_relative() {
             if let Some(dir) = path.parent() {
@@ -145,6 +157,8 @@ impl Scenario {
                 return Err(ConfigError::Invalid(format!("unknown tool: {t}")));
             }
         }
+        // MCP policy semantics (004-mcp-client): unique server names, transport-appropriate fields.
+        self.mcp.validate().map_err(ConfigError::Invalid)?;
         Ok(())
     }
 }
@@ -226,5 +240,26 @@ value = "FLAG{abc}"
         let body = OK.replace("turn_limit    = 5", "turn_limit    = 0");
         let p = write("zero", &body);
         assert!(matches!(Scenario::from_path(&p), Err(ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn no_mcp_section_is_disabled() {
+        // SC-027: a scenario with no `[mcp]` table has MCP off — behaves like the pre-feature harness.
+        let s = Scenario::from_path(&write("no-mcp", OK)).unwrap();
+        assert!(!s.mcp.enabled);
+        assert!(s.mcp.servers.is_empty());
+    }
+
+    #[test]
+    fn top_level_mcp_section_parses() {
+        // `[mcp]` is a sibling of `[scenario]` (research R10), folded onto the scenario.
+        let body = format!(
+            "{OK}\n[mcp]\nenabled = true\nallowed_domains = [\"*.company.com\"]\n\n\
+             [[mcp.servers]]\nname = \"fs\"\ntransport = \"stdio\"\ncommand = \"srv\"\n"
+        );
+        let s = Scenario::from_path(&write("with-mcp", &body)).unwrap();
+        assert!(s.mcp.enabled);
+        assert_eq!(s.mcp.servers.len(), 1);
+        assert_eq!(s.mcp.servers[0].name, "fs");
     }
 }

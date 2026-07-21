@@ -63,6 +63,13 @@ pub struct ReplConfig {
     /// Play the bee mascot animation once at startup (003-visual-render, Slice 2, FR-032). Opt-in via
     /// `--bee` / `BEE_MASCOT=1`; off by default.
     pub mascot: bool,
+    /// Pre-rendered `/mcp` output: configured MCP servers, their status, and the domain policy
+    /// (004-mcp-client, US10). `None` when MCP is not configured / the `mcp` feature is off.
+    pub mcp_summary: Option<String>,
+    /// Optional per-turn tool-refresh hook (004-mcp-client, FR-043): re-registers MCP tools when a
+    /// server sent `tools/list_changed`. rmcp-agnostic (a plain closure); `None` is a no-op.
+    #[allow(clippy::type_complexity)]
+    pub refresh_tools: Option<Box<dyn Fn(&mut ToolRegistry) + Send + Sync>>,
 }
 
 impl Default for ReplConfig {
@@ -77,6 +84,8 @@ impl Default for ReplConfig {
             max_retries: 3,
             policy_label: "none".to_string(),
             mascot: false,
+            mcp_summary: None,
+            refresh_tools: None,
         }
     }
 }
@@ -178,6 +187,8 @@ pub enum MetaCommand {
     Tools,
     /// `/policy` — show the active policy / enforcement mode.
     Policy,
+    /// `/mcp` — show configured MCP servers, their status, and the domain policy (004-mcp-client).
+    Mcp,
     /// `/system [text]` — show the system prompt, or replace it when text is given.
     System(Option<String>),
     /// `/history` — show recent user messages this session.
@@ -207,6 +218,7 @@ pub fn parse_meta_command(line: &str) -> Option<MetaCommand> {
         "/clear" => MetaCommand::Clear,
         "/tools" => MetaCommand::Tools,
         "/policy" => MetaCommand::Policy,
+        "/mcp" => MetaCommand::Mcp,
         "/system" => MetaCommand::System(arg),
         "/history" => MetaCommand::History,
         "/retry" => MetaCommand::Retry,
@@ -219,6 +231,7 @@ const HELP_TEXT: &str = "commands:\n  \
     /help           show this help\n  \
     /tools          list the tools the agent has\n  \
     /policy         show the active policy / enforcement mode\n  \
+    /mcp            show configured MCP servers and the domain policy\n  \
     /system [text]  show the system prompt, or replace it\n  \
     /history        show recent messages this session\n  \
     /retry          re-send your last message\n  \
@@ -341,7 +354,7 @@ pub async fn run_exchange(
     user_message: &str,
     model: &dyn Model,
     conversation: &mut Conversation,
-    registry: &ToolRegistry,
+    registry: &mut ToolRegistry,
     sandbox: &mut Sandbox,
     config: &ReplConfig,
     output: &dyn ReplOutput,
@@ -350,7 +363,6 @@ pub async fn run_exchange(
 ) -> ExchangeResult {
     conversation.push(Message::User { text: user_message.to_string() });
 
-    let schemas = registry.schemas();
     let mut turns: Vec<TranscriptTurn> = Vec::new();
     let mut audit_all: Vec<AuditEvent> = Vec::new();
     let mut model_calls = 0u32;
@@ -361,6 +373,12 @@ pub async fn run_exchange(
     for _step in 0..config.agent_turn_budget {
         // Fold in any steering the user typed since the last model call — the agent catches it now.
         drain_steering(steering, conversation, output);
+
+        // Refresh MCP tools if a server sent `tools/list_changed` (FR-043), then snapshot schemas.
+        if let Some(refresh) = &config.refresh_tools {
+            refresh(&mut *registry);
+        }
+        let schemas = registry.schemas();
 
         let turn_start = Instant::now();
         // Show a "working" indicator from the instant the call is dispatched — this covers the
@@ -691,7 +709,7 @@ fn remember(editor: &mut DefaultEditor, path: &Option<PathBuf>, line: &str) {
 /// [`ReplSession`] record when the user quits or EOF is reached.
 pub async fn run_repl(
     model: &dyn Model,
-    registry: &ToolRegistry,
+    registry: &mut ToolRegistry,
     sandbox: &mut Sandbox,
     config: &ReplConfig,
 ) -> ReplSession {
@@ -796,6 +814,9 @@ pub async fn run_repl(
                 MetaCommand::Audit => output.info(&audit_summary(&audit_trail)),
                 MetaCommand::Tools => output.info(&tools_summary(registry)),
                 MetaCommand::Policy => output.info(&format!("policy: {}", config.policy_label)),
+                MetaCommand::Mcp => output.info(
+                    config.mcp_summary.as_deref().unwrap_or("MCP: not configured"),
+                ),
                 MetaCommand::System(None) => {
                     output.info(&format!("system prompt:\n{}", conversation.system));
                 }
@@ -1002,13 +1023,13 @@ mod tests {
     }
 
     async fn exchange(model: &dyn Model, config: &ReplConfig) -> (ExchangeResult, Collector) {
-        let registry = registry_for(&["bash".to_string(), "read_file".to_string()], None);
+        let mut registry = registry_for(&["bash".to_string(), "read_file".to_string()], None);
         let mut sb = host_sandbox();
         let mut convo = Conversation { system: config.system_prompt.clone(), messages: Vec::new() };
         let out = Collector::default();
         let steering = empty_steering();
         let res = run_exchange(
-            "hello", model, &mut convo, &registry, &mut sb, config, &out, &steering, None,
+            "hello", model, &mut convo, &mut registry, &mut sb, config, &out, &steering, None,
         )
         .await;
         (res, out)
@@ -1078,7 +1099,7 @@ mod tests {
         // A steering message queued before the exchange starts must be injected as a user turn ahead
         // of the model call, and echoed to the user.
         let model = MockModel::scripted(vec![Turn::text("ack")]);
-        let registry = registry_for(&["bash".to_string()], None);
+        let mut registry = registry_for(&["bash".to_string()], None);
         let mut sb = host_sandbox();
         let mut convo = Conversation { system: "sys".into(), messages: Vec::new() };
         let out = Collector::default();
@@ -1086,7 +1107,7 @@ mod tests {
         steering.lock().unwrap().push_back("actually, focus on tests".to_string());
 
         let res = run_exchange(
-            "start", &model, &mut convo, &registry, &mut sb, &ReplConfig::default(), &out, &steering,
+            "start", &model, &mut convo, &mut registry, &mut sb, &ReplConfig::default(), &out, &steering,
             None,
         )
         .await;
@@ -1124,13 +1145,13 @@ mod tests {
                 Turn::text("second")
             }
         });
-        let registry = registry_for(&["bash".to_string()], None);
+        let mut registry = registry_for(&["bash".to_string()], None);
         let mut sb = host_sandbox();
         let mut convo = Conversation { system: "sys".into(), messages: Vec::new() };
         let out = Collector::default();
 
         let res = run_exchange(
-            "go", &model, &mut convo, &registry, &mut sb, &ReplConfig::default(), &out, &steering, None,
+            "go", &model, &mut convo, &mut registry, &mut sb, &ReplConfig::default(), &out, &steering, None,
         )
         .await;
 
@@ -1155,6 +1176,7 @@ mod tests {
         assert_eq!(parse_meta_command("/clear"), Some(MetaCommand::Clear));
         assert_eq!(parse_meta_command("/tools"), Some(MetaCommand::Tools));
         assert_eq!(parse_meta_command("/policy"), Some(MetaCommand::Policy));
+        assert_eq!(parse_meta_command("/mcp"), Some(MetaCommand::Mcp));
         assert_eq!(parse_meta_command("/history"), Some(MetaCommand::History));
         assert_eq!(parse_meta_command("/retry"), Some(MetaCommand::Retry));
         assert_eq!(parse_meta_command("/system"), Some(MetaCommand::System(None)));

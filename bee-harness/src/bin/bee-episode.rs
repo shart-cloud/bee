@@ -128,6 +128,7 @@ impl Args {
             tools: self.tools.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
             mode: Default::default(),
             workdir: Default::default(),
+            mcp: Default::default(),
         })
     }
 }

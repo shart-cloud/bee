@@ -30,6 +30,12 @@ pub struct LoopOptions {
     /// Optional metrics recorder — one [`crate::metrics::CallRecord`] per model call. `None` (the
     /// default, and what host tests use) records nothing.
     pub metrics: Option<Recorder>,
+    /// Optional per-turn tool-refresh hook (004-mcp-client, FR-043). Called at the top of each turn
+    /// with `&mut registry`; the MCP path installs a closure that re-registers tools when an MCP
+    /// server sent `tools/list_changed`. rmcp-agnostic (a plain closure) so non-MCP callers are
+    /// unaffected. `None` (the default) is a no-op.
+    #[allow(clippy::type_complexity)]
+    pub refresh_tools: Option<Box<dyn Fn(&mut ToolRegistry) + Send + Sync>>,
 }
 
 impl Default for LoopOptions {
@@ -38,6 +44,7 @@ impl Default for LoopOptions {
             max_retries: 5,
             progress: None,
             metrics: None,
+            refresh_tools: None,
         }
     }
 }
@@ -128,7 +135,7 @@ async fn complete_with_retry(
 pub async fn run_loop(
     model: &dyn Model,
     scenario: &Scenario,
-    registry: &ToolRegistry,
+    registry: &mut ToolRegistry,
     sandbox: &mut Sandbox,
     opts: &LoopOptions,
 ) -> EpisodeTranscript {
@@ -147,7 +154,6 @@ pub async fn run_loop(
     );
 
     let mut convo = Conversation::new(&scenario.system_prompt, &scenario.task);
-    let schemas = registry.schemas();
 
     let mut turns: Vec<TranscriptTurn> = Vec::new();
     let mut audit_trail = Vec::new();
@@ -169,6 +175,13 @@ pub async fn run_loop(
             status = EpisodeStatus::Timeout;
             break;
         }
+
+        // Refresh MCP tools if a server sent `tools/list_changed` since last turn (FR-043), then take
+        // a fresh schema snapshot for this turn.
+        if let Some(refresh) = &opts.refresh_tools {
+            refresh(registry);
+        }
+        let schemas = registry.schemas();
 
         let call_start = Instant::now();
         let turn =
@@ -440,10 +453,25 @@ pub async fn run_episode(
     provider_key_env: Option<&str>,
     progress: Option<ProgressSink>,
 ) -> EpisodeTranscript {
+    // Fail closed (Constitution I): a scenario that asks for MCP but a binary built without the
+    // `mcp` feature cannot provide it — refuse with a clear diagnostic rather than silently ignore.
+    #[cfg(not(feature = "mcp"))]
+    if scenario.mcp.enabled {
+        return infra_error(
+            scenario,
+            model,
+            "scenario enables [mcp] but bee-harness was built without --features mcp".to_string(),
+        );
+    }
+
     let flag = scenario.workdir.flag.as_ref().map(|f| f.value.as_str());
-    let registry = tools::registry_for(&scenario.tools, flag);
-    let strip_env = sandbox::key_vars(provider_key_env);
-    let opts = LoopOptions {
+    let mut registry = tools::registry_for(&scenario.tools, flag);
+    // Strip the provider key vars plus any configured MCP `token_env` names from every tool child
+    // (FR-018/FR-041), so an MCP Bearer token never leaks into a sandboxed stdio server's env.
+    let mut strip_env = sandbox::key_vars(provider_key_env);
+    strip_env.extend(scenario.mcp.token_env_names());
+    #[cfg_attr(not(feature = "mcp"), allow(unused_mut))]
+    let mut opts = LoopOptions {
         progress,
         metrics: Recorder::new("episode", format!("episode:{}:{}", scenario.id, std::process::id())),
         ..LoopOptions::default()
@@ -461,7 +489,32 @@ pub async fn run_episode(
     #[cfg(not(feature = "enforce"))]
     let mut sandbox = Sandbox::host(strip_env);
 
-    let mut transcript = run_loop(model, scenario, &registry, &mut sandbox, &opts).await;
+    // Connect MCP servers (if any) once the sandbox exists, register their tools alongside the
+    // built-ins, and install the per-turn refresh hook (FR-043). The bridge (Arc so the hook can
+    // hold a clone) owns the stdio children; dropping it at the end kills them (FR-034/42).
+    #[cfg(feature = "mcp")]
+    let bridge = {
+        let b = std::sync::Arc::new(crate::mcp::McpBridge::connect(scenario.mcp.clone(), &sandbox).await);
+        b.register_into(&mut registry);
+        let hook = b.clone();
+        opts.refresh_tools = Some(Box::new(move |reg: &mut ToolRegistry| {
+            if hook.take_dirty() {
+                reg.remove_mcp_tools();
+                hook.register_into(reg);
+            }
+        }));
+        b
+    };
+
+    let mut transcript = run_loop(model, scenario, &mut registry, &mut sandbox, &opts).await;
+
+    // Drop the refresh hook (its bridge clone) then the bridge, killing the MCP children (they live in
+    // the scope cgroup) before the scope itself is torn down.
+    #[cfg(feature = "mcp")]
+    {
+        opts.refresh_tools = None;
+        drop(bridge);
+    }
     sandbox.teardown();
 
     // CTF episodes carry a score derived from the audit trail (US3).
@@ -507,4 +560,120 @@ fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()
+}
+
+/// R3 cgroup-join spike (004-mcp-client, T016). **Constitution III gate**: proves a stdio MCP server
+/// child spawned through rmcp's `TokioChildProcess` actually joins the episode's scope cgroup — i.e.
+/// rmcp's `process-wrap` wrapper does NOT clobber bee's `pre_exec` cgroup-join closure. Source
+/// analysis says a wrapper-less `CommandWrap` preserves the inner command's `pre_exec` (research
+/// R3/§3.2); this test is the empirical proof.
+///
+/// Requires `--features enforce,mcp`, a BPF-LSM kernel, and root (scope creation + eBPF load).
+/// `#[ignore]` so it only runs when invoked explicitly on the VM:
+/// `sudo <testbin> --ignored --exact episode::mcp_cgroup_spike::child_joins_scope_cgroup`.
+#[cfg(all(test, feature = "enforce", feature = "mcp"))]
+mod mcp_cgroup_spike {
+    use super::*;
+    use crate::mcp::config::{McpServerConfig, McpTransport};
+
+    /// Read `/proc/<pid>/cgroup` (cgroup v2: `0::<relpath>`) and resolve the cgroup dir's inode.
+    fn child_cgroup_id(pid: u32) -> u64 {
+        let raw = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+            .unwrap_or_else(|e| panic!("read /proc/{pid}/cgroup: {e}"));
+        let rel = raw
+            .lines()
+            .find_map(|l| l.strip_prefix("0::"))
+            .unwrap_or_else(|| panic!("no cgroup-v2 line in: {raw:?}"))
+            .trim();
+        let full = format!("/sys/fs/cgroup{rel}");
+        bee_userspace::cgroup::cgroup_id(std::path::Path::new(&full))
+            .unwrap_or_else(|e| panic!("cgroup_id({full}): {e}"))
+    }
+
+    fn spike_scenario() -> (Scenario, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("bee-mcp-spike-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let policy = dir.join("spike.policy.toml");
+        // hello-style permissive policy: no exec allowlist (so `sleep` runs), one write grant.
+        std::fs::write(
+            &policy,
+            "[policy]\nname = \"mcp-spike\"\nmode = \"enforce\"\n\n[policy.filesystem]\n\"/tmp\" = \"write\"\n",
+        )
+        .unwrap();
+        let scn = Scenario {
+            id: "mcp-spike".into(),
+            policy_path: policy,
+            system_prompt: "spike".into(),
+            task: "spike".into(),
+            turn_limit: 1,
+            timeout_secs: 30,
+            tools: Vec::new(),
+            mode: Default::default(),
+            workdir: Default::default(),
+            mcp: Default::default(),
+        };
+        (scn, dir)
+    }
+
+    // `#[tokio::test]` (current-thread + enable_all) provides the reactor that tokio process
+    // spawning requires.
+    #[tokio::test]
+    #[ignore = "VM + root only: --features enforce,mcp on a BPF-LSM kernel"]
+    async fn child_joins_scope_cgroup() {
+        let (scenario, tmp) = spike_scenario();
+        let sandbox = build_enforced_sandbox(&scenario, sandbox::key_vars(None))
+            .expect("build enforced sandbox (need root + BPF-LSM)");
+
+        let scope_cgid = match &sandbox {
+            Sandbox::Enforced(e) => e.scope.cgroup_id,
+            _ => panic!("expected an enforced sandbox"),
+        };
+        assert_ne!(scope_cgid, 0, "scope cgroup id must be non-zero");
+
+        let cfg = McpServerConfig {
+            name: "spike".into(),
+            transport: McpTransport::Stdio,
+            command: Some("sleep".into()),
+            args: vec!["10".into()],
+            env: Default::default(),
+            url: None,
+            token_env: None,
+            allowed_tools: None,
+            denied_tools: None,
+        };
+
+        // Control: the raw production spawn primitive (tool_command → tokio) must join the scope.
+        {
+            let raw = sandbox.tool_command("sleep", &["10".into()]).expect("tool_command");
+            let mut raw = tokio::process::Command::from(raw);
+            raw.kill_on_drop(true);
+            let mut child = raw.spawn().expect("spawn raw control child");
+            let pid = child.id().expect("control pid");
+            assert_eq!(
+                child_cgroup_id(pid),
+                scope_cgid,
+                "CONTROL: raw tool_command child is not in the scope cgroup — the baseline is broken"
+            );
+            let _ = child.start_kill();
+        }
+
+        // The real question: does the rmcp TokioChildProcess path preserve the cgroup-join pre_exec?
+        {
+            let proc = crate::mcp::transport::spawn_stdio(&sandbox, &cfg)
+                .expect("spawn_stdio via TokioChildProcess");
+            let pid = proc.id().expect("rmcp child pid");
+            assert_eq!(
+                child_cgroup_id(pid),
+                scope_cgid,
+                "R3 FAIL: the rmcp TokioChildProcess child is NOT in the scope cgroup — \
+                 process-wrap clobbered bee's pre_exec; use the raw-pipe fallback (§3.3)"
+            );
+            drop(proc);
+        }
+
+        if let Sandbox::Enforced(e) = &sandbox {
+            let _ = e.scope.teardown();
+        }
+        let _ = std::fs::remove_dir_all(tmp);
+    }
 }

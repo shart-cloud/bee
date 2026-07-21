@@ -1,0 +1,51 @@
+# Example scenario: both a sandboxed stdio server and domain-gated remote servers.
+#
+# Combines the two enforcement models in one episode:
+#   - "filesystem" (stdio) is a sandboxed child; the kernel enforces its I/O.
+#   - "github" (sse) and "database" (streamable_http) are remote; the domain
+#     allowlist gates them. admin.company.com is explicitly denied even though it
+#     matches the *.company.com wildcard (denied wins — see mcp-policy.md §3).
+
+[scenario]
+id            = "mixed"
+policy_path   = "mixed.policy.toml"
+system_prompt = "You are a coding agent operating in a sandbox. Use tools to accomplish the task, then stop."
+task          = "Use the filesystem, github, and database MCP servers as needed to complete the audit."
+turn_limit    = 12
+timeout_secs  = 180
+tools         = ["bash", "read_file", "list_directory"]
+
+[mcp]
+enabled = true
+allowed_domains = ["mcp.internal.dev", "*.company.com"]
+denied_domains  = ["admin.company.com"]   # excluded from the wildcard allow
+max_servers = 5
+tool_timeout_secs = 30
+allow_dynamic_connect = false
+
+# --- Local, sandboxed ---
+[[mcp.servers]]
+name = "filesystem"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+env = { WORKSPACE = "/workspace" }
+denied_tools = ["write_file"]
+
+# --- Remote, allowed by exact match ---
+[[mcp.servers]]
+name = "github"
+transport = "sse"
+url = "https://mcp.internal.dev/github"
+token_env = "GITHUB_MCP_TOKEN"
+allowed_tools = ["search_repositories", "get_file_contents"]
+
+# --- Remote, allowed by wildcard (*.company.com) ---
+[[mcp.servers]]
+name = "database"
+transport = "streamable_http"
+url = "https://db.company.com/mcp"
+token_env = "DB_MCP_TOKEN"
+
+# NOTE: a server at https://admin.company.com/mcp would be REFUSED at connection
+# time — denied_domains takes precedence over the *.company.com wildcard allow.

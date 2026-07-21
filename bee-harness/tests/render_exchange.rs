@@ -50,7 +50,7 @@ async fn agent_render_call_draws_widget_and_summarizes_to_model() {
         Turn::text("Rendered the chart."),
     ]);
 
-    let registry = registry_for(&["render".to_string()], None);
+    let mut registry = registry_for(&["render".to_string()], None);
     let mut sb = Sandbox::host(sandbox::key_vars(None));
     let mut convo = Conversation { system: String::new(), messages: Vec::new() };
     let out = WidgetCapture::default();
@@ -61,7 +61,7 @@ async fn agent_render_call_draws_widget_and_summarizes_to_model() {
         "show me the file sizes",
         &model,
         &mut convo,
-        &registry,
+        &mut registry,
         &mut sb,
         &config,
         &out,

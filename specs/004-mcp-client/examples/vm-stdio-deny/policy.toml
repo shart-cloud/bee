@@ -1,0 +1,7 @@
+# Deny only the secrets subpath; reads elsewhere default-allow so node can run.
+[policy]
+name = "mcp-deny-secrets"
+mode = "enforce"
+
+[policy.filesystem]
+"/home/ubuntu/mcpws/secrets" = "deny"
