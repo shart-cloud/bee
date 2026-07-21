@@ -12,7 +12,7 @@ use ratatui::widgets::{
     Widget,
 };
 
-use crate::render_spec::{Direction, DotState, RenderSpec};
+use crate::render_spec::{Direction, DotState, RenderSpec, SpriteSpec};
 use crate::viz::grid::{dot_cell, Status};
 use crate::viz::palette;
 use crate::viz::sprite_render::{detect_color_mode, ColorMode};
@@ -402,6 +402,48 @@ fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
                     None => rect,
                 };
                 render_into(&cell.content, inner, buf);
+            }
+        }
+    }
+}
+
+/// Composite a [`SpriteSpec`] into `area` of a truecolor `Buffer` using vertical half-blocks
+/// (008-grid-tui, T008 / research D8): two stacked pixels per cell — `fg` = the lower pixel, `bg` =
+/// the upper pixel (`▄`), or `▀` when only the top is opaque.
+///
+/// This is the path the **full-screen TUI** uses to draw sprites *inside* grid cells and panels,
+/// where the real backend carries a per-cell background. It deliberately is **not** wired into the
+/// inline `render_into` placeholder: that path serializes through [`buffer_to_ansi`], which emits only
+/// a foreground SGR, so a background would be lost. A transparent half leaves the buffer's existing
+/// content in that cell.
+pub fn rasterize_sprite_into(spec: &SpriteSpec, area: Rect, buf: &mut Buffer) {
+    let rows = spec.height.div_ceil(2);
+    for r in 0..rows {
+        let y = area.top() + r;
+        if y >= area.bottom() {
+            break;
+        }
+        for x in 0..spec.width {
+            let cx = area.left() + x;
+            if cx >= area.right() {
+                break;
+            }
+            let top = spec.pixel(x, 2 * r);
+            let bottom = spec.pixel(x, 2 * r + 1);
+            let cell = &mut buf[(cx, y)];
+            match (top, bottom) {
+                (None, None) => {}
+                (Some(t), Some(b)) => {
+                    cell.set_symbol("▄")
+                        .set_fg(Color::Rgb(b.0, b.1, b.2))
+                        .set_bg(Color::Rgb(t.0, t.1, t.2));
+                }
+                (Some(t), None) => {
+                    cell.set_symbol("▀").set_fg(Color::Rgb(t.0, t.1, t.2));
+                }
+                (None, Some(b)) => {
+                    cell.set_symbol("▄").set_fg(Color::Rgb(b.0, b.1, b.2));
+                }
             }
         }
     }

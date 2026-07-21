@@ -103,6 +103,39 @@ fn grid_counts_elements_and_nesting() {
     assert!(spec_height(&grid, 40) >= 1);
 }
 
+#[test]
+fn sprite_rasterizes_into_a_buffer_cell() {
+    // 008-grid-tui T008: a 2×2 sprite → one half-block row of 2 cells. Top-left over bottom-left is a
+    // `▄` with fg=bottom, bg=top; top-right with a transparent bottom is a `▀` with fg=top.
+    use bee_harness::render_spec::SpriteSpec;
+    use bee_harness::viz::rasterize_sprite_into;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Color;
+
+    let red = Some((255, 0, 0));
+    let green = Some((0, 255, 0));
+    let blue = Some((0, 0, 255));
+    let spec = SpriteSpec {
+        width: 2,
+        height: 2,
+        // row-major: (0,0)=red (0,1)=green  /  (1,0)=blue (1,1)=transparent
+        pixels: vec![red, green, blue, None],
+    };
+    let area = Rect::new(0, 0, 2, 1);
+    let mut buf = Buffer::empty(area);
+    rasterize_sprite_into(&spec, area, &mut buf);
+
+    let left = &buf[(0, 0)];
+    assert_eq!(left.symbol(), "▄");
+    assert_eq!(left.fg, Color::Rgb(0, 0, 255)); // bottom-left = blue
+    assert_eq!(left.bg, Color::Rgb(255, 0, 0)); // top-left = red
+
+    let right = &buf[(1, 0)];
+    assert_eq!(right.symbol(), "▀"); // only the top pixel is opaque
+    assert_eq!(right.fg, Color::Rgb(0, 255, 0)); // top-right = green
+}
+
 // --- Rhai surface (through the real sandboxed RenderTool) ------------------------------------------
 
 async fn run(script: &str) -> bee_harness::tools::ToolResult {

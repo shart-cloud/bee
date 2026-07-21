@@ -25,8 +25,8 @@ tests in each story before/with implementation.
 
 **Purpose**: dependencies and empty module structure per plan.md.
 
-- [ ] T001 [P] In `bee-harness/Cargo.toml`, enable ratatui's `crossterm` backend feature; add `crossterm = "0.28"` (`event-stream`), `color-eyre = "0.6"`, `textwrap`; add `insta` as a dev-dependency; add a `tui` cargo feature that gates the full-screen front-end (research D1/D12).
-- [ ] T002 [P] Scaffold empty module trees `bee-harness/src/session/{mod.rs,event.rs}` and `bee-harness/src/tui/{mod,app,message,view,panels,chat,input,theme_bridge,term}.rs` with stubs, and register them in `bee-harness/src/lib.rs` (behind the `tui` feature where appropriate).
+- [X] T001 [P] In `bee-harness/Cargo.toml`, enable ratatui's `crossterm` backend feature; add `crossterm = "0.28"` (`event-stream`), `color-eyre = "0.6"`, `textwrap`; add `insta` as a dev-dependency; add a `tui` cargo feature that gates the full-screen front-end (research D1/D12).
+- [X] T002 [P] Scaffold empty module trees `bee-harness/src/session/{mod.rs,event.rs}` and `bee-harness/src/tui/{mod,app,message,view,panels,chat,input,theme_bridge,term}.rs` with stubs, and register them in `bee-harness/src/lib.rs` (behind the `tui` feature where appropriate).
 
 ---
 
@@ -36,12 +36,12 @@ tests in each story before/with implementation.
 
 **⚠️ CRITICAL**: no user story can begin until this phase is complete.
 
-- [ ] T003 [P] Add pure-serde `RenderTarget` (`Inline` | `Panel(PanelId)`) in `bee-harness/src/render_spec.rs` (data-model.md).
-- [ ] T004 Define `SessionEvent` enum (`UserEcho`, `Token`, `ToolCall`, `ToolResult{render_spec,target}`, `PanelUpdate`, `Denial`, `TurnStarted`, `TurnDone`) in `bee-harness/src/session/event.rs` (depends on T003).
+- [X] T003 [P] Add pure-serde `RenderTarget` (`Inline` | `Panel(PanelId)`) in `bee-harness/src/render_spec.rs` (data-model.md).
+- [X] T004 Define `SessionEvent` enum (`UserEcho`, `Token`, `ToolCall`, `ToolResult{render_spec,target}`, `PanelUpdate`, `Denial`, `TurnStarted`, `TurnDone`) in `bee-harness/src/session/event.rs` (depends on T003).
 - [ ] T005 Extract the provider/tool/transcript turn loop out of `bee-harness/src/repl.rs` into `session::SessionEngine` (in `bee-harness/src/session/mod.rs`), emitting `SessionEvent`s over a channel (depends on T004).
 - [ ] T006 Rewire the inline REPL in `bee-harness/src/repl.rs` to consume `SessionEngine` events, preserving byte-for-byte output parity (fallback path) (depends on T005).
-- [ ] T007 [P] Add the theme→ratatui `Style` bridge in `bee-harness/src/tui/theme_bridge.rs`, reusing the color helpers in `viz::buffer_render`; it MUST return an **unstyled** `Style` (no fg/bg) when `NO_COLOR` is set, so the full-screen path stays legible in monochrome exactly like the inline path (research D1; **FR-014, SC-005** — resolves analysis G2).
-- [ ] T008 [P] Add a truecolor sprite→`Buffer` rasterizer (half-block cells with fg+bg) in `bee-harness/src/viz/buffer_render.rs` so `RenderSpec::Sprite` composites into a sub-rect, plus a unit test that a sprite renders inside a grid cell (research D8; lifts the M1 placeholder).
+- [X] T007 [P] Add the theme→ratatui `Style` bridge in `bee-harness/src/tui/theme_bridge.rs`, reusing the color helpers in `viz::buffer_render`; it MUST return an **unstyled** `Style` (no fg/bg) when `NO_COLOR` is set, so the full-screen path stays legible in monochrome exactly like the inline path (research D1; **FR-014, SC-005** — resolves analysis G2).
+- [X] T008 [P] Add a truecolor sprite→`Buffer` rasterizer (half-block cells with fg+bg) in `bee-harness/src/viz/buffer_render.rs` so `RenderSpec::Sprite` composites into a sub-rect, plus a unit test that a sprite renders inside a grid cell (research D8; lifts the M1 placeholder).
 
 **Checkpoint**: shared core ready — inline REPL still works via `SessionEngine`; full-screen stories can begin.
 

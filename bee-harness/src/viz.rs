@@ -13,7 +13,7 @@ pub mod sprite_render;
 pub mod theme;
 pub mod themes;
 
-pub use buffer_render::{render_to_ansi, spec_height, terminal_dims};
+pub use buffer_render::{rasterize_sprite_into, render_to_ansi, spec_height, terminal_dims};
 pub use grid::{status_grid, Status};
 pub use sprite_render::{render_frame, ColorMode};
 pub use theme::{active_theme, init_theme, Role, Theme, ThemeColor};

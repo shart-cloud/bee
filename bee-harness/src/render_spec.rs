@@ -83,6 +83,18 @@ pub enum Direction {
     Horizontal,
 }
 
+/// Where a rendered spec is sent (008-grid-tui): the chat flow, or a named persistent panel. Pure
+/// serde so the render tool result and the episode transcript can carry it (contracts/rhai-panel-api).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "target", rename_all = "snake_case")]
+pub enum RenderTarget {
+    /// Flows inline into the conversation — the default and today's behavior.
+    #[default]
+    Inline,
+    /// A named, persistent, model-owned panel; re-rendering the same `id` replaces it in place.
+    Panel { id: String },
+}
+
 /// A pixel-art sprite (003-visual-render, Slice 2, FR-028): a `width × height` grid of RGB pixels,
 /// row-major, `None` = transparent. Rendered via the half-block technique (`viz::sprite_render`) to
 /// `⌈height/2⌉` terminal rows. Like every [`RenderSpec`] member it is pure serde (no ratatui/rhai) so
@@ -391,6 +403,27 @@ impl RenderSpec {
             } => {
                 format!("a {rows}×{cols} grid with {} cells", cells.len())
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_target_serde_roundtrips() {
+        // Default is Inline (008-grid-tui); Panel carries its id. Both survive a serde round-trip.
+        assert_eq!(RenderTarget::default(), RenderTarget::Inline);
+        for t in [
+            RenderTarget::Inline,
+            RenderTarget::Panel {
+                id: "metrics".into(),
+            },
+        ] {
+            let json = serde_json::to_string(&t).expect("serialize");
+            let back: RenderTarget = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(t, back);
         }
     }
 }
