@@ -33,6 +33,10 @@ available — only these drawing functions:\n\
   text(content) -> t;  t.style(name);  t.bold();  t.dim()\n\
   ascii_art([lines]);  separator()\n\
   vsplit() / hsplit() -> layout;  layout.add(widget)   (max nesting depth 3)\n\
+  palette() -> p;  p.set(\"K\", \"#1A1A1A\");  p.set(\".\", \"transparent\")\n\
+  sprite(w, h, p) -> s;  s.paint([\"..KK..\", ...]);  s.set(x, y, color);  s.fill(color)   (max 32x32)\n\
+  animation(ms) -> a;  a.add(sprite);  a.bounce(true);  a.cycles(n)   (max 16 frames, 50-1000ms)\n\
+  bee_sprite();  bee_animation()   // the project mascot\n\
   render(widget)   // commit exactly one widget at the end\n\
 Colors: honey, pollen, sting, smoke, royal (or basic ANSI names). Caps: <=500 total elements. \
 The model receives a text summary of what was drawn, not the pixels.";
@@ -107,6 +111,12 @@ impl Tool for RenderTool {
                     None => ToolResult::error("render: script produced no visualization"),
                     Some(spec) => {
                         let mut summary = format!("Rendered {}.", spec.summary_noun());
+                        // M1: a fully-transparent sprite renders as blank rows — say so.
+                        if let crate::render_spec::RenderSpec::Sprite { spec: s } = &spec {
+                            if s.is_fully_transparent() {
+                                summary.push_str(" (note: sprite is fully transparent)");
+                            }
+                        }
                         if render_calls > 1 {
                             summary.push_str(&format!(
                                 " (note: {} earlier render(s) discarded; showing the last)",

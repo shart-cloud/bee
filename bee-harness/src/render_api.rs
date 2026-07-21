@@ -5,14 +5,23 @@
 //! (contracts/rhai-api.md). Structural caps (nesting ≤ 3, ≤ 500 elements) are enforced at commit and
 //! surfaced as script errors (research D6).
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use rhai::{Array, Dynamic, Engine, EvalAltResult};
 
-use crate::render_spec::{Bar, Direction, Dot, DotState, Point, RenderSpec, Row, Series};
+use crate::render_spec::{
+    AnimationSpec, Bar, Direction, Dot, DotState, Point, RenderSpec, Row, Series, SpriteSpec,
+};
 
 const MAX_NESTING: usize = 3;
 const MAX_ELEMENTS: usize = 500;
+/// Max sprite edge in pixels (Slice 2, FR-028).
+const MAX_SPRITE_DIM: i64 = 32;
+/// Max frames per animation (Slice 2, FR-029).
+const MAX_FRAMES: usize = 16;
+/// Max palette entries (Slice 2, contracts/sprite-api.md).
+const MAX_PALETTE: usize = 32;
 
 /// The `Clone + Send`-able accumulator pushed into a render evaluation. Holds the last committed
 /// widget and how many `render()` calls the script made (for the discarded-render note).
@@ -195,6 +204,66 @@ impl LayoutBuilder {
     }
 }
 
+/// Builder behind `palette` (Slice 2, FR-028): a char→color map (`None` = transparent).
+#[derive(Clone, Default)]
+pub struct PaletteBuilder {
+    map: HashMap<char, Option<(u8, u8, u8)>>,
+}
+
+/// Builder behind `sprite` (Slice 2, FR-028): a `width × height` pixel canvas painted from a palette.
+#[derive(Clone)]
+pub struct SpriteBuilder {
+    width: u16,
+    height: u16,
+    palette: HashMap<char, Option<(u8, u8, u8)>>,
+    pixels: Vec<Option<(u8, u8, u8)>>,
+}
+
+impl SpriteBuilder {
+    fn to_spec(&self) -> SpriteSpec {
+        SpriteSpec { width: self.width, height: self.height, pixels: self.pixels.clone() }
+    }
+}
+
+/// Builder behind `animation` (Slice 2, FR-029).
+#[derive(Clone)]
+pub struct AnimationBuilder {
+    interval_ms: u64,
+    frames: Vec<SpriteSpec>,
+    bounce: bool,
+    cycles: u32,
+}
+
+impl AnimationBuilder {
+    fn to_spec(&self) -> AnimationSpec {
+        AnimationSpec {
+            frames: self.frames.clone(),
+            interval_ms: self.interval_ms,
+            bounce: self.bounce,
+            cycles: self.cycles,
+        }
+    }
+}
+
+/// Parse `"#RRGGBB"` or `"transparent"` to an optional RGB pixel; a bad value is a script error.
+fn parse_color(s: &str) -> Result<Option<(u8, u8, u8)>, Box<EvalAltResult>> {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("transparent") {
+        return Ok(None);
+    }
+    let h = s.strip_prefix('#').unwrap_or(s);
+    if h.len() == 6 {
+        if let (Ok(r), Ok(g), Ok(b)) = (
+            u8::from_str_radix(&h[0..2], 16),
+            u8::from_str_radix(&h[2..4], 16),
+            u8::from_str_radix(&h[4..6], 16),
+        ) {
+            return Ok(Some((r, g, b)));
+        }
+    }
+    Err(format!("render: bad color {s:?} (want #RRGGBB or \"transparent\")").into())
+}
+
 /// Convert a Rhai `Array` of ints to `Vec<u64>` (negatives clamped to 0).
 fn array_to_u64(a: Array) -> Vec<u64> {
     a.into_iter().map(|d| d.as_int().unwrap_or(0).max(0) as u64).collect()
@@ -228,7 +297,25 @@ fn dynamic_to_spec(d: Dynamic) -> Result<RenderSpec, Box<EvalAltResult>> {
     if d.is::<LayoutBuilder>() {
         return Ok(d.cast::<LayoutBuilder>().to_spec());
     }
+    if d.is::<SpriteBuilder>() {
+        return Ok(RenderSpec::Sprite { spec: d.cast::<SpriteBuilder>().to_spec() });
+    }
+    if d.is::<AnimationBuilder>() {
+        return Ok(RenderSpec::Animation { spec: d.cast::<AnimationBuilder>().to_spec() });
+    }
     Err("render: value is not a renderable widget".into())
+}
+
+/// A layout is a single static render, so an animation added to one collapses to its first frame
+/// (contracts/sprite-api.md).
+fn flatten_for_layout(spec: RenderSpec) -> RenderSpec {
+    match spec {
+        RenderSpec::Animation { spec: a } => match a.frames.into_iter().next() {
+            Some(frame) => RenderSpec::Sprite { spec: frame },
+            None => RenderSpec::Separator,
+        },
+        other => other,
+    }
 }
 
 /// Validate the structural caps (research D6): nesting ≤ 3, total elements ≤ 500.
@@ -338,8 +425,101 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
         children: Vec::new(),
     });
     engine.register_fn("add", |l: &mut LayoutBuilder, widget: Dynamic| -> Result<(), Box<EvalAltResult>> {
-        l.children.push(dynamic_to_spec(widget)?);
+        l.children.push(flatten_for_layout(dynamic_to_spec(widget)?));
         Ok(())
+    });
+
+    // --- Sprites & animation (Slice 2) ---
+    engine.register_type_with_name::<PaletteBuilder>("Palette");
+    engine.register_type_with_name::<SpriteBuilder>("Sprite");
+    engine.register_type_with_name::<AnimationBuilder>("Animation");
+
+    engine.register_fn("palette", PaletteBuilder::default);
+    engine.register_fn(
+        "set",
+        |p: &mut PaletteBuilder, key: String, color: String| -> Result<(), Box<EvalAltResult>> {
+            let c = key
+                .chars()
+                .next()
+                .ok_or::<Box<EvalAltResult>>("render: empty palette key".into())?;
+            if p.map.len() >= MAX_PALETTE && !p.map.contains_key(&c) {
+                return Err(format!("render: palette exceeds {MAX_PALETTE} entries").into());
+            }
+            p.map.insert(c, parse_color(&color)?);
+            Ok(())
+        },
+    );
+    engine.register_fn(
+        "sprite",
+        |w: i64, h: i64, pal: PaletteBuilder| -> Result<SpriteBuilder, Box<EvalAltResult>> {
+            if !(1..=MAX_SPRITE_DIM).contains(&w) || !(1..=MAX_SPRITE_DIM).contains(&h) {
+                return Err(format!("render: sprite dimensions must be 1..={MAX_SPRITE_DIM}").into());
+            }
+            Ok(SpriteBuilder {
+                width: w as u16,
+                height: h as u16,
+                palette: pal.map,
+                pixels: vec![None; (w * h) as usize],
+            })
+        },
+    );
+    engine.register_fn("paint", |s: &mut SpriteBuilder, rows: Array| {
+        for (y, row) in rows.into_iter().enumerate() {
+            if y >= s.height as usize {
+                break;
+            }
+            let line = row.into_string().unwrap_or_default();
+            for (x, ch) in line.chars().enumerate() {
+                if x >= s.width as usize {
+                    break;
+                }
+                s.pixels[y * s.width as usize + x] = s.palette.get(&ch).copied().flatten();
+            }
+        }
+    });
+    engine.register_fn(
+        "set",
+        |s: &mut SpriteBuilder, x: i64, y: i64, color: String| -> Result<(), Box<EvalAltResult>> {
+            if x >= 0 && y >= 0 && (x as u16) < s.width && (y as u16) < s.height {
+                s.pixels[y as usize * s.width as usize + x as usize] = parse_color(&color)?;
+            }
+            Ok(())
+        },
+    );
+    engine.register_fn("fill", |s: &mut SpriteBuilder, color: String| -> Result<(), Box<EvalAltResult>> {
+        let c = parse_color(&color)?;
+        s.pixels.iter_mut().for_each(|p| *p = c);
+        Ok(())
+    });
+    engine.register_fn("animation", |ms: i64| AnimationBuilder {
+        interval_ms: ms.clamp(50, 1000) as u64,
+        frames: Vec::new(),
+        bounce: false,
+        cycles: 1,
+    });
+    engine.register_fn(
+        "add",
+        |a: &mut AnimationBuilder, sprite: SpriteBuilder| -> Result<(), Box<EvalAltResult>> {
+            if a.frames.len() >= MAX_FRAMES {
+                return Err(format!("render: animation exceeds {MAX_FRAMES} frames").into());
+            }
+            let spec = sprite.to_spec();
+            if let Some(f0) = a.frames.first() {
+                if f0.width != spec.width || f0.height != spec.height {
+                    return Err("render: animation frames must share dimensions".into());
+                }
+            }
+            a.frames.push(spec);
+            Ok(())
+        },
+    );
+    engine.register_fn("bounce", |a: &mut AnimationBuilder, b: bool| a.bounce = b);
+    engine.register_fn("cycles", |a: &mut AnimationBuilder, n: i64| a.cycles = n.max(0) as u32);
+    engine.register_fn("bee_sprite", || -> RenderSpec {
+        RenderSpec::Sprite { spec: crate::viz::bee::sprite() }
+    });
+    engine.register_fn("bee_animation", || -> RenderSpec {
+        RenderSpec::Animation { spec: crate::viz::bee::animation() }
     });
 
     // --- Commit ---

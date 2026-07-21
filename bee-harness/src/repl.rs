@@ -60,6 +60,9 @@ pub struct ReplConfig {
     pub max_retries: u32,
     /// Human-readable label for the active policy/enforcement mode, shown by `/policy`.
     pub policy_label: String,
+    /// Play the bee mascot animation once at startup (003-visual-render, Slice 2, FR-032). Opt-in via
+    /// `--bee` / `BEE_MASCOT=1`; off by default.
+    pub mascot: bool,
 }
 
 impl Default for ReplConfig {
@@ -73,6 +76,7 @@ impl Default for ReplConfig {
             tool_timeout_secs: 30,
             max_retries: 3,
             policy_label: "none".to_string(),
+            mascot: false,
         }
     }
 }
@@ -742,6 +746,12 @@ pub async fn run_repl(
         }
     };
     let output = TerminalOutput::new(Box::new(printer));
+
+    // Opt-in bee mascot: play the wing-flap once beside the session line, then it reclaims its rows
+    // (003-visual-render, Slice 2, FR-032).
+    if config.mascot {
+        output.render_widget(&RenderSpec::Animation { spec: crate::viz::bee::animation() });
+    }
 
     output.info(&format!("interactive session — {} — type /help for commands", model.id()));
 

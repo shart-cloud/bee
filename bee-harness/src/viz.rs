@@ -3,10 +3,14 @@
 //! `Buffer` → ANSI-lines pipeline. Consumed by both the REPL chrome (`repl::terminal`) and the
 //! `render` tool. `ratatui`/`rhai` live only under this crate (NFR-002/SC-019).
 
+pub mod animator;
+pub mod bee;
 pub mod buffer_render;
 pub mod glyph;
 pub mod grid;
 pub mod palette;
+pub mod sprite_render;
 
 pub use buffer_render::{render_to_ansi, spec_height, terminal_dims};
 pub use grid::{status_grid, Status};
+pub use sprite_render::{render_frame, ColorMode};

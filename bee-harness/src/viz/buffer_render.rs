@@ -68,6 +68,10 @@ pub fn spec_height(spec: &RenderSpec, width: u16) -> u16 {
                 children.iter().map(|c| spec_height(c, width)).max().unwrap_or(1)
             }
         },
+        RenderSpec::Sprite { spec } => spec.height.div_ceil(2),
+        RenderSpec::Animation { spec } => {
+            spec.frames.first().map(|f| f.height.div_ceil(2)).unwrap_or(1)
+        }
     };
     h.max(1)
 }
@@ -248,6 +252,16 @@ fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
                     }
                 }
             }
+        }
+        // A sprite/animation nested inside a layout can't drive the truecolor half-block pipeline
+        // (the headless Buffer is basic-ANSI only) nor animate (a layout is one static render), so it
+        // shows a labelled placeholder. Top-level sprites/animations are drawn directly by
+        // `TerminalOutput::render_widget` via `viz::sprite_render` (contracts/sprite-api.md).
+        RenderSpec::Sprite { spec } => {
+            Paragraph::new(format!("[sprite {}×{}]", spec.width, spec.height)).render(area, buf);
+        }
+        RenderSpec::Animation { spec } => {
+            Paragraph::new(format!("[animation: {} frames]", spec.frames.len())).render(area, buf);
         }
     }
 }

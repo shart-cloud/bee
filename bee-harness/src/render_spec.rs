@@ -62,6 +62,49 @@ pub enum Direction {
     Horizontal,
 }
 
+/// A pixel-art sprite (003-visual-render, Slice 2, FR-028): a `width × height` grid of RGB pixels,
+/// row-major, `None` = transparent. Rendered via the half-block technique (`viz::sprite_render`) to
+/// `⌈height/2⌉` terminal rows. Like every [`RenderSpec`] member it is pure serde (no ratatui/rhai) so
+/// it records in the transcript and re-renders later.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpriteSpec {
+    /// Pixel columns (1..=32).
+    pub width: u16,
+    /// Pixel rows (1..=32).
+    pub height: u16,
+    /// Row-major RGB pixels; `None` = transparent. `len() == width * height`.
+    pub pixels: Vec<Option<(u8, u8, u8)>>,
+}
+
+impl SpriteSpec {
+    /// The pixel at `(x, y)`, or `None` if out of bounds or transparent.
+    pub fn pixel(&self, x: u16, y: u16) -> Option<(u8, u8, u8)> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        self.pixels.get((y as usize) * (self.width as usize) + x as usize).copied().flatten()
+    }
+
+    /// True when every pixel is transparent (renders as blank rows; the tool summary notes it).
+    pub fn is_fully_transparent(&self) -> bool {
+        self.pixels.iter().all(Option::is_none)
+    }
+}
+
+/// A frame animation (003-visual-render, Slice 2, FR-029): 1–16 same-dimensioned [`SpriteSpec`]
+/// frames plus playback parameters. Driven in place by `viz::animator` + `TerminalOutput`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnimationSpec {
+    /// 1..=16 frames, all identical `(width, height)`.
+    pub frames: Vec<SpriteSpec>,
+    /// Per-frame duration, clamped 50..=1000 ms.
+    pub interval_ms: u64,
+    /// Ping-pong playback (`0,1,…,k,…,1`).
+    pub bounce: bool,
+    /// Full cycles then stop; `0` = loop until interrupted.
+    pub cycles: u32,
+}
+
 /// The validated, renderable output of a Rhai render script. Variants mirror the Rhai drawing API
 /// (contracts/rhai-api.md). Slice 1 covers the static widgets; `Sprite`/`Animation` land in Slice 2
 /// (hence `#[non_exhaustive]`).
@@ -121,6 +164,14 @@ pub enum RenderSpec {
         direction: Direction,
         children: Vec<RenderSpec>,
     },
+    /// A static pixel-art sprite (Slice 2, FR-028).
+    Sprite {
+        spec: SpriteSpec,
+    },
+    /// A frame animation (Slice 2, FR-029).
+    Animation {
+        spec: AnimationSpec,
+    },
 }
 
 impl RenderSpec {
@@ -135,6 +186,8 @@ impl RenderSpec {
             RenderSpec::Table { rows, .. } => rows.len(),
             RenderSpec::DotGrid { dots, .. } => dots.len(),
             RenderSpec::Layout { children, .. } => children.iter().map(|c| c.element_count()).sum(),
+            RenderSpec::Sprite { .. } => 1,
+            RenderSpec::Animation { spec } => spec.frames.len(),
             _ => 0,
         }
     }
@@ -203,6 +256,10 @@ impl RenderSpec {
             RenderSpec::Layout { children, .. } => {
                 children.iter().map(|c| c.to_ascii()).collect::<Vec<_>>().join("\n")
             }
+            RenderSpec::Sprite { spec } => format!("[sprite {}×{}]\n", spec.width, spec.height),
+            RenderSpec::Animation { spec } => {
+                format!("[animation: {} frames]\n", spec.frames.len())
+            }
         }
     }
 
@@ -236,6 +293,10 @@ impl RenderSpec {
                     Direction::Horizontal => "hsplit",
                 };
                 format!("a {dir} layout ({} widgets)", children.len())
+            }
+            RenderSpec::Sprite { spec } => format!("a {}×{} sprite", spec.width, spec.height),
+            RenderSpec::Animation { spec } => {
+                format!("a {}-frame animation", spec.frames.len())
             }
         }
     }

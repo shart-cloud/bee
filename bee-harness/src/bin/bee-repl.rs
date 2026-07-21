@@ -37,6 +37,9 @@ struct Args {
     /// Write the session transcript to this path on exit.
     #[arg(long)]
     save: Option<PathBuf>,
+    /// Play the bee mascot animation at startup (also enabled by `BEE_MASCOT=1`).
+    #[arg(long)]
+    bee: bool,
 }
 
 #[tokio::main]
@@ -99,6 +102,7 @@ async fn main() -> ExitCode {
             .unwrap_or_else(|| ReplConfig::default().system_prompt),
         agent_turn_budget: args.budget.max(1),
         policy_label: policy_label.clone(),
+        mascot: args.bee || std::env::var_os("BEE_MASCOT").is_some_and(|v| v == "1"),
         ..ReplConfig::default()
     };
 

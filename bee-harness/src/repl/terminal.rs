@@ -8,7 +8,7 @@
 //! arrives; tool calls and results are indented and tagged; audit denials are called out in bold
 //! red; a dim footer summarizes each exchange.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -17,9 +17,14 @@ use rustyline::ExternalPrinter;
 use tokio::task::JoinHandle;
 
 use super::ReplOutput;
-use crate::render_spec::RenderSpec;
+use crate::render_spec::{AnimationSpec, RenderSpec};
 use crate::tools::ToolResult;
-use crate::viz::{glyph, palette};
+use crate::viz::{animator, glyph, palette, sprite_render};
+
+/// The kind of element occupying the single "active animated element" slot (FR-031).
+const KIND_NONE: u8 = 0;
+const KIND_SPINNER: u8 = 1;
+const KIND_ANIM: u8 = 2;
 
 /// Width to word-wrap assistant prose to.
 const WRAP_WIDTH: usize = 88;
@@ -68,13 +73,18 @@ pub struct TerminalOutput {
     color: bool,
     printer: SharedPrinter,
     stream: Mutex<StreamState>,
-    /// Whether a spinner is currently animating (shared with the spinner task, which stops when it
-    /// clears).
+    /// Whether the single animated element (spinner **or** sprite animation) is running — shared with
+    /// the background task, which stops when it clears (FR-031: only one at a time).
     spinning: Arc<AtomicBool>,
-    /// Set when the spinner leaves a drawn row that the next emitted line should reclaim in place
-    /// (so the "thinking…" row is reused, not left as residue).
-    reclaim: AtomicBool,
-    /// The running spinner task, if any.
+    /// Which element occupies the slot: [`KIND_NONE`] / [`KIND_SPINNER`] / [`KIND_ANIM`].
+    kind: Arc<AtomicU8>,
+    /// How many terminal rows the active element drew (1 for the spinner, `⌈H/2⌉` for an animation) —
+    /// read when it stops to set [`Self::reclaim_rows`].
+    active_rows: Arc<AtomicUsize>,
+    /// Rows the next emitted line must reclaim in place (0 = none). Generalizes the spinner's
+    /// single-row reclaim to `N` rows (research D14); `N = 1` reproduces the legacy byte sequence.
+    reclaim_rows: Arc<AtomicUsize>,
+    /// The running spinner/animation task, if any.
     spin_task: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -87,7 +97,9 @@ impl TerminalOutput {
             printer: Arc::new(Mutex::new(printer)),
             stream: Mutex::new(StreamState::default()),
             spinning: Arc::new(AtomicBool::new(false)),
-            reclaim: AtomicBool::new(false),
+            kind: Arc::new(AtomicU8::new(KIND_NONE)),
+            active_rows: Arc::new(AtomicUsize::new(0)),
+            reclaim_rows: Arc::new(AtomicUsize::new(0)),
             spin_task: Mutex::new(None),
         }
     }
@@ -105,12 +117,93 @@ impl TerminalOutput {
     /// swallowed — a REPL should not abort a session because one line failed to render.
     fn emit(&self, line: &str) {
         if let Ok(mut p) = self.printer.lock() {
-            if self.reclaim.swap(false, Ordering::SeqCst) {
-                let _ = p.print(format!("\x1b[1A\r\x1b[2K{line}\n"));
-            } else {
-                let _ = p.print(format!("{line}\n"));
-            }
+            let _ = p.print(reclaim_prefix(self.reclaim_rows.swap(0, Ordering::SeqCst)) + line + "\n");
         }
+    }
+
+    /// Emit a multi-row block (a sprite frame): the first row honors a pending reclaim, the rest print
+    /// plainly beneath it.
+    fn emit_block(&self, rows: &[String]) {
+        if rows.is_empty() {
+            return;
+        }
+        if let Ok(mut p) = self.printer.lock() {
+            let mut out = reclaim_prefix(self.reclaim_rows.swap(0, Ordering::SeqCst));
+            out.push_str(&rows[0]);
+            out.push('\n');
+            for r in &rows[1..] {
+                out.push_str(r);
+                out.push('\n');
+            }
+            let _ = p.print(out);
+        }
+    }
+
+    /// Stop whatever animated element is active (spinner or animation), leaving its rows reclaimable
+    /// by the next emitted line. Idempotent when nothing is active.
+    fn stop_active(&self) {
+        if self.kind.swap(KIND_NONE, Ordering::SeqCst) == KIND_NONE {
+            return;
+        }
+        self.spinning.store(false, Ordering::SeqCst);
+        self.reclaim_rows.store(self.active_rows.load(Ordering::SeqCst), Ordering::SeqCst);
+        if let Some(h) = self.spin_task.lock().expect("spin task").take() {
+            h.abort();
+        }
+    }
+
+    /// Start playing a sprite [`AnimationSpec`] in place (Slice 2, FR-030): pre-render the frames, emit
+    /// frame 0, then drive the rest from a background task via the pure [`animator`] seam. Claims the
+    /// single active slot, stopping any spinner/animation first (FR-031).
+    fn start_animation(&self, spec: &AnimationSpec) {
+        self.stop_active(); // FR-031 + SC-017: preempt a running spinner/animation
+        if spec.frames.is_empty() {
+            return;
+        }
+        let (_, tty) = crate::viz::terminal_dims();
+        let mode = sprite_render::detect_color_mode();
+        let color = self.color && tty;
+        let frames: Vec<Vec<String>> =
+            spec.frames.iter().map(|f| sprite_render::render_frame_with(f, mode, color)).collect();
+        let n_rows = frames.first().map(|f| f.len()).unwrap_or(0);
+        if n_rows == 0 {
+            return;
+        }
+        self.spinning.store(true, Ordering::SeqCst);
+        self.kind.store(KIND_ANIM, Ordering::SeqCst);
+        self.active_rows.store(n_rows, Ordering::SeqCst);
+        self.emit_block(&frames[0]); // instant first paint
+
+        let seq = animator::playback(spec);
+        let repeat = spec.cycles == 0;
+        let interval = Duration::from_millis(spec.interval_ms.clamp(50, 1000));
+        let printer = self.printer.clone();
+        let spinning = self.spinning.clone();
+        let kind = self.kind.clone();
+        let active_rows = self.active_rows.clone();
+        let reclaim_rows = self.reclaim_rows.clone();
+        let handle = tokio::spawn(async move {
+            'outer: loop {
+                for &idx in seq.iter().skip(1) {
+                    tokio::time::sleep(interval).await;
+                    let Ok(mut p) = printer.lock() else { break 'outer };
+                    if !spinning.load(Ordering::SeqCst) {
+                        break 'outer;
+                    }
+                    let _ = p.print(animator::redraw_block(&frames[idx]));
+                    drop(p);
+                }
+                if !repeat || !spinning.load(Ordering::SeqCst) {
+                    break;
+                }
+            }
+            // Natural completion: mark the drawn rows reclaimable and release the slot.
+            if kind.swap(KIND_NONE, Ordering::SeqCst) != KIND_NONE {
+                spinning.store(false, Ordering::SeqCst);
+                reclaim_rows.store(active_rows.load(Ordering::SeqCst), Ordering::SeqCst);
+            }
+        });
+        *self.spin_task.lock().expect("spin task") = Some(handle);
     }
 
     /// Emit the current buffered assistant line and clear it.
@@ -123,6 +216,17 @@ impl TerminalOutput {
 /// Display width of a string in columns (char count; good enough for wrap decisions on prose).
 fn width(s: &str) -> usize {
     s.chars().count()
+}
+
+/// The cursor sequence that makes an emitted line reclaim `n` drawn rows in place. `n == 1` reproduces
+/// the legacy spinner bytes exactly (regression gate, SC-012); `n > 1` erases the block to end of
+/// screen (the printer redraws the prompt beneath).
+fn reclaim_prefix(n: usize) -> String {
+    match n {
+        0 => String::new(),
+        1 => "\x1b[1A\r\x1b[2K".to_string(),
+        k => format!("\x1b[{k}A\r\x1b[0J"),
+    }
 }
 
 impl ReplOutput for TerminalOutput {
@@ -219,32 +323,40 @@ impl ReplOutput for TerminalOutput {
     }
 
     fn render_widget(&self, spec: &RenderSpec) {
-        // Draw the widget as inline ANSI art via the headless ratatui pipeline (FR-025). Width comes
-        // from the terminal; height is capped at 40 rows. Each row goes through the same
+        // Sprites/animations use the hand-rolled half-block renderer (truecolor, Slice 2); every other
+        // widget goes through the headless ratatui pipeline (FR-025). Each row goes through the same
         // `ExternalPrinter` path as every other line — no alt-screen, no raw mode (SC-011).
-        let (width, _tty) = crate::viz::terminal_dims();
-        for line in crate::viz::render_to_ansi(spec, width, 40) {
-            self.emit(&line);
+        match spec {
+            RenderSpec::Sprite { spec } => {
+                let (_, tty) = crate::viz::terminal_dims();
+                let mode = sprite_render::detect_color_mode();
+                for line in sprite_render::render_frame_with(spec, mode, self.color && tty) {
+                    self.emit(&line);
+                }
+            }
+            RenderSpec::Animation { spec } => self.start_animation(spec),
+            other => {
+                let (width, _tty) = crate::viz::terminal_dims();
+                for line in crate::viz::render_to_ansi(other, width, 40) {
+                    self.emit(&line);
+                }
+            }
         }
     }
 
     fn busy_start(&self) {
-        // Idempotent: ignore if already spinning.
-        if self.spinning.swap(true, Ordering::SeqCst) {
+        // Idempotent for the spinner; a running animation is preempted (FR-031).
+        if self.kind.load(Ordering::SeqCst) == KIND_SPINNER {
             return;
         }
+        self.stop_active();
+        self.spinning.store(true, Ordering::SeqCst);
+        self.kind.store(KIND_SPINNER, Ordering::SeqCst);
+        self.active_rows.store(1, Ordering::SeqCst);
         let start = Instant::now();
-        // Draw the first frame synchronously so feedback is instant on send, then let a background
-        // task advance it in place. Honor a pending reclaim so a new spinner reuses a prior
-        // unreclaimed spinner row rather than stacking beneath it.
-        if let Ok(mut p) = self.printer.lock() {
-            let frame = spinner_frame(0, start, self.color);
-            if self.reclaim.swap(false, Ordering::SeqCst) {
-                let _ = p.print(format!("\x1b[1A\r\x1b[2K{frame}\n"));
-            } else {
-                let _ = p.print(format!("{frame}\n"));
-            }
-        }
+        // Draw the first frame synchronously so feedback is instant on send (honoring a pending
+        // reclaim so it reuses a prior element's row); then let a background task advance it in place.
+        self.emit(&spinner_frame(0, start, self.color));
         let printer = self.printer.clone();
         let spinning = self.spinning.clone();
         let color = self.color;
@@ -268,14 +380,11 @@ impl ReplOutput for TerminalOutput {
     }
 
     fn busy_stop(&self) {
-        if !self.spinning.swap(false, Ordering::SeqCst) {
-            return; // wasn't spinning
+        // Only stops the spinner; an animation is ended by the next `busy_start` or by completion.
+        if self.kind.load(Ordering::SeqCst) != KIND_SPINNER {
+            return;
         }
-        // The spinner drew a row above the prompt; the next emitted line reclaims it in place.
-        self.reclaim.store(true, Ordering::SeqCst);
-        if let Some(h) = self.spin_task.lock().expect("spin task").take() {
-            h.abort();
-        }
+        self.stop_active();
     }
 }
 
@@ -364,6 +473,51 @@ mod tests {
         t.info("real output");
         let s = buf.lock().unwrap().clone();
         assert!(s.contains("\x1b[1A\r\x1b[2Kreal output"), "row not reclaimed in place: {s:?}");
+    }
+
+    fn tiny_anim() -> AnimationSpec {
+        // 2×4 px → 2 terminal rows per frame; 2 frames.
+        let px = vec![
+            Some((255, 0, 0)),
+            None,
+            None,
+            Some((0, 255, 0)),
+            Some((0, 0, 255)),
+            None,
+            None,
+            Some((255, 255, 0)),
+        ];
+        let f = crate::render_spec::SpriteSpec { width: 2, height: 4, pixels: px };
+        AnimationSpec { frames: vec![f.clone(), f], interval_ms: 150, bounce: false, cycles: 1 }
+    }
+
+    #[tokio::test]
+    async fn animation_preempts_spinner() {
+        // SC-017: starting a sprite animation while the spinner runs stops the spinner.
+        let (t, _buf) = term();
+        t.busy_start();
+        assert_eq!(t.kind.load(Ordering::SeqCst), KIND_SPINNER);
+        t.render_widget(&RenderSpec::Animation { spec: tiny_anim() });
+        assert_eq!(
+            t.kind.load(Ordering::SeqCst),
+            KIND_ANIM,
+            "the animation must claim the slot from the spinner"
+        );
+        t.stop_active();
+    }
+
+    #[tokio::test]
+    async fn animation_reclaims_all_its_rows() {
+        // SC-016(c): a 2-row animation, once stopped, leaves 2 rows for the next output to reclaim.
+        let (t, buf) = term();
+        t.render_widget(&RenderSpec::Animation { spec: tiny_anim() });
+        t.stop_active();
+        assert_eq!(t.reclaim_rows.load(Ordering::SeqCst), 2, "should reclaim 2 rows");
+        t.info("done");
+        assert!(
+            buf.lock().unwrap().contains("\x1b[2A\r\x1b[0J"),
+            "N-row reclaim sequence missing"
+        );
     }
 
     #[test]
