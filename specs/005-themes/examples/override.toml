@@ -1,0 +1,5 @@
+# bee config — start from a built-in theme, then override individual roles. Here: catppuccin-mocha
+# with `info` remapped from yellow to peach. Every other role keeps the mocha default.
+[theme]
+name = "catppuccin-mocha"
+info = "#fab387"   # peach instead of yellow

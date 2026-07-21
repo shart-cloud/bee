@@ -15,6 +15,8 @@ use ratatui::widgets::{
 use crate::render_spec::{Direction, DotState, RenderSpec};
 use crate::viz::grid::{dot_cell, Status};
 use crate::viz::palette;
+use crate::viz::sprite_render::{detect_color_mode, ColorMode};
+use crate::viz::theme::{self, ThemeColor};
 
 /// Hard caps on the rendered surface (contracts/honeycomb.md). Width is additionally clamped to the
 /// terminal width by the caller.
@@ -27,7 +29,10 @@ const MAX_HEIGHT: u16 = 40;
 pub fn terminal_dims() -> (u16, bool) {
     use std::io::IsTerminal;
     let is_tty = std::io::stdout().is_terminal();
-    if let Some(cols) = std::env::var("COLUMNS").ok().and_then(|s| s.trim().parse::<u16>().ok()) {
+    if let Some(cols) = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok())
+    {
         if cols > 0 {
             return (cols, is_tty);
         }
@@ -59,19 +64,26 @@ pub fn spec_height(spec: &RenderSpec, width: u16) -> u16 {
         RenderSpec::BarChart { .. } => 10,
         RenderSpec::LineChart { .. } => 10,
         RenderSpec::Table { rows, .. } => 3 + rows.len() as u16, // border(2)+header(1)+rows
-        RenderSpec::Layout { direction, children } => match direction {
+        RenderSpec::Layout {
+            direction,
+            children,
+        } => match direction {
             Direction::Vertical => {
                 let sum: u16 = children.iter().map(|c| spec_height(c, width)).sum();
                 sum + children.len().saturating_sub(1) as u16 // 1 blank separator between children
             }
-            Direction::Horizontal => {
-                children.iter().map(|c| spec_height(c, width)).max().unwrap_or(1)
-            }
+            Direction::Horizontal => children
+                .iter()
+                .map(|c| spec_height(c, width))
+                .max()
+                .unwrap_or(1),
         },
         RenderSpec::Sprite { spec } => spec.height.div_ceil(2),
-        RenderSpec::Animation { spec } => {
-            spec.frames.first().map(|f| f.height.div_ceil(2)).unwrap_or(1)
-        }
+        RenderSpec::Animation { spec } => spec
+            .frames
+            .first()
+            .map(|f| f.height.div_ceil(2))
+            .unwrap_or(1),
     };
     h.max(1)
 }
@@ -87,17 +99,45 @@ pub fn render_to_ansi(spec: &RenderSpec, max_width: u16, max_height: u16) -> Vec
     buffer_to_ansi(&buf, palette::is_color_enabled())
 }
 
-/// Map a palette/basic-ANSI color name to a ratatui [`Color`]. Unknown names → default foreground.
+/// Resolve a color *name* through the active theme (005-themes, FR-051) to a ratatui [`Color`]:
+/// semantic roles, extended-palette entries, bare `#RRGGBB` hex, and basic color words all resolve;
+/// an unknown name falls back to the theme's `text` color. With `honeycomb` active every name maps to
+/// a basic-ANSI [`Color`] exactly as it did pre-theming.
 fn color_of(name: &str) -> Color {
-    match name.to_ascii_lowercase().as_str() {
-        "honey" | "yellow" => Color::Yellow,
-        "pollen" | "green" => Color::Green,
-        "sting" | "red" => Color::Red,
-        "royal" | "cyan" => Color::Cyan,
-        "smoke" | "gray" | "grey" => Color::DarkGray,
-        "blue" => Color::Blue,
-        "magenta" => Color::Magenta,
-        "white" => Color::White,
+    theme_to_ratatui_color(&theme::resolve_color_name(theme::active_theme(), name))
+}
+
+/// Map a [`ThemeColor`] to a ratatui [`Color`] (005-themes): `Rgb` → [`Color::Rgb`] (serialized
+/// truecolor/quantized by [`buffer_to_ansi`]); `Ansi` → the matching basic [`Color`].
+pub fn theme_to_ratatui_color(c: &ThemeColor) -> Color {
+    match c {
+        ThemeColor::Rgb { r, g, b } => Color::Rgb(*r, *g, *b),
+        ThemeColor::Ansi(code) => ansi_code_to_ratatui(code),
+    }
+}
+
+/// A basic-ANSI SGR fg code → the corresponding ratatui [`Color`]. `"2"` (dim) and `"0"` (reset) have
+/// no direct color, so they approximate to dark gray / default fg.
+fn ansi_code_to_ratatui(code: &str) -> Color {
+    match code {
+        "0" => Color::Reset,
+        "1" | "2" => Color::DarkGray, // bold/dim intensity ≈ dark gray in the headless buffer
+        "30" => Color::Black,
+        "31" => Color::Red,
+        "32" => Color::Green,
+        "33" => Color::Yellow,
+        "34" => Color::Blue,
+        "35" => Color::Magenta,
+        "36" => Color::Cyan,
+        "37" => Color::Gray,
+        "90" => Color::DarkGray,
+        "91" => Color::LightRed,
+        "92" => Color::LightGreen,
+        "93" => Color::LightYellow,
+        "94" => Color::LightBlue,
+        "95" => Color::LightMagenta,
+        "96" => Color::LightCyan,
+        "97" => Color::White,
         _ => Color::Reset,
     }
 }
@@ -113,7 +153,12 @@ fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
                 buf[(x, area.top())].set_symbol(crate::viz::glyph::HLINE);
             }
         }
-        RenderSpec::Text { content, style, bold, .. } => {
+        RenderSpec::Text {
+            content,
+            style,
+            bold,
+            ..
+        } => {
             let mut st = Style::default();
             if let Some(c) = style {
                 st = st.fg(color_of(c));
@@ -127,7 +172,12 @@ fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
             let text = lines.join("\n");
             Paragraph::new(text).render(area, buf);
         }
-        RenderSpec::Gauge { title, value, label, color } => {
+        RenderSpec::Gauge {
+            title,
+            value,
+            label,
+            color,
+        } => {
             let mut g = Gauge::default()
                 .block(Block::bordered().title(title.clone()))
                 .ratio(value.clamp(0.0, 1.0));
@@ -157,11 +207,15 @@ fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
                 .data(&data)
                 .render(area, buf);
         }
-        RenderSpec::BarChart { title, bars, color, .. } => {
+        RenderSpec::BarChart {
+            title, bars, color, ..
+        } => {
             let rbars: Vec<RBar<'_>> = bars
                 .iter()
                 .map(|b| {
-                    RBar::default().label(Line::from(b.label.clone())).value(b.value.max(0) as u64)
+                    RBar::default()
+                        .label(Line::from(b.label.clone()))
+                        .value(b.value.max(0) as u64)
                 })
                 .collect();
             let mut bc = BarChart::default()
@@ -173,10 +227,15 @@ fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
             bc = bc.bar_style(Style::default().fg(fill));
             bc.render(area, buf);
         }
-        RenderSpec::Table { title, headers, rows } => {
+        RenderSpec::Table {
+            title,
+            headers,
+            rows,
+        } => {
             let ncols = headers.len().max(1);
-            let widths: Vec<Constraint> =
-                (0..ncols).map(|_| Constraint::Percentage((100 / ncols) as u16)).collect();
+            let widths: Vec<Constraint> = (0..ncols)
+                .map(|_| Constraint::Percentage((100 / ncols) as u16))
+                .collect();
             let header = RRow::new(headers.iter().map(|h| Cell::from(h.clone())))
                 .style(Style::default().add_modifier(ratatui::style::Modifier::BOLD));
             let body: Vec<RRow<'_>> = rows
@@ -212,7 +271,10 @@ fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
                 .block(Block::bordered().title(title.clone()))
                 .render(area, buf);
         }
-        RenderSpec::Layout { direction, children } => {
+        RenderSpec::Layout {
+            direction,
+            children,
+        } => {
             if children.is_empty() {
                 return;
             }
@@ -222,7 +284,8 @@ fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
                     let mut y = area.top();
                     let n = children.len();
                     for (i, child) in children.iter().enumerate() {
-                        let ch = spec_height(child, area.width).min(area.bottom().saturating_sub(y));
+                        let ch =
+                            spec_height(child, area.width).min(area.bottom().saturating_sub(y));
                         if ch == 0 {
                             break;
                         }
@@ -278,25 +341,29 @@ fn sgr_to_color(code: &str) -> Color {
     }
 }
 
-/// A ratatui foreground [`Color`] → basic-ANSI SGR fg code, or `None` for the default fg.
-fn color_to_sgr(c: Color) -> Option<&'static str> {
+/// A ratatui foreground [`Color`] → SGR fg parameters, or `None` for the default fg. Truecolor
+/// [`Color::Rgb`] (from an RGB theme) is emitted verbatim on a truecolor terminal, else quantized to
+/// the xterm-256 cube / 16 colors per `mode` (005-themes, FR-049).
+fn color_to_sgr(c: Color, mode: ColorMode) -> Option<String> {
     Some(match c {
-        Color::Black => "30",
-        Color::Red => "31",
-        Color::Green => "32",
-        Color::Yellow => "33",
-        Color::Blue => "34",
-        Color::Magenta => "35",
-        Color::Cyan => "36",
-        Color::Gray => "37",
-        Color::DarkGray => "90",
-        Color::LightRed => "91",
-        Color::LightGreen => "92",
-        Color::LightYellow => "93",
-        Color::LightBlue => "94",
-        Color::LightMagenta => "95",
-        Color::LightCyan => "96",
-        Color::White => "97",
+        Color::Black => "30".into(),
+        Color::Red => "31".into(),
+        Color::Green => "32".into(),
+        Color::Yellow => "33".into(),
+        Color::Blue => "34".into(),
+        Color::Magenta => "35".into(),
+        Color::Cyan => "36".into(),
+        Color::Gray => "37".into(),
+        Color::DarkGray => "90".into(),
+        Color::LightRed => "91".into(),
+        Color::LightGreen => "92".into(),
+        Color::LightYellow => "93".into(),
+        Color::LightBlue => "94".into(),
+        Color::LightMagenta => "95".into(),
+        Color::LightCyan => "96".into(),
+        Color::White => "97".into(),
+        Color::Rgb(r, g, b) => ThemeColor::Rgb { r, g, b }.sgr_params(mode),
+        Color::Indexed(i) => format!("38;5;{i}"),
         _ => return None,
     })
 }
@@ -306,12 +373,13 @@ fn color_to_sgr(c: Color) -> Option<&'static str> {
 /// when off, symbols only — no escapes (AS-3). Basic ANSI only (no truecolor, Slice 1).
 fn buffer_to_ansi(buf: &Buffer, color: bool) -> Vec<String> {
     let area = buf.area;
+    let mode = detect_color_mode();
     let mut out = Vec::with_capacity(area.height as usize);
     for y in area.top()..area.bottom() {
         let mut line = String::new();
         let mut run = String::new();
-        let mut run_code: Option<&'static str> = None;
-        let flush = |line: &mut String, run: &mut String, code: Option<&'static str>| {
+        let mut run_code: Option<String> = None;
+        let flush = |line: &mut String, run: &mut String, code: &Option<String>| {
             if run.is_empty() {
                 return;
             }
@@ -325,14 +393,18 @@ fn buffer_to_ansi(buf: &Buffer, color: bool) -> Vec<String> {
         };
         for x in area.left()..area.right() {
             let cell = &buf[(x, y)];
-            let code = if color { color_to_sgr(cell.fg) } else { None };
+            let code = if color {
+                color_to_sgr(cell.fg, mode)
+            } else {
+                None
+            };
             if code != run_code {
-                flush(&mut line, &mut run, run_code);
+                flush(&mut line, &mut run, &run_code);
                 run_code = code;
             }
             run.push_str(cell.symbol());
         }
-        flush(&mut line, &mut run, run_code);
+        flush(&mut line, &mut run, &run_code);
         // Trim trailing spaces (never inside a colored run at the right edge for our widgets).
         while line.ends_with(' ') {
             line.pop();

@@ -19,6 +19,7 @@ use tokio::task::JoinHandle;
 use super::ReplOutput;
 use crate::render_spec::{AnimationSpec, RenderSpec};
 use crate::tools::ToolResult;
+use crate::viz::theme::Role;
 use crate::viz::{animator, glyph, palette, sprite_render};
 
 /// The kind of element occupying the single "active animated element" slot (FR-031).
@@ -104,11 +105,11 @@ impl TerminalOutput {
         }
     }
 
-    /// Wrap `text` in an ANSI SGR sequence, or return it unchanged when color is disabled. Delegates
-    /// to the honeycomb palette (003-visual-render, FR-027) — byte-identical to the pre-migration
-    /// inline form (SC-012).
-    fn paint(&self, code: &str, text: &str) -> String {
-        palette::paint_if(self.color, code, text)
+    /// Paint `text` in a semantic [`Role`] from the active theme, honoring this output's color
+    /// decision (made once at construction). Replaces the 003 `paint(code, …)` — the color role is
+    /// now in the name, not a magic SGR string (005-themes, FR-044/FR-027).
+    fn role(&self, role: Role, text: &str) -> String {
+        palette::role_if(self.color, role, text)
     }
 
     /// Print one line above the input line. A trailing newline is added; the external printer
@@ -117,7 +118,8 @@ impl TerminalOutput {
     /// swallowed — a REPL should not abort a session because one line failed to render.
     fn emit(&self, line: &str) {
         if let Ok(mut p) = self.printer.lock() {
-            let _ = p.print(reclaim_prefix(self.reclaim_rows.swap(0, Ordering::SeqCst)) + line + "\n");
+            let _ =
+                p.print(reclaim_prefix(self.reclaim_rows.swap(0, Ordering::SeqCst)) + line + "\n");
         }
     }
 
@@ -146,7 +148,8 @@ impl TerminalOutput {
             return;
         }
         self.spinning.store(false, Ordering::SeqCst);
-        self.reclaim_rows.store(self.active_rows.load(Ordering::SeqCst), Ordering::SeqCst);
+        self.reclaim_rows
+            .store(self.active_rows.load(Ordering::SeqCst), Ordering::SeqCst);
         if let Some(h) = self.spin_task.lock().expect("spin task").take() {
             h.abort();
         }
@@ -163,8 +166,11 @@ impl TerminalOutput {
         let (_, tty) = crate::viz::terminal_dims();
         let mode = sprite_render::detect_color_mode();
         let color = self.color && tty;
-        let frames: Vec<Vec<String>> =
-            spec.frames.iter().map(|f| sprite_render::render_frame_with(f, mode, color)).collect();
+        let frames: Vec<Vec<String>> = spec
+            .frames
+            .iter()
+            .map(|f| sprite_render::render_frame_with(f, mode, color))
+            .collect();
         let n_rows = frames.first().map(|f| f.len()).unwrap_or(0);
         if n_rows == 0 {
             return;
@@ -186,7 +192,9 @@ impl TerminalOutput {
             'outer: loop {
                 for &idx in seq.iter().skip(1) {
                     tokio::time::sleep(interval).await;
-                    let Ok(mut p) = printer.lock() else { break 'outer };
+                    let Ok(mut p) = printer.lock() else {
+                        break 'outer;
+                    };
                     if !spinning.load(Ordering::SeqCst) {
                         break 'outer;
                     }
@@ -267,14 +275,14 @@ impl ReplOutput for TerminalOutput {
     fn tool_call(&self, name: &str, arguments: &serde_json::Value) {
         let args = clip(&arguments.to_string(), MAX_ARG_CHARS);
         let line = format!("  {} {name} {args}", glyph::ARROW);
-        self.emit(&self.paint(palette::SMOKE, &line)); // dim
+        self.emit(&self.role(Role::Dim, &line)); // dim
     }
 
     fn tool_result(&self, result: &ToolResult, audit: &[AuditEvent]) {
-        let (mark, code) = if result.is_error {
-            (glyph::CROSS, palette::STING)
+        let (mark, role) = if result.is_error {
+            (glyph::CROSS, Role::Error)
         } else {
-            (glyph::CHECK, palette::POLLEN)
+            (glyph::CHECK, Role::Success)
         };
         let content = if result.content.trim().is_empty() {
             "(no output)".to_string()
@@ -290,36 +298,37 @@ impl ReplOutput for TerminalOutput {
             } else {
                 format!("    {line}")
             };
-            self.emit(&self.paint(code, &prefixed));
+            self.emit(&self.role(role, &prefixed));
         }
         if lines.len() > shown {
             let more = lines.len() - shown;
-            self.emit(&self.paint(palette::SMOKE, &format!("    … {more} more line(s)")));
+            self.emit(&self.role(Role::Dim, &format!("    … {more} more line(s)")));
         }
 
-        // Kernel denials stand out in bold red regardless of the result glyph above.
+        // Kernel denials stand out in bold error color regardless of the result glyph above.
         for e in audit {
             if e.decision == "denied" {
                 let line = format!("  {} DENIED {} {}", glyph::WARN, e.op, e.target);
-                self.emit(&palette::bold_if(self.color, palette::STING, &line)); // bold red
+                self.emit(&palette::bold_role_if(self.color, Role::Error, &line));
+                // bold red
             }
         }
     }
 
     fn error(&self, msg: &str) {
-        self.emit(&self.paint(palette::STING, &format!("error: {msg}"))); // red
+        self.emit(&self.role(Role::Error, &format!("error: {msg}"))); // red
     }
 
     fn info(&self, msg: &str) {
-        self.emit(&self.paint(palette::HONEY, msg)); // yellow
+        self.emit(&self.role(Role::Info, msg)); // yellow / info
     }
 
     fn footer(&self, msg: &str) {
-        self.emit(&self.paint(palette::SMOKE, msg)); // dim
+        self.emit(&self.role(Role::Dim, msg)); // dim
     }
 
     fn steering(&self, msg: &str) {
-        self.emit(&self.paint(palette::ROYAL, msg)); // cyan — user's steering nudge
+        self.emit(&self.role(Role::Accent, msg)); // accent — user's steering nudge
     }
 
     fn render_widget(&self, spec: &RenderSpec) {
@@ -371,7 +380,10 @@ impl ReplOutput for TerminalOutput {
                     break;
                 }
                 // Redraw the row directly above the prompt in place.
-                let _ = p.print(format!("\x1b[1A\r\x1b[2K{}\n", spinner_frame(tick, start, color)));
+                let _ = p.print(format!(
+                    "\x1b[1A\r\x1b[2K{}\n",
+                    spinner_frame(tick, start, color)
+                ));
                 drop(p);
                 tick += 1;
             }
@@ -435,7 +447,10 @@ mod tests {
         t.assistant_end();
         let out = buf.lock().unwrap().clone();
         let collapsed: String = out.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(collapsed.contains("Hello there, how can I help you today?"), "got: {out:?}");
+        assert!(
+            collapsed.contains("Hello there, how can I help you today?"),
+            "got: {out:?}"
+        );
     }
 
     #[test]
@@ -465,14 +480,20 @@ mod tests {
         {
             let s = buf.lock().unwrap();
             assert!(s.contains("thinking…"), "spinner frame missing: {s:?}");
-            assert!(s.contains(SPINNER_FRAMES[0]), "spinner glyph missing: {s:?}");
+            assert!(
+                s.contains(SPINNER_FRAMES[0]),
+                "spinner glyph missing: {s:?}"
+            );
         }
         // Stop before the ~90ms task ticks, then emit real output: it must reuse the spinner's row
         // in place (cursor-up + clear-line) rather than leaving a "thinking…" line behind.
         t.busy_stop();
         t.info("real output");
         let s = buf.lock().unwrap().clone();
-        assert!(s.contains("\x1b[1A\r\x1b[2Kreal output"), "row not reclaimed in place: {s:?}");
+        assert!(
+            s.contains("\x1b[1A\r\x1b[2Kreal output"),
+            "row not reclaimed in place: {s:?}"
+        );
     }
 
     fn tiny_anim() -> AnimationSpec {
@@ -487,8 +508,17 @@ mod tests {
             None,
             Some((255, 255, 0)),
         ];
-        let f = crate::render_spec::SpriteSpec { width: 2, height: 4, pixels: px };
-        AnimationSpec { frames: vec![f.clone(), f], interval_ms: 150, bounce: false, cycles: 1 }
+        let f = crate::render_spec::SpriteSpec {
+            width: 2,
+            height: 4,
+            pixels: px,
+        };
+        AnimationSpec {
+            frames: vec![f.clone(), f],
+            interval_ms: 150,
+            bounce: false,
+            cycles: 1,
+        }
     }
 
     #[tokio::test]
@@ -512,7 +542,11 @@ mod tests {
         let (t, buf) = term();
         t.render_widget(&RenderSpec::Animation { spec: tiny_anim() });
         t.stop_active();
-        assert_eq!(t.reclaim_rows.load(Ordering::SeqCst), 2, "should reclaim 2 rows");
+        assert_eq!(
+            t.reclaim_rows.load(Ordering::SeqCst),
+            2,
+            "should reclaim 2 rows"
+        );
         t.info("done");
         assert!(
             buf.lock().unwrap().contains("\x1b[2A\r\x1b[0J"),
@@ -527,7 +561,10 @@ mod tests {
         let f = spinner_frame(3, start, false);
         assert!(f.contains(SPINNER_FRAMES[3]), "glyph missing: {f:?}");
         assert!(f.contains("thinking…"));
-        assert_ne!(spinner_frame(0, start, false), spinner_frame(1, start, false));
+        assert_ne!(
+            spinner_frame(0, start, false),
+            spinner_frame(1, start, false)
+        );
     }
 
     #[test]

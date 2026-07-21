@@ -14,7 +14,10 @@ use bee_harness::{
 };
 
 #[derive(Parser)]
-#[command(name = "bee-episode", about = "Run an LLM agent episode inside a bee scope")]
+#[command(
+    name = "bee-episode",
+    about = "Run an LLM agent episode inside a bee scope"
+)]
 struct Args {
     /// Scenario TOML (policy + task + limits). Omit and use --task for an ad-hoc run.
     #[arg(long, conflicts_with = "task")]
@@ -54,7 +57,11 @@ struct Args {
     )]
     system: String,
     /// Comma-separated tools for --task runs.
-    #[arg(long, requires = "task", default_value = "bash,read_file,write_file,list_directory")]
+    #[arg(
+        long,
+        requires = "task",
+        default_value = "bash,read_file,write_file,list_directory"
+    )]
     tools: String,
     /// Max tool-call rounds for --task runs.
     #[arg(long, requires = "task", default_value_t = 8)]
@@ -69,6 +76,10 @@ struct Args {
     /// Suppress the live per-turn progress lines on stderr.
     #[arg(long)]
     quiet: bool,
+    /// Color theme for rendered output (built-in name or a custom one from config). Overrides
+    /// `BEE_THEME` and the config file (005-themes).
+    #[arg(long)]
+    theme: Option<String>,
 }
 
 /// Expand a `--scenarios` / `--providers` argument into concrete TOML paths. A value containing a
@@ -106,7 +117,10 @@ impl Args {
         if let Some(path) = &self.scenario {
             return Scenario::from_path(path).map_err(|e| e.to_string());
         }
-        let task = self.task.as_ref().ok_or("either --scenario or --task is required")?;
+        let task = self
+            .task
+            .as_ref()
+            .ok_or("either --scenario or --task is required")?;
         // An enforced scope must have a real policy; the `/dev/null` default below is only valid on
         // the host (no-enforce) build, where the policy is never compiled. Fail clean rather than
         // let `Policy::from_path("/dev/null")` produce a confusing TOML parse error at run time.
@@ -120,12 +134,20 @@ impl Args {
         }
         Ok(Scenario {
             id: "adhoc".to_string(),
-            policy_path: self.policy.clone().unwrap_or_else(|| PathBuf::from("/dev/null")),
+            policy_path: self
+                .policy
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("/dev/null")),
             system_prompt: self.system.clone(),
             task: task.clone(),
             turn_limit: self.turn_limit.max(1),
             timeout_secs: self.timeout_secs.max(1),
-            tools: self.tools.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            tools: self
+                .tools
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
             mode: Default::default(),
             workdir: Default::default(),
             mcp: Default::default(),
@@ -142,6 +164,13 @@ async fn main() -> ExitCode {
     if let Err(e) = set_non_dumpable() {
         eprintln!("bee-episode: warning: could not set non-dumpable: {e}");
     }
+
+    // Resolve + install the color theme (005-themes): --theme > BEE_THEME > config > honeycomb.
+    let (theme, theme_warning) = bee_harness::viz::theme::load(args.theme.as_deref());
+    if let Some(w) = theme_warning {
+        eprintln!("bee-episode: {w}");
+    }
+    bee_harness::viz::theme::init_theme(theme);
 
     if args.batch {
         return run_batch_mode(&args).await;
@@ -185,8 +214,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    let key_env =
-        (!provider.api_key_env.is_empty()).then_some(provider.api_key_env.as_str());
+    let key_env = (!provider.api_key_env.is_empty()).then_some(provider.api_key_env.as_str());
     // Live progress → stderr (JSON transcript stays on stdout, so piping is unaffected).
     let progress: Option<bee_harness::ProgressSink> = if args.quiet {
         None
@@ -254,7 +282,10 @@ async fn run_batch_mode(args: &Args) -> ExitCode {
         return run_concurrent_mode(scenarios, providers, &args.out, progress).await;
     }
 
-    let config = BatchConfig { scenarios, providers };
+    let config = BatchConfig {
+        scenarios,
+        providers,
+    };
     let result = run_batch(&config, progress).await;
 
     for e in &result.errors {
@@ -268,7 +299,10 @@ async fn run_batch_mode(args: &Args) -> ExitCode {
 
     // Human-facing status grid to stderr (stdout carries the JSON artifact) — 003-visual-render US7.
     if !result.transcripts.is_empty() {
-        eprint!("{}", bee_harness::batch::status_grid_summary(&result.transcripts));
+        eprint!(
+            "{}",
+            bee_harness::batch::status_grid_summary(&result.transcripts)
+        );
     }
 
     if let Err(code) = emit_transcripts(&result.transcripts, &args.out) {

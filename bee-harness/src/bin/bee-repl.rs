@@ -40,6 +40,10 @@ struct Args {
     /// Play the bee mascot animation at startup (also enabled by `BEE_MASCOT=1`).
     #[arg(long)]
     bee: bool,
+    /// Color theme (built-in name or a custom one from config). Overrides `BEE_THEME` and the config
+    /// file. Built-ins: honeycomb (default), catppuccin-{mocha,latte,frappe,macchiato}, dracula, nord.
+    #[arg(long)]
+    theme: Option<String>,
     /// Standalone MCP config TOML (top-level `[mcp]` + `[[mcp.servers]]`). Requires building with
     /// `--features mcp` (004-mcp-client).
     #[arg(long)]
@@ -55,6 +59,14 @@ async fn main() -> ExitCode {
     if let Err(e) = set_non_dumpable() {
         eprintln!("bee-repl: warning: could not set non-dumpable: {e}");
     }
+
+    // Resolve + install the color theme (005-themes) before anything renders: --theme > BEE_THEME >
+    // config file > honeycomb. An unknown name warns and falls back rather than failing (FR-052).
+    let (theme, theme_warning) = bee_harness::viz::theme::load(args.theme.as_deref());
+    if let Some(w) = theme_warning {
+        eprintln!("bee-repl: {w}");
+    }
+    bee_harness::viz::theme::init_theme(theme);
 
     let provider = match ProviderConfig::from_path(&args.provider) {
         Ok(p) => p,
@@ -128,7 +140,8 @@ async fn main() -> ExitCode {
     #[cfg(feature = "mcp")]
     let (mcp_bridge, mcp_summary, mcp_refresh) = match mcp_policy {
         Some(policy) => {
-            let bridge = std::sync::Arc::new(bee_harness::mcp::McpBridge::connect(policy, &sbox).await);
+            let bridge =
+                std::sync::Arc::new(bee_harness::mcp::McpBridge::connect(policy, &sbox).await);
             bridge.register_into(&mut registry);
             let summary = bridge.summary();
             let hook = bridge.clone();
@@ -164,6 +177,7 @@ async fn main() -> ExitCode {
     println!("  model:  {}", model.id());
     println!("  policy: {policy_label}");
     println!("  tools:  {}", tools.join(", "));
+    println!("  theme:  {}", bee_harness::viz::theme::active_theme().name);
     #[cfg(feature = "mcp")]
     if let Some(s) = &config.mcp_summary {
         println!("  {}", s.lines().next().unwrap_or("mcp: configured"));
