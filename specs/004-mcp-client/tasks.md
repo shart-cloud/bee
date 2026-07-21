@@ -70,8 +70,8 @@ call's audit (spec US8 Independent Test / SC-020).
 ### Tests for User Story 8 (write first, ensure they FAIL) ⚠️
 
 - [ ] T013 [P] [US8] Failing integration test in `bee-harness/tests/mcp_stdio.rs` (`--features enforce,mcp`): MockModel calls `mcp__filesystem__read_file` with `/secrets/key.pem`; assert `result.is_error == true` and the `RecordedCall.audit` contains a `file_open`/`denied` event for that path (SC-020, SC-023, US8 AS-1).
-- [ ] T014 [P] [US8] Failing test in `bee-harness/tests/mcp_stdio.rs`: server configured with `denied_tools = ["write_file"]` ⇒ `registry.schemas()` excludes `mcp__filesystem__write_file` (US8 AS-3, FR-039).
-- [ ] T015 [P] [US8] Failing test in `bee-harness/tests/mcp_stdio.rs`: a permissive `/workspace` read succeeds (`is_error == false`) with no denied audit events (US8 AS-2); plus a truncation case (>100 KB ⇒ `truncated`, `original_len`) and a per-call timeout case returning `"timed out"` (SC-024, SC-025).
+- [x] T014 [P] [US8] Failing test in `bee-harness/tests/mcp_stdio.rs`: server configured with `denied_tools = ["write_file"]` ⇒ `registry.schemas()` excludes `mcp__filesystem__write_file` (US8 AS-3, FR-039).
+- [x] T015 [P] [US8] Failing test in `bee-harness/tests/mcp_stdio.rs`: a permissive `/workspace` read succeeds (`is_error == false`) with no denied audit events (US8 AS-2); plus a truncation case (>100 KB ⇒ `truncated`, `original_len`) and a per-call timeout case returning `"timed out"` (SC-024, SC-025).
 
 ### Implementation for User Story 8
 
