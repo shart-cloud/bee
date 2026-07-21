@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use rmcp::service::{Peer, RoleClient, RunningService};
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::ServiceExt;
 
 use crate::provider::ToolSchema;
@@ -23,6 +25,8 @@ use super::transport::spawn_stdio;
 
 /// Stdio spawn + `initialize` handshake budget (NFR-005).
 const STDIO_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+/// Remote TCP + TLS + `initialize` handshake budget (NFR-005).
+const REMOTE_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Lifecycle state of a configured MCP server.
 #[derive(Debug, Clone)]
@@ -101,13 +105,9 @@ impl McpBridge {
             for cfg in policy.servers.iter().take(max) {
                 let server = match cfg.transport {
                     McpTransport::Stdio => connect_stdio(cfg, sandbox).await,
-                    // Remote domain-gated transports land in US9 (T026).
-                    McpTransport::Sse | McpTransport::StreamableHttp => ConnectedServer {
-                        config: cfg.clone(),
-                        tools: Vec::new(),
-                        status: ServerStatus::Failed("remote transport lands in US9".into()),
-                        handle: None,
-                    },
+                    McpTransport::Sse | McpTransport::StreamableHttp => {
+                        connect_remote(cfg, &policy).await
+                    }
                 };
                 servers.insert(cfg.name.clone(), server);
             }
@@ -153,44 +153,26 @@ impl McpBridge {
     }
 }
 
-/// Connect one stdio MCP server: spawn it sandboxed, run the `initialize` handshake under the
-/// startup budget, fetch + filter its tools, and cache their namespaced schemas. Never panics — any
-/// failure yields a [`ServerStatus::Failed`] server with no tools (fail-closed, Constitution I).
-async fn connect_stdio(cfg: &McpServerConfig, sandbox: &Sandbox) -> ConnectedServer {
-    let failed = |why: String| ConnectedServer {
-        config: cfg.clone(),
-        tools: Vec::new(),
-        status: ServerStatus::Failed(why),
-        handle: None,
-    };
+fn failed_server(cfg: &McpServerConfig, why: String) -> ConnectedServer {
+    ConnectedServer { config: cfg.clone(), tools: Vec::new(), status: ServerStatus::Failed(why), handle: None }
+}
 
-    let transport = match spawn_stdio(sandbox, cfg) {
-        Ok(t) => t,
-        Err(e) => return failed(e),
-    };
-
-    // `()` is the no-op client handler; `on_tool_list_changed` support lands in T031.
-    let running = match tokio::time::timeout(STDIO_STARTUP_TIMEOUT, ().serve(transport)).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => return failed(format!("initialize failed: {e}")),
-        Err(_) => return failed(format!(
-            "initialize timed out (>{}s)",
-            STDIO_STARTUP_TIMEOUT.as_secs()
-        )),
-    };
-
+/// After the `initialize` handshake, fetch + filter the server's tools and build the connected
+/// record. Shared by the stdio and remote paths.
+async fn finalize_connection(
+    cfg: &McpServerConfig,
+    running: RunningService<RoleClient, ()>,
+) -> ConnectedServer {
     let tools = match running.list_all_tools().await {
         Ok(t) => t,
-        Err(e) => return failed(format!("list_tools failed: {e}")),
+        Err(e) => return failed_server(cfg, format!("list_tools failed: {e}")),
     };
-
     // Apply allowed_tools/denied_tools (FR-039) and namespace the surviving schemas (FR-036).
     let filtered: Vec<(String, ToolSchema)> = tools
         .iter()
         .filter(|t| cfg.tool_allowed(&t.name))
         .map(|t| (t.name.to_string(), tool_schema(&cfg.name, t)))
         .collect();
-
     let peer = running.peer().clone();
     ConnectedServer {
         config: cfg.clone(),
@@ -198,6 +180,62 @@ async fn connect_stdio(cfg: &McpServerConfig, sandbox: &Sandbox) -> ConnectedSer
         status: ServerStatus::Connected,
         handle: Some(ServerHandle { service: running, peer }),
     }
+}
+
+/// Connect one stdio MCP server: spawn it sandboxed, run the `initialize` handshake under the
+/// startup budget, then finalize. Never panics — any failure yields a [`ServerStatus::Failed`]
+/// server with no tools (fail-closed, Constitution I).
+async fn connect_stdio(cfg: &McpServerConfig, sandbox: &Sandbox) -> ConnectedServer {
+    let transport = match spawn_stdio(sandbox, cfg) {
+        Ok(t) => t,
+        Err(e) => return failed_server(cfg, e),
+    };
+    // `()` is the no-op client handler; `on_tool_list_changed` support lands in T031.
+    let running = match tokio::time::timeout(STDIO_STARTUP_TIMEOUT, ().serve(transport)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return failed_server(cfg, format!("initialize failed: {e}")),
+        Err(_) => {
+            return failed_server(cfg, format!("initialize timed out (>{}s)", STDIO_STARTUP_TIMEOUT.as_secs()))
+        }
+    };
+    finalize_connection(cfg, running).await
+}
+
+/// Connect one remote MCP server over Streamable HTTP. The domain gate is checked **first** — a
+/// refused domain yields a `Failed` server with **no transport opened** (SC-021). The `token_env`
+/// value (if any) becomes the `Authorization: Bearer` header (FR-041); it is never logged.
+async fn connect_remote(cfg: &McpServerConfig, policy: &McpPolicy) -> ConnectedServer {
+    let url = match cfg.url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+        Some(u) => u,
+        None => return failed_server(cfg, "remote transport requires `url`".into()),
+    };
+
+    // Deny-by-default domain gate, BEFORE any socket is opened (Constitution I, SC-021).
+    if let Err(reason) = policy.allow_url(url) {
+        return failed_server(cfg, reason);
+    }
+
+    // `transport = "sse"` is a deprecated alias for the Streamable-HTTP client (research R2); both
+    // land here. (No logger to warn through; the deprecation is documented in the config contract.)
+    let mut config = StreamableHttpClientTransportConfig::with_uri(url.to_string());
+    if let Some(name) = &cfg.token_env {
+        // rmcp applies this via `bearer_auth`, i.e. it prepends "Bearer " — pass the raw token.
+        if let Ok(token) = std::env::var(name) {
+            if !token.is_empty() {
+                config = config.auth_header(token);
+            }
+        }
+    }
+
+    let transport = StreamableHttpClientTransport::from_config(config);
+    let running = match tokio::time::timeout(REMOTE_STARTUP_TIMEOUT, ().serve(transport)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return failed_server(cfg, format!("initialize failed: {e}")),
+        Err(_) => {
+            return failed_server(cfg, format!("initialize timed out (>{}s)", REMOTE_STARTUP_TIMEOUT.as_secs()))
+        }
+    };
+    finalize_connection(cfg, running).await
 }
 
 #[cfg(test)]

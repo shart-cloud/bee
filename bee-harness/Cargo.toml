@@ -63,8 +63,10 @@ ratatui = { version = "0.29", default-features = false }
 # NFR-004/SC-026). Optional + gated by the `mcp` feature above. rmcp is v2.x (the spec's "1" is a
 # stale major with a different API; research R1). `default-features = false` because rmcp's defaults
 # enable the SERVER, not the client — we add `client` explicitly. `transport-child-process` is the
-# sandboxed stdio transport (research R3); the remote Streamable-HTTP transport feature joins in US9.
-rmcp = { version = "2.2", default-features = false, features = ["client", "transport-child-process"], optional = true }
+# sandboxed stdio transport (research R3); `transport-streamable-http-client-reqwest` is the
+# domain-gated remote transport (US9 — rmcp 2.x removed the SSE client, so `transport = "sse"` is a
+# deprecated alias routed here, research R2).
+rmcp = { version = "2.2", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"], optional = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -75,3 +77,4 @@ libc = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "time"] }
+proptest = { workspace = true }

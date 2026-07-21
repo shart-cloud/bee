@@ -48,6 +48,22 @@ impl TryFrom<String> for DomainPattern {
     }
 }
 
+impl DomainPattern {
+    /// Whether `host` matches this pattern. Case- and trailing-dot-insensitive. A wildcard matches
+    /// one-or-more subdomain labels but **never** the bare apex or a suffix-substring
+    /// (`*.company.com` matches `a.company.com`, not `company.com` or `evilcompany.com`).
+    pub fn matches(&self, host: &str) -> bool {
+        let h = normalize(host);
+        match self {
+            DomainPattern::Exact(e) => &h == e,
+            // `h` must end with `.{suffix}`: strip the suffix and require a non-empty label + dot.
+            DomainPattern::Wildcard(suffix) => h
+                .strip_suffix(suffix.as_str())
+                .is_some_and(|prefix| prefix.len() > 1 && prefix.ends_with('.')),
+        }
+    }
+}
+
 impl std::fmt::Display for DomainPattern {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -55,6 +71,20 @@ impl std::fmt::Display for DomainPattern {
             DomainPattern::Wildcard(s) => write!(f, "*.{s}"),
         }
     }
+}
+
+/// Extract the hostname from a URL (scheme/userinfo/port/path stripped), for domain gating. Handles
+/// bracketed IPv6 literals. Returns `None` if no host is present.
+pub fn url_host(url: &str) -> Option<&str> {
+    let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+    let host = if let Some(rest) = host_port.strip_prefix('[') {
+        rest.split_once(']').map(|(h, _)| h).unwrap_or(rest) // IPv6 literal
+    } else {
+        host_port.split(':').next().unwrap_or(host_port)
+    };
+    (!host.is_empty()).then_some(host)
 }
 
 impl From<DomainPattern> for String {
@@ -112,6 +142,25 @@ impl McpPolicy {
             .filter_map(|s| s.token_env.clone())
             .filter(|n| !n.is_empty())
             .collect()
+    }
+
+    /// Decide whether a remote MCP server at `url` may be connected (FR-035). Resolution order:
+    /// **denied → allowed → deny-by-default**. Returns `Ok(())` to allow, or `Err(reason)` with a
+    /// transcript-ready message to refuse — evaluated **before** any transport is opened (SC-021).
+    pub fn allow_url(&self, url: &str) -> Result<(), String> {
+        let host = url_host(url)
+            .ok_or_else(|| format!("connection refused by MCP policy — cannot parse host from {url:?}"))?;
+        if self.denied_domains.iter().any(|p| p.matches(host)) {
+            return Err(format!(
+                "connection refused by MCP policy — domain {host} is in the denylist"
+            ));
+        }
+        if self.allowed_domains.iter().any(|p| p.matches(host)) {
+            return Ok(());
+        }
+        Err(format!(
+            "connection refused by MCP policy — domain {host} not in the allowlist"
+        ))
     }
 
     /// Semantic validation (called from `Scenario::validate`). Only enforced when `enabled`.
@@ -179,6 +228,73 @@ mod tests {
         assert_eq!(p.tool_timeout_secs, 30);
         assert!(!p.allow_dynamic_connect);
         assert!(p.validate().is_ok()); // disabled → no checks
+    }
+
+    #[test]
+    fn wildcard_matching_rules() {
+        let w = DomainPattern::try_from("*.company.com".to_string()).unwrap();
+        assert!(w.matches("a.company.com"));
+        assert!(w.matches("a.b.company.com"));
+        assert!(w.matches("A.Company.Com")); // case-insensitive
+        assert!(w.matches("x.company.com.")); // trailing dot normalized
+        assert!(!w.matches("company.com")); // bare apex excluded
+        assert!(!w.matches("evilcompany.com")); // suffix-substring, not a subdomain
+        assert!(!w.matches("company.com.evil.com"));
+
+        let e = DomainPattern::try_from("mcp.internal.dev".to_string()).unwrap();
+        assert!(e.matches("mcp.internal.dev"));
+        assert!(!e.matches("x.mcp.internal.dev"));
+        assert!(!e.matches("mcp.internal.dev.evil.com"));
+    }
+
+    /// The normative resolution matrix from contracts/mcp-policy.md §3.
+    #[test]
+    fn resolution_matrix() {
+        let pol = |allow: &[&str], deny: &[&str]| McpPolicy {
+            enabled: true,
+            allowed_domains: allow.iter().map(|s| DomainPattern::try_from(s.to_string()).unwrap()).collect(),
+            denied_domains: deny.iter().map(|s| DomainPattern::try_from(s.to_string()).unwrap()).collect(),
+            ..Default::default()
+        };
+        let host_of = |p: &McpPolicy, url: &str| p.allow_url(url).is_ok();
+
+        // 1: exact allow
+        assert!(host_of(&pol(&["mcp.internal.dev"], &[]), "https://mcp.internal.dev/tools"));
+        // 2: not allowed → refuse
+        assert!(!host_of(&pol(&["mcp.internal.dev"], &[]), "https://mcp.evil.dev/tools"));
+        // 3: denied wins over wildcard allow
+        assert!(!host_of(&pol(&["*.company.com"], &["admin.company.com"]), "https://admin.company.com/mcp"));
+        // 4: wildcard allow
+        assert!(host_of(&pol(&["*.company.com"], &["admin.company.com"]), "https://app.company.com/mcp"));
+        // 5: wildcard ≠ apex
+        assert!(!host_of(&pol(&["*.company.com"], &[]), "https://company.com/mcp"));
+        // 6: empty allowlist → refuse everything
+        assert!(!host_of(&pol(&[], &[]), "https://anything.example/mcp"));
+    }
+
+    #[test]
+    fn url_host_extraction() {
+        assert_eq!(url_host("https://mcp.internal.dev/github"), Some("mcp.internal.dev"));
+        assert_eq!(url_host("https://user@db.company.com:8443/mcp?x=1"), Some("db.company.com"));
+        assert_eq!(url_host("http://[2001:db8::1]:9000/mcp"), Some("2001:db8::1"));
+        assert_eq!(url_host("mcp.internal.dev/x"), Some("mcp.internal.dev"));
+    }
+
+    proptest::proptest! {
+        // A wildcard `*.suffix` never matches the bare apex and never matches a label that merely
+        // ends with the suffix text without a dot boundary (the substring-attack class).
+        #[test]
+        fn wildcard_never_matches_apex_or_substring(
+            label in "[a-z]{1,8}",
+            suffix in "[a-z]{1,6}\\.[a-z]{2,4}",
+        ) {
+            let w = DomainPattern::Wildcard(suffix.clone());
+            let subdomain = format!("{label}.{suffix}");
+            let substring = format!("{label}{suffix}");
+            proptest::prop_assert!(!w.matches(&suffix));      // apex excluded
+            proptest::prop_assert!(w.matches(&subdomain));    // real subdomain matches
+            proptest::prop_assert!(!w.matches(&substring));   // no dot boundary → no match
+        }
     }
 
     #[test]

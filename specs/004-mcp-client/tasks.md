@@ -96,15 +96,15 @@ Independent Test / SC-021, SC-022).
 
 ### Tests for User Story 9 (write first, ensure they FAIL) ⚠️
 
-- [ ] T021 [P] [US9] **Property test** for `DomainPattern::matches` in `bee-harness/src/mcp/policy.rs` (`#[cfg(test)] proptest`): wildcard never matches the bare apex, never matches a suffix-substring (`evilcompany.com` vs `*.company.com`), always matches deeper subdomains; case-insensitive (Constitution: security matching is property-tested).
-- [ ] T022 [P] [US9] Domain-resolution matrix test in `bee-harness/tests/mcp_domain_gating.rs` encoding contracts/mcp-policy.md §3's 7-row table (denied wins, empty allowlist denies, wildcard ≠ apex) (SC-021).
-- [ ] T023 [P] [US9] Refusal + dynamic-connect tests in `bee-harness/tests/mcp_domain_gating.rs`: a non-allowed host is refused, the transcript records "connection refused by MCP policy", and no transport is opened (assert no socket write); `allow_dynamic_connect = false` refuses an undeclared server (SC-021, FR-040); a `token_env` value never appears in the transcript/logs (SC-028 remote).
+- [x] T021 [P] [US9] **Property test** for `DomainPattern::matches` in `bee-harness/src/mcp/policy.rs` (`#[cfg(test)] proptest`): wildcard never matches the bare apex, never matches a suffix-substring (`evilcompany.com` vs `*.company.com`), always matches deeper subdomains; case-insensitive (Constitution: security matching is property-tested).
+- [x] T022 [P] [US9] Domain-resolution matrix test in `bee-harness/tests/mcp_domain_gating.rs` encoding contracts/mcp-policy.md §3's 7-row table (denied wins, empty allowlist denies, wildcard ≠ apex) (SC-021).
+- [x] T023 [P] [US9] Refusal + dynamic-connect tests in `bee-harness/tests/mcp_domain_gating.rs`: a non-allowed host is refused, the transcript records "connection refused by MCP policy", and no transport is opened (assert no socket write); `allow_dynamic_connect = false` refuses an undeclared server (SC-021, FR-040); a `token_env` value never appears in the transcript/logs (SC-028 remote).
 
 ### Implementation for User Story 9
 
-- [ ] T024 [US9] Add the `transport-streamable-http-client-reqwest` rmcp feature to the `mcp` feature set in `bee-harness/Cargo.toml`; implement the `transport = "sse"` deprecated-alias warning routing to the Streamable-HTTP client (research R2).
-- [ ] T025 [US9] Implement `DomainPattern::matches` and `resolve(host, &McpPolicy) -> Decision` (denied → allowed → deny-by-default) in `bee-harness/src/mcp/policy.rs`; parse the URL host with port/scheme/path stripped (research R6, mcp-policy.md §3). Depends on T006.
-- [ ] T026 [US9] Implement `McpBridge::connect` remote branch in `bee-harness/src/mcp/bridge.rs`: resolve the domain **first** (refuse + record, no transport on deny), else open the Streamable-HTTP client with the `token_env` Bearer header under a 15 s timeout, `list_all_tools()`, cache filtered schemas; enforce `max_servers` and `allow_dynamic_connect` (FR-035, FR-040, FR-041, NFR-005). Depends on T025, T011, T024.
+- [x] T024 [US9] Add the `transport-streamable-http-client-reqwest` rmcp feature to the `mcp` feature set in `bee-harness/Cargo.toml`; implement the `transport = "sse"` deprecated-alias warning routing to the Streamable-HTTP client (research R2).
+- [x] T025 [US9] Implement `DomainPattern::matches` and `resolve(host, &McpPolicy) -> Decision` (denied → allowed → deny-by-default) in `bee-harness/src/mcp/policy.rs`; parse the URL host with port/scheme/path stripped (research R6, mcp-policy.md §3). Depends on T006.
+- [x] T026 [US9] Implement `McpBridge::connect` remote branch in `bee-harness/src/mcp/bridge.rs`: resolve the domain **first** (refuse + record, no transport on deny), else open the Streamable-HTTP client with the `token_env` Bearer header under a 15 s timeout, `list_all_tools()`, cache filtered schemas; enforce `max_servers` and `allow_dynamic_connect` (FR-035, FR-040, FR-041, NFR-005). Depends on T025, T011, T024.
 
 **Checkpoint**: US8 and US9 both work independently; domain matrix + refusal tests pass.
 
