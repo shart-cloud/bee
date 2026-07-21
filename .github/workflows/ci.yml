@@ -1,0 +1,94 @@
+name: CI
+
+# User-space crates build on STABLE (constitution Principle V / NFR-003). The eBPF `enforce` path
+# needs nightly + bpf-linker + a BPF-LSM kernel, so it can't run on stock runners — it gets a
+# separate, non-blocking type-check job (see `enforce-check`).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (e.g. a force-push to a PR branch).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain (rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy (-D warnings)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain (clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ !env.ACT }} # needs GitHub's cache backend; skipped under `act` for local runs
+      - name: clippy (default features)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: clippy (mcp feature)
+        run: cargo clippy -p bee-harness --features mcp --all-targets -- -D warnings
+
+  test:
+    name: build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ !env.ACT }} # needs GitHub's cache backend; skipped under `act` for local runs
+      - name: build (workspace)
+        run: cargo build --workspace
+      - name: test (workspace, default features)
+        # No ANTHROPIC_API_KEY is set, so the live-provider smoke test self-skips (it only runs when
+        # the key is present). Everything else is offline (MockModel + host sandbox).
+        run: cargo test --workspace
+      - name: test (bee-harness, mcp feature)
+        run: cargo test -p bee-harness --features mcp
+
+  enforce-check:
+    name: enforce type-check (best-effort)
+    runs-on: ubuntu-latest
+    # Non-blocking: the nightly ↔ bpf-linker ↔ LLVM version triad is a known break risk (see
+    # rust-toolchain.toml). This job type-checks the eBPF `enforce` path so it can't rot silently,
+    # but a red result here does not fail the overall run.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain (outer build)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install nightly toolchain (bee-ebpf build)
+        # bee-ebpf/rust-toolchain.toml selects nightly with rust-src for the bpfel-unknown-none
+        # target; build.rs shells out to `cargo +nightly build -Z build-std=core`.
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ !env.ACT }} # needs GitHub's cache backend; skipped under `act` for local runs
+      - name: Install bpf-linker
+        # LLVM-matched linker for the BPF object. `cargo install` is cached by rust-cache across runs.
+        run: cargo install bpf-linker
+      - name: cargo check --features enforce
+        # Runs bee-userspace/build.rs, which compiles + embeds the bee-ebpf object, then type-checks
+        # the enforce user-space path in bee-harness.
+        run: cargo check -p bee-harness --features enforce
