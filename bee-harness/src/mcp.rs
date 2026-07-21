@@ -18,3 +18,14 @@ pub mod policy;
 
 pub use config::{McpServerConfig, McpTransport};
 pub use policy::{DomainPattern, McpPolicy};
+
+// The runtime (depends on `rmcp`) is gated behind the `mcp` feature (NFR-004/SC-026).
+#[cfg(feature = "mcp")]
+pub mod bridge;
+#[cfg(feature = "mcp")]
+pub mod proxy;
+
+#[cfg(feature = "mcp")]
+pub use bridge::{ConnectedServer, McpBridge, ServerStatus};
+#[cfg(feature = "mcp")]
+pub use proxy::McpToolProxy;
