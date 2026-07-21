@@ -341,7 +341,9 @@ pub async fn run_loop(
             // denied resource) and the call retried ONCE under the widened scope. Runs before the
             // result is recorded, so the model sees the single (post-reload) outcome.
             if audit.iter().any(|e| e.decision == "denied") {
-                if let (Some(esc), Some(active)) = (opts.escalation.as_ref(), active_policy.as_mut()) {
+                if let (Some(esc), Some(active)) =
+                    (opts.escalation.as_ref(), active_policy.as_mut())
+                {
                     let denial = audit
                         .iter()
                         .find(|e| e.decision == "denied")
@@ -649,7 +651,9 @@ pub async fn run_episode(
             Box::new(crate::grants::escalate::DenialEscalationHook {
                 enabled: scenario.ceiling_policy_path.is_some(),
             }),
-            Box::new(crate::grants::escalate::SkillEscalationHook::new(skills.clone())),
+            Box::new(crate::grants::escalate::SkillEscalationHook::new(
+                skills.clone(),
+            )),
         ];
         opts.escalation = Some(crate::grants::escalate::LoopEscalation {
             base: escalation_base,

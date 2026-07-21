@@ -269,7 +269,10 @@ mod tests {
     // T014 / T012 — within-ceiling grant is applied, scope reloaded (host no-op), tools registered.
     #[tokio::test]
     async fn escalate_within_ceiling_grants_and_reloads() {
-        let mut ap = ActivePolicy::new(policy("base", &[]), policy("ceil", &[("/tmp", Access::Write)]));
+        let mut ap = ActivePolicy::new(
+            policy("base", &[]),
+            policy("ceil", &[("/tmp", Access::Write)]),
+        );
         let mut reg = ToolRegistry::new();
         let mut sb = host();
         let mut delta = fs_delta("/tmp/w", Access::Write);
@@ -299,7 +302,10 @@ mod tests {
             ASKED.store(true, Ordering::SeqCst);
             true
         };
-        let mut ap = ActivePolicy::new(policy("base", &[]), policy("ceil", &[("/tmp", Access::Write)]));
+        let mut ap = ActivePolicy::new(
+            policy("base", &[]),
+            policy("ceil", &[("/tmp", Access::Write)]),
+        );
         let mut reg = ToolRegistry::new();
         let mut sb = host();
         let out = escalate(
@@ -314,15 +320,23 @@ mod tests {
             &mut reg,
         )
         .await;
-        assert!(matches!(out, EscalateOutcome::Refused(ref r) if r.contains("exceeds capability ceiling")));
-        assert!(!ASKED.load(Ordering::SeqCst), "consent must not be consulted beyond the ceiling");
+        assert!(
+            matches!(out, EscalateOutcome::Refused(ref r) if r.contains("exceeds capability ceiling"))
+        );
+        assert!(
+            !ASKED.load(Ordering::SeqCst),
+            "consent must not be consulted beyond the ceiling"
+        );
         assert!(ap.leases().is_empty());
     }
 
     // Consent denial (or timeout) refuses and changes nothing.
     #[tokio::test]
     async fn escalate_denied_by_consent_is_refused() {
-        let mut ap = ActivePolicy::new(policy("base", &[]), policy("ceil", &[("/tmp", Access::Write)]));
+        let mut ap = ActivePolicy::new(
+            policy("base", &[]),
+            policy("ceil", &[("/tmp", Access::Write)]),
+        );
         let mut reg = ToolRegistry::new();
         let mut sb = host();
         let out = escalate(
@@ -338,7 +352,7 @@ mod tests {
         )
         .await;
         assert!(matches!(out, EscalateOutcome::Refused(_)));
-        assert!(ap.active().filesystem.get("/tmp/w").is_none());
+        assert!(!ap.active().filesystem.contains_key("/tmp/w"));
     }
 
     #[tokio::test]

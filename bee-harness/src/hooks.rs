@@ -133,14 +133,19 @@ mod tests {
             Box::new(Fixed(Flow::Deny("first".into()), StepEventKind::TurnStart)),
             Box::new(Fixed(Flow::Deny("second".into()), StepEventKind::TurnStart)),
         ];
-        assert_eq!(dispatch(&hooks, &turn_ev()).await, Flow::Deny("first".into()));
+        assert_eq!(
+            dispatch(&hooks, &turn_ev()).await,
+            Flow::Deny("first".into())
+        );
     }
 
     #[tokio::test]
     async fn observes_filters_events() {
         // This hook only observes BeforeToolCall, so a TurnStart event skips it → Continue.
-        let hooks: Vec<Box<dyn LoopHook>> =
-            vec![Box::new(Fixed(Flow::Terminate("x".into()), StepEventKind::BeforeToolCall))];
+        let hooks: Vec<Box<dyn LoopHook>> = vec![Box::new(Fixed(
+            Flow::Terminate("x".into()),
+            StepEventKind::BeforeToolCall,
+        ))];
         assert_eq!(dispatch(&hooks, &turn_ev()).await, Flow::Continue);
     }
 

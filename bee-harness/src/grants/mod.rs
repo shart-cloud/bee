@@ -300,7 +300,12 @@ mod tests {
         let ceiling = policy("ceiling", &[("/tmp", Access::Write)]);
         let mut ap = ActivePolicy::new(base, ceiling);
         let id = ap
-            .try_apply(GrantOrigin::Explicit, fs_delta("/tmp/w", Access::Write), Ttl::Forever, 0)
+            .try_apply(
+                GrantOrigin::Explicit,
+                fs_delta("/tmp/w", Access::Write),
+                Ttl::Forever,
+                0,
+            )
             .expect("within ceiling");
         assert_eq!(ap.active().filesystem.get("/tmp/w"), Some(&Access::Write));
         assert_eq!(ap.leases().len(), 1);
@@ -313,10 +318,15 @@ mod tests {
         let ceiling = policy("ceiling", &[("/tmp", Access::Write)]);
         let mut ap = ActivePolicy::new(base, ceiling);
         let err = ap
-            .try_apply(GrantOrigin::Explicit, fs_delta("/etc", Access::Write), Ttl::Forever, 0)
+            .try_apply(
+                GrantOrigin::Explicit,
+                fs_delta("/etc", Access::Write),
+                Ttl::Forever,
+                0,
+            )
             .unwrap_err();
         assert!(err.contains("exceeds capability ceiling"));
-        assert!(ap.active().filesystem.get("/etc").is_none());
+        assert!(!ap.active().filesystem.contains_key("/etc"));
         assert!(ap.leases().is_empty());
     }
 
@@ -325,15 +335,20 @@ mod tests {
         let base = policy("base", &[]);
         let ceiling = policy("ceiling", &[("/tmp", Access::Write)]);
         let mut ap = ActivePolicy::new(base, ceiling);
-        ap.try_apply(GrantOrigin::Explicit, fs_delta("/tmp/w", Access::Write), Ttl::Turns(1), 0)
-            .unwrap();
+        ap.try_apply(
+            GrantOrigin::Explicit,
+            fs_delta("/tmp/w", Access::Write),
+            Ttl::Turns(1),
+            0,
+        )
+        .unwrap();
         // Live on turn 0.
         assert!(ap.active().filesystem.contains_key("/tmp/w"));
         assert!(ap.expire(0).is_empty(), "not yet expired");
         // Expires at turn 1.
         let dropped = ap.expire(1);
         assert_eq!(dropped.len(), 1);
-        assert!(ap.active().filesystem.get("/tmp/w").is_none());
+        assert!(!ap.active().filesystem.contains_key("/tmp/w"));
     }
 
     #[test]
@@ -342,11 +357,16 @@ mod tests {
         let ceiling = policy("ceiling", &[("/tmp", Access::Write)]);
         let mut ap = ActivePolicy::new(base, ceiling);
         let id = ap
-            .try_apply(GrantOrigin::Explicit, fs_delta("/tmp/w", Access::Write), Ttl::Forever, 0)
+            .try_apply(
+                GrantOrigin::Explicit,
+                fs_delta("/tmp/w", Access::Write),
+                Ttl::Forever,
+                0,
+            )
             .unwrap();
         assert!(ap.release(&id));
         assert!(!ap.release(&id), "already gone");
-        assert!(ap.active().filesystem.get("/tmp/w").is_none());
+        assert!(!ap.active().filesystem.contains_key("/tmp/w"));
     }
 
     #[test]
@@ -356,7 +376,8 @@ mod tests {
         let mut ap = ActivePolicy::new(base, ceiling);
         let mut d = fs_delta("/tmp/w", Access::Write);
         d.tools = vec!["bash".into(), "read_file".into()];
-        ap.try_apply(GrantOrigin::Explicit, d, Ttl::Forever, 0).unwrap();
+        ap.try_apply(GrantOrigin::Explicit, d, Ttl::Forever, 0)
+            .unwrap();
         let tools = ap.granted_tools();
         assert!(tools.contains("bash") && tools.contains("read_file"));
     }
@@ -370,9 +391,9 @@ mod tests {
 
         #[derive(Debug, Clone)]
         enum Op {
-            Apply(usize, u32),  // ceiling-path index, ttl turns
+            Apply(usize, u32), // ceiling-path index, ttl turns
             Expire(u32),
-            Release(usize),     // lease index (mod live count)
+            Release(usize), // lease index (mod live count)
         }
 
         fn op_strategy() -> impl Strategy<Value = Op> {

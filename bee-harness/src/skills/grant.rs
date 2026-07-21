@@ -293,7 +293,7 @@ mod tests {
         assert!(out.granted.is_empty());
         assert!(out.tools.is_empty());
         // Policy is untouched — the base has no /tmp/work grant.
-        assert!(out.policy.filesystem.get("/tmp/work").is_none());
+        assert!(!out.policy.filesystem.contains_key("/tmp/work"));
         assert_eq!(out.refused[0].0, "writer");
         assert!(out.refused[0].1.contains("denied by operator"));
     }
@@ -312,7 +312,7 @@ mod tests {
         };
         let out = resolve_grants(&[&s], &base, &ceiling, &consent).await;
         assert!(out.granted.is_empty());
-        assert!(out.policy.filesystem.get("/etc").is_none());
+        assert!(!out.policy.filesystem.contains_key("/etc"));
         assert!(out.refused[0].1.contains("exceeds capability ceiling"));
         // The human is never even asked for an unauthorizable request.
         assert!(!PROMPTED.load(Ordering::SeqCst));

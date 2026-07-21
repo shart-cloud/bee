@@ -72,7 +72,8 @@ impl Sandbox {
             Sandbox::Enforced(e) => e.reload(policy),
             #[cfg(feature = "concurrent")]
             Sandbox::Concurrent(_) => Err(
-                "reload unsupported on a concurrent sandbox (engine owned by the runner)".to_string(),
+                "reload unsupported on a concurrent sandbox (engine owned by the runner)"
+                    .to_string(),
             ),
         }
     }
