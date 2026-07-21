@@ -69,7 +69,7 @@ call's audit (spec US8 Independent Test / SC-020).
 
 ### Tests for User Story 8 (write first, ensure they FAIL) ⚠️
 
-- [ ] T013 [P] [US8] Failing integration test in `bee-harness/tests/mcp_stdio.rs` (`--features enforce,mcp`): MockModel calls `mcp__filesystem__read_file` with `/secrets/key.pem`; assert `result.is_error == true` and the `RecordedCall.audit` contains a `file_open`/`denied` event for that path (SC-020, SC-023, US8 AS-1).
+- [x] T013 [P] [US8] Failing integration test in `bee-harness/tests/mcp_stdio.rs` (`--features enforce,mcp`): MockModel calls `mcp__filesystem__read_file` with `/secrets/key.pem`; assert `result.is_error == true` and the `RecordedCall.audit` contains a `file_open`/`denied` event for that path (SC-020, SC-023, US8 AS-1).
 - [x] T014 [P] [US8] Failing test in `bee-harness/tests/mcp_stdio.rs`: server configured with `denied_tools = ["write_file"]` ⇒ `registry.schemas()` excludes `mcp__filesystem__write_file` (US8 AS-3, FR-039).
 - [x] T015 [P] [US8] Failing test in `bee-harness/tests/mcp_stdio.rs`: a permissive `/workspace` read succeeds (`is_error == false`) with no denied audit events (US8 AS-2); plus a truncation case (>100 KB ⇒ `truncated`, `original_len`) and a per-call timeout case returning `"timed out"` (SC-024, SC-025).
 
@@ -79,7 +79,7 @@ call's audit (spec US8 Independent Test / SC-020).
 - [x] T017 [US8] Implement the stdio transport in `bee-harness/src/mcp/transport.rs`: build `std::process::Command` via `Sandbox::tool_command`, apply `config.env`, convert to `tokio::process::Command`. **If T016 passed** use `TokioChildProcess::new(cmd)?` (§3.1); **else** the raw-pipe fallback (spawn with piped stdio + `kill_on_drop`, hand `(child.stdout, child.stdin)` to serve — §3.3). Wrap `initialize` in a 10 s `tokio::time::timeout` (NFR-005). Depends on T016.
 - [x] T018 [US8] Implement `McpBridge::connect` stdio branch in `bee-harness/src/mcp/bridge.rs`: for each stdio server (respecting `max_servers`), spawn+`().serve()` via T017, `list_all_tools()`, cache filtered `ToolSchema`s, set `ConnectedServer.status`; a spawn/init failure ⇒ `Failed`, tools unregistered, non-fatal. Depends on T017, T011.
 - [x] T019 [US8] Wire the bridge into `bee-harness/src/episode.rs` `run_episode`: after `registry_for(...)` and sandbox construction, `let bridge = McpBridge::connect(scenario.mcp.clone(), &sandbox).await;` then `bridge.register_into(&mut registry);`; hold `bridge` for the episode and `bridge.teardown()` at the end (research R5). Depends on T018.
-- [ ] T020 [US8] Implement crash handling in `bee-harness/src/mcp/{bridge,proxy}.rs`: a child exit / dead peer flips `ServerStatus` to `Disconnected`; in-flight call ⇒ error result; later calls ⇒ `ToolResult::error("MCP server '{name}' disconnected")`; episode continues (FR-042, US8 AS-4). Add a failing→passing test in `bee-harness/tests/mcp_stdio.rs` that SIGKILLs the child mid-episode. Depends on T019.
+- [x] T020 [US8] Implement crash handling in `bee-harness/src/mcp/{bridge,proxy}.rs`: a child exit / dead peer flips `ServerStatus` to `Disconnected`; in-flight call ⇒ error result; later calls ⇒ `ToolResult::error("MCP server '{name}' disconnected")`; episode continues (FR-042, US8 AS-4). Add a failing→passing test in `bee-harness/tests/mcp_stdio.rs` that SIGKILLs the child mid-episode. Depends on T019.
 
 **Checkpoint**: MVP — a sandboxed stdio MCP server works end-to-end; T013–T015, T020 pass under `enforce`.
 
