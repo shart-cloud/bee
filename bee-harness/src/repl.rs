@@ -62,8 +62,8 @@ pub struct ReplConfig {
     pub max_retries: u32,
     /// Human-readable label for the active policy/enforcement mode, shown by `/policy`.
     pub policy_label: String,
-    /// Play the bee mascot animation once at startup (003-visual-render, Slice 2, FR-032). Opt-in via
-    /// `--bee` / `BEE_MASCOT=1`; off by default.
+    /// Play the bee mascot animation once at startup (003-visual-render, Slice 2, FR-032). On by
+    /// default; suppress with `--no-bee` / `BEE_MASCOT=0`.
     pub mascot: bool,
     /// Pre-rendered `/mcp` output: configured MCP servers, their status, and the domain policy
     /// (004-mcp-client, US10). `None` when MCP is not configured / the `mcp` feature is off.
@@ -72,6 +72,9 @@ pub struct ReplConfig {
     /// server sent `tools/list_changed`. rmcp-agnostic (a plain closure); `None` is a no-op.
     #[allow(clippy::type_complexity)]
     pub refresh_tools: Option<Box<dyn Fn(&mut ToolRegistry) + Send + Sync>>,
+    /// Discovered skills (006-skills), shared with the `skill` tool. Backs the `/skill` command and
+    /// the system-prompt nudge. Defaults to an empty registry (no skills, no `/skill`).
+    pub skills: Arc<crate::skills::SkillRegistry>,
 }
 
 impl Default for ReplConfig {
@@ -85,9 +88,10 @@ impl Default for ReplConfig {
             tool_timeout_secs: 30,
             max_retries: 3,
             policy_label: "none".to_string(),
-            mascot: false,
+            mascot: true,
             mcp_summary: None,
             refresh_tools: None,
+            skills: Arc::new(crate::skills::SkillRegistry::default()),
         }
     }
 }
@@ -191,6 +195,9 @@ pub enum MetaCommand {
     Policy,
     /// `/mcp` — show configured MCP servers, their status, and the domain policy (004-mcp-client).
     Mcp,
+    /// `/skill [name]` — list discovered skills, or load one's instructions as the next turn
+    /// (006-skills).
+    Skill(Option<String>),
     /// `/system [text]` — show the system prompt, or replace it when text is given.
     System(Option<String>),
     /// `/history` — show recent user messages this session.
@@ -225,6 +232,7 @@ pub fn parse_meta_command(line: &str) -> Option<MetaCommand> {
         "/tools" => MetaCommand::Tools,
         "/policy" => MetaCommand::Policy,
         "/mcp" => MetaCommand::Mcp,
+        "/skill" | "/skills" => MetaCommand::Skill(arg),
         "/system" => MetaCommand::System(arg),
         "/history" => MetaCommand::History,
         "/retry" => MetaCommand::Retry,
@@ -238,6 +246,7 @@ const HELP_TEXT: &str = "commands:\n  \
     /tools          list the tools the agent has\n  \
     /policy         show the active policy / enforcement mode\n  \
     /mcp            show configured MCP servers and the domain policy\n  \
+    /skill [name]   list skills, or load one's instructions into the conversation\n  \
     /system [text]  show the system prompt, or replace it\n  \
     /history        show recent messages this session\n  \
     /retry          re-send your last message\n  \
@@ -599,8 +608,18 @@ fn exchange_footer(result: &ExchangeResult, elapsed: Duration, model_id: &str) -
                 human_tokens(u.input_tokens),
                 human_tokens(u.output_tokens)
             );
-            if u.cache_read_tokens > 0 {
-                tok.push_str(&format!(" ({} cached)", human_tokens(u.cache_read_tokens)));
+            // Surface prompt-cache activity so caching is observable live: writes populate the
+            // cache (first turn / after a prefix change), reads are the hits that follow (~0.1×
+            // cost). Only shown when non-zero, so non-caching providers stay quiet.
+            if u.cache_read_tokens > 0 || u.cache_write_tokens > 0 {
+                let mut bits = Vec::new();
+                if u.cache_read_tokens > 0 {
+                    bits.push(format!("{} cached", human_tokens(u.cache_read_tokens)));
+                }
+                if u.cache_write_tokens > 0 {
+                    bits.push(format!("{} written", human_tokens(u.cache_write_tokens)));
+                }
+                tok.push_str(&format!(" ({})", bits.join(", ")));
             }
             parts.push(tok);
             if let Some(cost) = crate::metrics::pricing::cost(model_id, u) {
@@ -667,6 +686,26 @@ fn audit_summary(audit: &[AuditEvent]) -> String {
     out
 }
 
+/// List discovered skills and their (first-line) descriptions, marking user/model visibility.
+fn skills_summary(skills: &crate::skills::SkillRegistry) -> String {
+    if skills.is_empty() {
+        return "no skills discovered.".to_string();
+    }
+    let mut out = format!("{} discovered:", plural(skills.len() as u32, "skill"));
+    for s in skills.iter() {
+        let desc = s.description.lines().next().unwrap_or("");
+        // Flag anything not loadable both ways, so the layering is visible at a glance.
+        let vis = match (s.model_invocable, s.user_invocable) {
+            (true, _) => "",
+            (false, true) => " [user-only]",
+            (false, false) => " [hidden]",
+        };
+        out.push_str(&format!("\n  {}{vis} — {desc}", s.name));
+    }
+    out.push_str("\n\nuse /skill <name> to load one's instructions into the conversation.");
+    out
+}
+
 /// List the enabled tools and their (first-line) descriptions.
 fn tools_summary(registry: &ToolRegistry) -> String {
     let schemas = registry.schemas();
@@ -727,6 +766,42 @@ fn remember(editor: &mut DefaultEditor, path: &Option<PathBuf>, line: &str) {
     }
 }
 
+/// The system prompt actually sent to the model: the configured base, plus a short primer on the
+/// `render` tool's Rhai drawing API **only when that tool is registered** (005-themes follow-up). The
+/// full API surface already lives in the tool's schema, so this stays brief — it just makes the agent
+/// aware visuals exist and nudges it to use them when a chart/table/status grid reads better than
+/// prose. When `render` is not among the enabled tools, the base prompt is returned unchanged so the
+/// agent is never told about a tool it doesn't have.
+fn effective_system_prompt(base: &str, registry: &ToolRegistry) -> String {
+    let mut prompt = base.to_string();
+    if registry.contains("render") {
+        prompt.push_str(
+            "\n\n\
+             You can also draw visualizations with the `render` tool: write a short Rhai script \
+             ending in `render(widget)` to produce bar/line charts, sparklines, tables, gauges, \
+             pass/fail dot grids, styled text, or sprites — the tool's schema lists the full \
+             drawing API. Reach for it when a chart, table, or status grid communicates results \
+             (comparisons, trends, distributions, progress, pass/fail) more clearly than plain \
+             text; keep using prose to explain. Chart and text colors resolve against the user's \
+             active color theme, so prefer semantic color names (accent, success, error, info) or \
+             the theme's palette names over raw hex. The user sees the rendered visual; you \
+             receive only a short text summary of what was drawn.",
+        );
+    }
+    if registry.contains("skill") {
+        // The per-skill catalog lives in the `skill` tool's schema (re-derived each turn), so the
+        // nudge here stays short and never duplicates the trigger text.
+        prompt.push_str(
+            "\n\n\
+             You have a `skill` tool that loads reusable, task-specific instructions. Its schema \
+             lists the available skills and what each is for; when a task matches one, call `skill` \
+             to load it *before* starting, then follow the returned instructions. Loading a skill \
+             only adds guidance — it grants no new capabilities.",
+        );
+    }
+    prompt
+}
+
 /// Drive an interactive REPL session over a ready sandbox: read a user message, run the agent turn
 /// loop (streaming every assistant message, tool call, tool result, and audit denial), then return
 /// to the prompt. While the agent works, whatever the user types is queued as a steering message and
@@ -743,7 +818,7 @@ pub async fn run_repl(
     let start = Instant::now();
 
     let mut conversation = Conversation {
-        system: config.system_prompt.clone(),
+        system: effective_system_prompt(&config.system_prompt, registry),
         messages: Vec::new(),
     };
     let mut turns: Vec<TranscriptTurn> = Vec::new();
@@ -805,8 +880,8 @@ pub async fn run_repl(
     };
     let output = TerminalOutput::new(Box::new(printer));
 
-    // Opt-in bee mascot: play the wing-flap once beside the session line, then it reclaims its rows
-    // (003-visual-render, Slice 2, FR-032).
+    // Bee mascot (on by default; `--no-bee` / `BEE_MASCOT=0` to suppress): play the wing-flap once
+    // beside the session line, then it reclaims its rows (003-visual-render, Slice 2, FR-032).
     if config.mascot {
         output.render_widget(&RenderSpec::Animation {
             spec: crate::viz::bee::animation(),
@@ -865,6 +940,23 @@ pub async fn run_repl(
                         .as_deref()
                         .unwrap_or("MCP: not configured"),
                 ),
+                MetaCommand::Skill(None) => output.info(&skills_summary(&config.skills)),
+                MetaCommand::Skill(Some(name)) => match config.skills.get(&name) {
+                    Some(skill) => match skill.body() {
+                        Ok(body) => {
+                            output.info(&format!("loaded skill '{name}' into the conversation."));
+                            to_run = Some(crate::tools::skill::load_message(
+                                &skill.name,
+                                &body,
+                                &serde_json::Value::Null,
+                            ));
+                        }
+                        Err(e) => output.error(&format!("skill '{name}': {e}")),
+                    },
+                    None => {
+                        output.error(&format!("unknown skill '{name}'. try /skill to list them."))
+                    }
+                },
                 MetaCommand::System(None) => {
                     output.info(&format!("system prompt:\n{}", conversation.system));
                 }
@@ -1149,6 +1241,26 @@ mod tests {
         assert!(out.contains("tool-call limit"), "output: {}", out.dump());
     }
 
+    #[test]
+    fn system_prompt_mentions_visuals_only_when_render_enabled() {
+        let base = "You are a coding agent.";
+        // render enabled ⇒ the visuals primer is appended.
+        let with_render = registry_for(&["bash".into(), "render".into()], None);
+        let prompt = effective_system_prompt(base, &with_render);
+        assert!(prompt.starts_with(base), "base prompt preserved");
+        assert!(
+            prompt.contains("render(widget)"),
+            "should mention the render API"
+        );
+        assert!(
+            prompt.contains("active color theme"),
+            "should tie colors to the theme"
+        );
+        // render absent ⇒ base is returned verbatim (don't advertise a missing tool).
+        let no_render = registry_for(&["bash".into(), "read_file".into()], None);
+        assert_eq!(effective_system_prompt(base, &no_render), base);
+    }
+
     #[tokio::test]
     async fn denial_surfaces_in_output() {
         // In host mode this produces no real kernel denials, but it exercises the drain path: the
@@ -1289,6 +1401,15 @@ mod tests {
         assert_eq!(parse_meta_command("/tools"), Some(MetaCommand::Tools));
         assert_eq!(parse_meta_command("/policy"), Some(MetaCommand::Policy));
         assert_eq!(parse_meta_command("/mcp"), Some(MetaCommand::Mcp));
+        assert_eq!(parse_meta_command("/skill"), Some(MetaCommand::Skill(None)));
+        assert_eq!(
+            parse_meta_command("/skills"),
+            Some(MetaCommand::Skill(None))
+        );
+        assert_eq!(
+            parse_meta_command("/skill tui-design"),
+            Some(MetaCommand::Skill(Some("tui-design".to_string())))
+        );
         assert_eq!(parse_meta_command("/history"), Some(MetaCommand::History));
         assert_eq!(parse_meta_command("/retry"), Some(MetaCommand::Retry));
         assert_eq!(
@@ -1341,6 +1462,45 @@ mod tests {
         assert!(footer.contains("4.1s"), "{footer}");
         // priced model → cost appears; 1234·$5/M + 340·$25/M = $0.0147
         assert!(footer.contains("$0.01"), "{footer}");
+        // no cache activity in this exchange → no cache annotation
+        assert!(!footer.contains("cached"), "{footer}");
+        assert!(!footer.contains("written"), "{footer}");
+    }
+
+    #[test]
+    fn footer_shows_cache_reads_and_writes() {
+        // First turn: cache written but not yet read.
+        let write_only = ExchangeResult {
+            outcome: ExchangeOutcome::Responded,
+            model_calls: 1,
+            tool_calls: 0,
+            denials: 0,
+            turns: Vec::new(),
+            audit: Vec::new(),
+            usage: Some(Usage {
+                input_tokens: 200,
+                output_tokens: 50,
+                cache_write_tokens: 3400,
+                ..Default::default()
+            }),
+        };
+        let footer = exchange_footer(&write_only, Duration::from_millis(500), "mock/scripted");
+        assert!(footer.contains("3.4k written"), "{footer}");
+        assert!(!footer.contains("cached"), "{footer}");
+
+        // A later turn: the prefix is re-read from cache, and the new tail is written.
+        let read_and_write = ExchangeResult {
+            usage: Some(Usage {
+                input_tokens: 80,
+                output_tokens: 60,
+                cache_read_tokens: 3400,
+                cache_write_tokens: 900,
+                ..Default::default()
+            }),
+            ..write_only
+        };
+        let footer = exchange_footer(&read_and_write, Duration::from_millis(500), "mock/scripted");
+        assert!(footer.contains("(3.4k cached, 900 written)"), "{footer}");
     }
 
     #[test]

@@ -22,6 +22,8 @@ fn scenario(turn_limit: u32) -> Scenario {
         mode: Default::default(),
         workdir: Default::default(),
         mcp: Default::default(),
+        skills: Vec::new(),
+        ceiling_policy_path: None,
     }
 }
 

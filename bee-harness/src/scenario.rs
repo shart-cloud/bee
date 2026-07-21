@@ -67,6 +67,18 @@ pub struct Scenario {
     /// `[scenario]`), not `[scenario.mcp]` — see [`Scenario::from_path`]. Defaults to disabled.
     #[serde(default)]
     pub mcp: crate::mcp::McpPolicy,
+    /// Skill discovery roots (006-skills), scanned in precedence order (earlier wins). Explicit —
+    /// not implicit cwd — so an episode stays reproducible. Empty ⇒ no skills, no `skill` tool.
+    /// Relative roots resolve against the scenario file's directory (see [`Scenario::from_path`]).
+    #[serde(default)]
+    pub skills: Vec<PathBuf>,
+    /// Capability ceiling for skill grants (006-skills, step 3). A skill's `requires` block may
+    /// widen the base `policy_path` only up to this ceiling; anything beyond it is refused
+    /// unpromptably (attenuation, Constitution II/III). This file *is* the operator's reviewable
+    /// pre-authorization for a non-interactive run. `None` ⇒ base is the ceiling ⇒ skills grant
+    /// nothing (instructions-only). Relative paths resolve against the scenario file's directory.
+    #[serde(default)]
+    pub ceiling_policy_path: Option<PathBuf>,
 }
 
 fn default_tools() -> Vec<String> {
@@ -103,6 +115,25 @@ impl Scenario {
                 let joined = dir.join(&s.policy_path);
                 if joined.exists() {
                     s.policy_path = joined;
+                }
+            }
+        }
+        // Same portability treatment for relative skill roots and the ceiling policy (006-skills).
+        if let Some(dir) = path.parent() {
+            for root in &mut s.skills {
+                if root.is_relative() {
+                    let joined = dir.join(&*root);
+                    if joined.exists() {
+                        *root = joined;
+                    }
+                }
+            }
+            if let Some(ceiling) = &mut s.ceiling_policy_path {
+                if ceiling.is_relative() {
+                    let joined = dir.join(&*ceiling);
+                    if joined.exists() {
+                        *ceiling = joined;
+                    }
                 }
             }
         }
@@ -207,6 +238,28 @@ timeout_secs  = 60
 path  = "/secrets/flag.txt"
 value = "FLAG{abc}"
 "#;
+
+    #[test]
+    fn skills_defaults_empty() {
+        let p = write("noskills", OK);
+        let s = Scenario::from_path(&p).unwrap();
+        assert!(s.skills.is_empty());
+    }
+
+    #[test]
+    fn relative_skill_roots_resolve_against_scenario_dir() {
+        // A relative root that exists next to the scenario file is rewritten to an absolute path;
+        // one that doesn't exist is left as-authored (portability, matching policy_path).
+        let p = write(
+            "skills",
+            &format!("{OK}skills = [\"skills\", \"missing\"]\n"),
+        );
+        let dir = p.parent().unwrap();
+        std::fs::create_dir_all(dir.join("skills")).unwrap();
+        let s = Scenario::from_path(&p).unwrap();
+        assert_eq!(s.skills[0], dir.join("skills"));
+        assert_eq!(s.skills[1], PathBuf::from("missing"));
+    }
 
     #[test]
     fn ctf_requires_flag() {

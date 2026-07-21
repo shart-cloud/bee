@@ -282,6 +282,191 @@ EOF
     emit episode-allow FAIL "write/allow path failed ($(tail -1 "$WORK/ep-allow.log" 2>/dev/null))"
   fi
   rm -rf /home/ubuntu/epwork
+
+  # -------------------------------------------------------------- 006-skills: Layer 2 grant fold
+  # A/B proof that a skill's `requires` filesystem grant is compiled into and enforced by the real
+  # kernel scope, bounded by attenuation. The SAME skill requests write to /home/ubuntu/skgrant; only
+  # the scenario's ceiling differs. The base policy grants write elsewhere (arming the write-default-
+  # deny latch) but NOT skgrant, so skgrant is writable iff the grant actually widened the scope.
+  SKROOT="$WORK/skmatrix"
+  mkdir -p "$SKROOT/builder" /home/ubuntu/skwork /home/ubuntu/skgrant
+  cat >"$SKROOT/builder/SKILL.md" <<'EOF'
+---
+name: builder
+description: needs write access to the build output directory
+requires:
+  filesystem:
+    "/home/ubuntu/skgrant": write
+---
+Write build output under /home/ubuntu/skgrant.
+EOF
+  cat >"$WORK/sk-base.policy.toml" <<'EOF'
+[policy]
+name = "sk-base"
+mode = "enforce"
+[policy.filesystem]
+"/home/ubuntu/skwork" = "write"
+EOF
+  cat >"$WORK/sk-ceiling.policy.toml" <<'EOF'
+[policy]
+name = "sk-ceiling"
+mode = "enforce"
+[policy.filesystem]
+"/home/ubuntu/skwork" = "write"
+"/home/ubuntu/skgrant" = "write"
+EOF
+  cat >"$WORK/sk.prov.toml" <<'EOF'
+[provider]
+provider = "mock"
+[[provider.script]]
+tool = "write_file"
+args = { path = "/home/ubuntu/skgrant/out.txt", content = "built by the agent\n" }
+[[provider.script]]
+text = "Done."
+EOF
+
+  # skill-grant-allow — ceiling permits skgrant ⇒ within-ceiling grant folds into the scope ⇒ write OK.
+  rm -f /home/ubuntu/skgrant/out.txt
+  cat >"$WORK/sk-allow.scn.toml" <<EOF
+[scenario]
+id            = "skill-grant-allow"
+policy_path   = "$WORK/sk-base.policy.toml"
+ceiling_policy_path = "$WORK/sk-ceiling.policy.toml"
+system_prompt = "You are a sandboxed agent."
+task          = "Write the build output."
+turn_limit    = 4
+timeout_secs  = 30
+tools         = ["write_file"]
+skills        = ["$SKROOT"]
+EOF
+  sudo "$EPISODE" --scenario "$WORK/sk-allow.scn.toml" --provider "$WORK/sk.prov.toml" \
+    --out "$WORK/sk-allow.json" >"$WORK/sk-allow.log" 2>&1
+  t="$WORK/sk-allow.json"
+  if [ -f "$t" ] \
+     && grep -q 'wrote .* bytes to /home/ubuntu/skgrant/out.txt' "$t" \
+     && ! grep -q '"decision": "denied"' "$t" \
+     && grep -q '"status": "completed"' "$t" \
+     && [ "$(cat /home/ubuntu/skgrant/out.txt 2>/dev/null)" = "built by the agent" ]; then
+    emit skill-grant-allow PASS "within-ceiling grant compiled into scope; write to skgrant allowed"
+  else
+    emit skill-grant-allow FAIL "granted path was not writable ($(tail -1 "$WORK/sk-allow.log" 2>/dev/null))"
+  fi
+
+  # skill-grant-deny — no ceiling (base is the ceiling) ⇒ skgrant grant exceeds it ⇒ refused ⇒ the
+  # scope is NOT widened ⇒ the same write is kernel-denied (EACCES). Attenuation held at the kernel.
+  rm -f /home/ubuntu/skgrant/out.txt
+  cat >"$WORK/sk-deny.scn.toml" <<EOF
+[scenario]
+id            = "skill-grant-deny"
+policy_path   = "$WORK/sk-base.policy.toml"
+system_prompt = "You are a sandboxed agent."
+task          = "Write the build output."
+turn_limit    = 4
+timeout_secs  = 30
+tools         = ["write_file"]
+skills        = ["$SKROOT"]
+EOF
+  sudo "$EPISODE" --scenario "$WORK/sk-deny.scn.toml" --provider "$WORK/sk.prov.toml" \
+    --out "$WORK/sk-deny.json" >"$WORK/sk-deny.log" 2>&1
+  t="$WORK/sk-deny.json"
+  # NB: bee enforces writes via the `file_open` LSM hook, which fires AFTER `O_CREAT` has made the
+  # empty inode — so a 0-byte file may exist; the load-bearing check is that the DATA never landed.
+  if [ -f "$t" ] \
+     && grep -q '"is_error": true' "$t" \
+     && grep -Eq 'Permission denied|EACCES' "$t" \
+     && grep -q '"decision": "denied"' "$t" \
+     && grep -q '"status": "completed"' "$t" \
+     && [ "$(cat /home/ubuntu/skgrant/out.txt 2>/dev/null)" != "built by the agent" ]; then
+    emit skill-grant-deny PASS "beyond-ceiling grant refused; write to skgrant kernel-denied (EACCES)"
+  else
+    emit skill-grant-deny FAIL "refused grant did not stay denied ($(tail -1 "$WORK/sk-deny.log" 2>/dev/null))"
+  fi
+  rm -rf /home/ubuntu/skwork /home/ubuntu/skgrant
+
+  # -------------------------------------------------------------- 007-dynamic-grants: live reload
+  # Reactive escalation A/B: the agent writes a path the base scope denies. With a ceiling that
+  # permits it, the DenialEscalationHook grants write, `reload_scope` widens the LIVE eBPF maps, and
+  # the SAME call is auto-retried and succeeds. With a ceiling that does NOT cover it, the grant is
+  # refused and the write stays kernel-denied. Same op, only the ceiling differs — proving the live
+  # reload changes what the kernel enforces mid-episode.
+  mkdir -p /home/ubuntu/dynwork /home/ubuntu/dyngrant
+  cat >"$WORK/dyn-base.policy.toml" <<'EOF'
+[policy]
+name = "dyn-base"
+mode = "enforce"
+[policy.filesystem]
+"/home/ubuntu/dynwork" = "write"
+EOF
+  cat >"$WORK/dyn-ceiling.policy.toml" <<'EOF'
+[policy]
+name = "dyn-ceiling"
+mode = "enforce"
+[policy.filesystem]
+"/home/ubuntu/dynwork" = "write"
+"/home/ubuntu/dyngrant" = "write"
+EOF
+  cat >"$WORK/dyn.prov.toml" <<'EOF'
+[provider]
+provider = "mock"
+[[provider.script]]
+tool = "write_file"
+args = { path = "/home/ubuntu/dyngrant/out.txt", content = "written after reload\n" }
+[[provider.script]]
+text = "Done."
+EOF
+
+  # reload-widen-allow — ceiling permits dyngrant ⇒ denial → escalate → reload → retry writes data.
+  rm -f /home/ubuntu/dyngrant/out.txt
+  cat >"$WORK/dyn-allow.scn.toml" <<EOF
+[scenario]
+id            = "reload-widen-allow"
+policy_path   = "$WORK/dyn-base.policy.toml"
+ceiling_policy_path = "$WORK/dyn-ceiling.policy.toml"
+system_prompt = "You are a sandboxed agent."
+task          = "Write the output."
+turn_limit    = 4
+timeout_secs  = 30
+tools         = ["write_file"]
+EOF
+  sudo "$EPISODE" --scenario "$WORK/dyn-allow.scn.toml" --provider "$WORK/dyn.prov.toml" \
+    --out "$WORK/dyn-allow.json" >"$WORK/dyn-allow.log" 2>&1
+  t="$WORK/dyn-allow.json"
+  # A denial must appear (the first attempt) AND the data must ultimately land (the retry).
+  if [ -f "$t" ] \
+     && grep -q '"op": "file_open"' "$t" \
+     && grep -q '"decision": "denied"' "$t" \
+     && grep -q '"status": "completed"' "$t" \
+     && [ "$(cat /home/ubuntu/dyngrant/out.txt 2>/dev/null)" = "written after reload" ]; then
+    emit reload-widen-allow PASS "denial → escalate → live reload → retry wrote data"
+  else
+    emit reload-widen-allow FAIL "reactive reload did not permit the retried write ($(tail -1 "$WORK/dyn-allow.log" 2>/dev/null))"
+  fi
+
+  # reload-beyond-ceiling — ceiling omits dyngrant ⇒ escalation refused ⇒ write stays denied.
+  rm -f /home/ubuntu/dyngrant/out.txt
+  cat >"$WORK/dyn-deny.scn.toml" <<EOF
+[scenario]
+id            = "reload-beyond-ceiling"
+policy_path   = "$WORK/dyn-base.policy.toml"
+ceiling_policy_path = "$WORK/dyn-base.policy.toml"
+system_prompt = "You are a sandboxed agent."
+task          = "Write the output."
+turn_limit    = 4
+timeout_secs  = 30
+tools         = ["write_file"]
+EOF
+  sudo "$EPISODE" --scenario "$WORK/dyn-deny.scn.toml" --provider "$WORK/dyn.prov.toml" \
+    --out "$WORK/dyn-deny.json" >"$WORK/dyn-deny.log" 2>&1
+  t="$WORK/dyn-deny.json"
+  if [ -f "$t" ] \
+     && grep -q '"decision": "denied"' "$t" \
+     && grep -q '"status": "completed"' "$t" \
+     && [ "$(cat /home/ubuntu/dyngrant/out.txt 2>/dev/null)" != "written after reload" ]; then
+    emit reload-beyond-ceiling PASS "beyond-ceiling escalation refused; write stayed kernel-denied"
+  else
+    emit reload-beyond-ceiling FAIL "refused escalation did not stay denied ($(tail -1 "$WORK/dyn-deny.log" 2>/dev/null))"
+  fi
+  rm -rf /home/ubuntu/dynwork /home/ubuntu/dyngrant
 else
   emit episode-file-deny FAIL "bee-episode not shipped to $EPISODE"
 fi

@@ -276,6 +276,8 @@ mod tests {
             mode: Default::default(),
             workdir: Default::default(),
             mcp: Default::default(),
+            skills: Vec::new(),
+            ceiling_policy_path: None,
         }
     }
 
@@ -287,6 +289,7 @@ mod tests {
             api_key_env: String::new(),
             max_tokens: None,
             temperature: None,
+            prompt_caching: true,
             script: Vec::new(),
         }
     }

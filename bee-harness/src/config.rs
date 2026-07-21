@@ -83,9 +83,22 @@ pub struct ProviderConfig {
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub temperature: Option<f32>,
+    /// Enable Anthropic prompt caching — caches the system prompt, tool schemas, and the growing
+    /// conversation prefix so repeated turns re-read them at ~0.1× cost instead of full price. On by
+    /// default; ignored for non-Anthropic providers. Set `prompt_caching = false` in the provider
+    /// TOML to disable.
+    #[serde(default = "default_prompt_caching")]
+    pub prompt_caching: bool,
     /// Scripted turns for the `mock` provider (ignored otherwise).
     #[serde(default)]
     pub script: Vec<MockStep>,
+}
+
+/// Default for [`ProviderConfig::prompt_caching`]: on. A free function because `#[serde(default)]`
+/// on a `bool` would otherwise yield `false`, and we want caching enabled unless explicitly opted
+/// out.
+fn default_prompt_caching() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -182,6 +195,30 @@ max_tokens  = 4096
         let cfg = ProviderConfig::from_path(&p).unwrap();
         assert_eq!(cfg.provider, ProviderType::Anthropic);
         assert_eq!(cfg.model_id(), "anthropic/claude-opus-4-8");
+        // Prompt caching defaults to on when the key is omitted.
+        assert!(cfg.prompt_caching, "prompt caching should default to on");
+    }
+
+    #[test]
+    fn prompt_caching_can_be_disabled() {
+        let tmp = std::env::temp_dir().join(format!("bee-cfg-nocache-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let p = write(
+            &tmp,
+            r#"
+[provider]
+provider       = "anthropic"
+model          = "claude-opus-4-8"
+api_key_env    = "ANTHROPIC_API_KEY"
+max_tokens     = 4096
+prompt_caching = false
+"#,
+        );
+        let cfg = ProviderConfig::from_path(&p).unwrap();
+        assert!(
+            !cfg.prompt_caching,
+            "explicit opt-out should disable caching"
+        );
     }
 
     #[test]

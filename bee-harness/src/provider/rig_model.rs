@@ -156,7 +156,17 @@ impl RigModel {
             ProviderType::Anthropic => {
                 let client = rig_core::providers::anthropic::Client::new(api_key)
                     .map_err(|e| ModelError::Request(format!("anthropic client: {e}")))?;
-                let model = client.completion_model(&cfg.model);
+                let mut model = client.completion_model(&cfg.model);
+                // Prompt caching on by default (opt out via `prompt_caching = false`). Manual
+                // caching pins cache_control on the system prompt and tool schemas (stable across
+                // the whole session); automatic caching adds the top-level moving breakpoint that
+                // advances over the growing conversation. Together they let every turn re-read the
+                // system+tools+history prefix at cache-read rates. Rig maps the returned
+                // cache_read / cache_creation token counts into `Usage` (see `usage_from_rig`), so
+                // cost accounting already reflects the savings. No beta header is required.
+                if cfg.prompt_caching {
+                    model = model.with_prompt_caching().with_automatic_caching();
+                }
                 (make_completer(model.clone()), make_streamer(model))
             }
             ProviderType::OpenAiCompat => {

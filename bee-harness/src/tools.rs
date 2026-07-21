@@ -16,6 +16,7 @@ pub mod ctf;
 pub mod exec;
 pub mod files;
 pub mod render;
+pub mod skill;
 
 use crate::render_spec::RenderSpec;
 
@@ -31,10 +32,19 @@ pub const CTF_TOOLS: &[&str] = &["submit_flag", "give_up"];
 /// scenario or the REPL config opts in by listing `"render"`.
 pub const RENDER_TOOLS: &[&str] = &["render"];
 
+/// The skills tool (006-skills). **Not** in `DEFAULT_TOOLS`: it needs a discovered
+/// [`crate::skills::SkillRegistry`], so — unlike the other names — [`registry_for`] cannot build it
+/// from a name alone. The caller inserts [`skill::SkillTool`] with the registry (auto-enabled when
+/// discovery finds ≥1 model-facing skill).
+pub const SKILL_TOOLS: &[&str] = &["skill"];
+
 /// Every tool name the harness knows how to build. A scenario may only list names from this set
 /// (scenario validation rejects the rest before a run).
 pub fn is_known_tool(name: &str) -> bool {
-    DEFAULT_TOOLS.contains(&name) || CTF_TOOLS.contains(&name) || RENDER_TOOLS.contains(&name)
+    DEFAULT_TOOLS.contains(&name)
+        || CTF_TOOLS.contains(&name)
+        || RENDER_TOOLS.contains(&name)
+        || SKILL_TOOLS.contains(&name)
 }
 
 /// The outcome of one tool call.
@@ -183,20 +193,30 @@ impl ToolRegistry {
 pub fn registry_for(enabled: &[String], flag: Option<&str>) -> ToolRegistry {
     let mut r = ToolRegistry::new();
     for name in enabled {
-        match name.as_str() {
-            "bash" => r.insert(Box::new(bash::Bash)),
-            "read_file" => r.insert(Box::new(files::ReadFile)),
-            "write_file" => r.insert(Box::new(files::WriteFile)),
-            "list_directory" => r.insert(Box::new(files::ListDirectory)),
-            "submit_flag" => {
-                if let Some(value) = flag {
-                    r.insert(Box::new(ctf::SubmitFlag::new(value.to_string())));
-                }
-            }
-            "give_up" => r.insert(Box::new(ctf::GiveUp)),
-            "render" => r.insert(Box::new(render::RenderTool::new())),
-            _ => {}
-        }
+        register_named(&mut r, name, flag);
     }
     r
+}
+
+/// Register a single built-in tool by name into an existing registry (idempotent — last wins). Used
+/// both by [`registry_for`] and to add skill-granted tools (006-skills) after grant resolution. An
+/// unknown name (or `skill`, which needs an external registry) is a silent no-op.
+pub fn register_named(r: &mut ToolRegistry, name: &str, flag: Option<&str>) {
+    match name {
+        "bash" => r.insert(Box::new(bash::Bash)),
+        "read_file" => r.insert(Box::new(files::ReadFile)),
+        "write_file" => r.insert(Box::new(files::WriteFile)),
+        "list_directory" => r.insert(Box::new(files::ListDirectory)),
+        "submit_flag" => {
+            if let Some(value) = flag {
+                r.insert(Box::new(ctf::SubmitFlag::new(value.to_string())));
+            }
+        }
+        "give_up" => r.insert(Box::new(ctf::GiveUp)),
+        "render" => r.insert(Box::new(render::RenderTool::new())),
+        // `skill` needs a discovered SkillRegistry, so the caller inserts it separately (see
+        // `skill::SkillTool`). Recognized as known so it isn't an unknown name.
+        "skill" => {}
+        _ => {}
+    }
 }

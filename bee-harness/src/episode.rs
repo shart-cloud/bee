@@ -36,6 +36,10 @@ pub struct LoopOptions {
     /// unaffected. `None` (the default) is a no-op.
     #[allow(clippy::type_complexity)]
     pub refresh_tools: Option<Box<dyn Fn(&mut ToolRegistry) + Send + Sync>>,
+    /// Dynamic capability grants (007-dynamic-grants). `None` ⇒ escalation is off and the loop
+    /// behaves exactly as before. When set, the loop builds an [`crate::grants::ActivePolicy`] and
+    /// drives the escalation hooks each step.
+    pub escalation: Option<crate::grants::escalate::LoopEscalation>,
 }
 
 impl Default for LoopOptions {
@@ -45,6 +49,7 @@ impl Default for LoopOptions {
             progress: None,
             metrics: None,
             refresh_tools: None,
+            escalation: None,
         }
     }
 }
@@ -159,6 +164,13 @@ pub async fn run_loop(
     let mut audit_trail = Vec::new();
     let mut usage_total: Option<Usage> = None;
     let mut any_tool_called = false;
+
+    // Dynamic capability grants (007-dynamic-grants): the mutable active policy, present only when
+    // escalation is configured. Starts at `base`, bounded by `ceiling`.
+    let mut active_policy = opts
+        .escalation
+        .as_ref()
+        .map(|e| crate::grants::ActivePolicy::new(e.base.clone(), e.ceiling.clone()));
 
     // If the loop runs out of turns without the agent stopping, it hit the turn limit (FR-007). In
     // CTF mode (US3) a turn-limit-expired episode means the agent *failed* to capture the flag, so
@@ -278,7 +290,37 @@ pub async fn run_loop(
                 ),
             );
 
-            let (result, timed_out) =
+            // Proactive escalation (007, US2): a hook may request a grant before this call runs
+            // (e.g. a loaded skill's `requires`). The grant applies (or is refused) in place; the
+            // call then executes normally under the possibly-widened scope.
+            if let (Some(esc), Some(active)) = (opts.escalation.as_ref(), active_policy.as_mut()) {
+                let ev = crate::hooks::StepEvent::BeforeToolCall(tc);
+                if let crate::hooks::Flow::Escalate(delta) =
+                    crate::hooks::dispatch(&esc.hooks, &ev).await
+                {
+                    let skill = tc
+                        .arguments
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("skill")
+                        .to_string();
+                    let out = crate::grants::escalate::escalate(
+                        active,
+                        crate::grants::GrantOrigin::SkillRequires { skill },
+                        delta,
+                        esc.default_ttl,
+                        index,
+                        esc.consent.as_ref(),
+                        esc.timeout,
+                        sandbox,
+                        registry,
+                    )
+                    .await;
+                    emit(opts, format!("  escalate(proactive): {out:?}"));
+                }
+            }
+
+            let (mut result, timed_out) =
                 match tokio::time::timeout(remaining, registry.execute(tc, sandbox)).await {
                     Ok(r) => (r, false),
                     Err(_) => (
@@ -292,8 +334,62 @@ pub async fn run_loop(
             // Correlate the kernel audit events this call produced (FR-008). `settle` lets the async
             // demux path (US4) deliver this call's events; it is a no-op for the sync paths.
             sandbox.settle().await;
-            let audit = sandbox.drain_audit();
+            let mut audit = sandbox.drain_audit();
             audit_trail.extend(audit.iter().cloned());
+
+            // Reactive escalation (007, US1): a kernel denial may be escalated (a grant scoped to the
+            // denied resource) and the call retried ONCE under the widened scope. Runs before the
+            // result is recorded, so the model sees the single (post-reload) outcome.
+            if audit.iter().any(|e| e.decision == "denied") {
+                if let (Some(esc), Some(active)) =
+                    (opts.escalation.as_ref(), active_policy.as_mut())
+                {
+                    let denial = audit
+                        .iter()
+                        .find(|e| e.decision == "denied")
+                        .map(|e| (e.op.clone(), e.target.clone()));
+                    if let Some((op, target)) = denial {
+                        let ev = crate::hooks::StepEvent::KernelDenial {
+                            op: &op,
+                            target: &target,
+                            call: tc,
+                        };
+                        if let crate::hooks::Flow::Escalate(delta) =
+                            crate::hooks::dispatch(&esc.hooks, &ev).await
+                        {
+                            let out = crate::grants::escalate::escalate(
+                                active,
+                                crate::grants::GrantOrigin::ReactiveDenial {
+                                    op: op.clone(),
+                                    target: target.clone(),
+                                },
+                                delta,
+                                esc.default_ttl,
+                                index,
+                                esc.consent.as_ref(),
+                                esc.timeout,
+                                sandbox,
+                                registry,
+                            )
+                            .await;
+                            emit(opts, format!("  escalate(reactive): {out:?}"));
+                            // Retry the call exactly once under the widened scope (SC-005).
+                            let left = deadline.saturating_duration_since(Instant::now());
+                            if out.is_granted() && !left.is_zero() {
+                                if let Ok(r) =
+                                    tokio::time::timeout(left, registry.execute(tc, sandbox)).await
+                                {
+                                    sandbox.settle().await;
+                                    let retry_audit = sandbox.drain_audit();
+                                    audit_trail.extend(retry_audit.iter().cloned());
+                                    result = r;
+                                    audit = retry_audit;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             let denied = audit.iter().any(|e| e.decision == "denied");
             let tag = if denied {
@@ -484,13 +580,90 @@ pub async fn run_episode(
         return infra_error(scenario, model, format!("workdir setup failed: {e}"));
     }
 
+    // Discover skills from the scenario's explicit roots (006-skills). Malformed skills warn via the
+    // progress sink but never abort the episode (Constitution I). The Arc is held until after the
+    // loop so the `skill` tool's registry outlives it.
+    let skills = std::sync::Arc::new(crate::skills::SkillRegistry::discover(&scenario.skills));
+    for w in skills.warnings() {
+        emit(
+            &opts,
+            format!("skill warning: {}: {}", w.path.display(), w.reason),
+        );
+    }
+
+    // Resolve skill capability grants BEFORE the scope compiles (006-skills, step 3). Non-interactive:
+    // the ceiling policy file is the operator's reviewable pre-authorization, so within-ceiling
+    // requests widen the compiled policy and anything beyond is refused unpromptably. Register any
+    // granted tools (Layer 1); the widened policy (Layer 2) flows into the scope below.
+    let skill_refs: Vec<&crate::skills::Skill> = skills.iter().collect();
+    let grants = resolve_episode_grants(scenario, &skill_refs).await;
+    for name in &grants.granted {
+        emit(
+            &opts,
+            format!("skill grant: '{name}' capabilities granted (within ceiling)"),
+        );
+    }
+    for (name, reason) in &grants.refused {
+        emit(&opts, format!("skill grant: '{name}' refused — {reason}"));
+    }
+    for tool in &grants.tools {
+        tools::register_named(&mut registry, tool, flag);
+    }
+    // Keep the resolved policy as the escalation floor before it is moved into the scope (007).
+    let escalation_base = grants.policy.clone();
+
     #[cfg(feature = "enforce")]
-    let mut sandbox = match build_enforced_sandbox(scenario, strip_env) {
+    let mut sandbox = match build_enforced_sandbox(scenario, grants.policy, strip_env) {
         Ok(s) => s,
         Err(detail) => return infra_error(scenario, model, detail),
     };
     #[cfg(not(feature = "enforce"))]
     let mut sandbox = Sandbox::host(strip_env);
+
+    // Register the model-facing `skill` tool alongside the built-ins.
+    if skills.model_facing().next().is_some() {
+        registry.insert(Box::new(crate::tools::skill::SkillTool::new(
+            skills.clone(),
+        )));
+    }
+
+    // Dynamic capability grants (007-dynamic-grants). Reactive escalation on a kernel denial is
+    // gated on a declared ceiling (the operator's pre-authorization); proactive skill-`requires`
+    // escalation is always available. Consent is `AllowWithinCeiling` — the ceiling file IS the
+    // authorization for a non-interactive episode. Both hooks are inert without their trigger, so an
+    // episode with no ceiling and no capability-requesting skill behaves exactly as before.
+    {
+        let mut ceiling = match &scenario.ceiling_policy_path {
+            Some(p) => bee_core::Policy::from_path(p).unwrap_or_else(|_| escalation_base.clone()),
+            None => escalation_base.clone(),
+        };
+        // Keep the resolved base ⊆ ceiling: skill dirs were folded into the base as readable, so the
+        // ceiling must permit them too.
+        for s in skills.iter() {
+            if let Some(dir) = s.dir.to_str() {
+                ceiling
+                    .filesystem
+                    .entry(dir.to_string())
+                    .or_insert(bee_core::Access::Read);
+            }
+        }
+        let hooks: Vec<Box<dyn crate::hooks::LoopHook>> = vec![
+            Box::new(crate::grants::escalate::DenialEscalationHook {
+                enabled: scenario.ceiling_policy_path.is_some(),
+            }),
+            Box::new(crate::grants::escalate::SkillEscalationHook::new(
+                skills.clone(),
+            )),
+        ];
+        opts.escalation = Some(crate::grants::escalate::LoopEscalation {
+            base: escalation_base,
+            ceiling,
+            hooks,
+            consent: std::sync::Arc::new(crate::skills::AllowWithinCeiling),
+            timeout: std::time::Duration::from_secs(60),
+            default_ttl: crate::grants::Ttl::Forever,
+        });
+    }
 
     // Connect MCP servers (if any) once the sandbox exists, register their tools alongside the
     // built-ins, and install the per-turn refresh hook (FR-043). The bridge (Arc so the hook can
@@ -529,14 +702,74 @@ pub async fn run_episode(
     transcript
 }
 
-/// Bring up a real bee scope from the scenario policy and wrap it as an [`Sandbox::Enforced`].
+/// A minimal empty policy, used only as the never-read `GrantOutcome::policy` on the host no-op path
+/// (no parseable base policy ⇒ no grants).
+fn empty_policy() -> bee_core::Policy {
+    bee_core::Policy {
+        name: "none".to_string(),
+        description: None,
+        mode: bee_core::Mode::default(),
+        filesystem: std::collections::BTreeMap::new(),
+        exec: Default::default(),
+        network: Default::default(),
+        exfiltration: Default::default(),
+    }
+}
+
+/// Resolve skill capability grants for an episode (006-skills, step 3). Non-interactive: the ceiling
+/// policy file *is* the operator's reviewable pre-authorization, so within-ceiling requests widen the
+/// compiled policy and beyond-ceiling ones are refused unpromptably. Also folds each discovered
+/// skill's directory into the policy as readable, so the model can read bundled resources
+/// (`references/…`) through the scope. A `policy_path` that can't be parsed (e.g. host-mode
+/// `/dev/null`) yields a no-op outcome — instructions-only, no tool grants.
+async fn resolve_episode_grants(
+    scenario: &Scenario,
+    skills: &[&crate::skills::Skill],
+) -> crate::skills::GrantOutcome {
+    use bee_core::{Access, Policy};
+
+    let base = match Policy::from_path(&scenario.policy_path) {
+        Ok(p) => p,
+        Err(_) => {
+            return crate::skills::GrantOutcome {
+                policy: empty_policy(),
+                tools: Vec::new(),
+                granted: Vec::new(),
+                refused: Vec::new(),
+            }
+        }
+    };
+    let ceiling = match &scenario.ceiling_policy_path {
+        Some(p) => Policy::from_path(p).unwrap_or_else(|_| base.clone()),
+        None => base.clone(),
+    };
+    let mut outcome =
+        crate::skills::resolve_grants(skills, &base, &ceiling, &crate::skills::AllowWithinCeiling)
+            .await;
+    // Layer 2 readable-scope: declaring a skills root authorizes reading it, so each skill dir
+    // becomes readable in-scope for the model to pull bundled resources via read_file.
+    for s in skills {
+        if let Some(dir) = s.dir.to_str() {
+            outcome
+                .policy
+                .filesystem
+                .entry(dir.to_string())
+                .or_insert(Access::Read);
+        }
+    }
+    outcome
+}
+
+/// Bring up a real bee scope from the resolved policy and wrap it as an [`Sandbox::Enforced`]. The
+/// policy is already widened by any approved skill grants and skill-dir reads (006-skills).
 #[cfg(feature = "enforce")]
-fn build_enforced_sandbox(scenario: &Scenario, strip_env: Vec<String>) -> Result<Sandbox, String> {
-    use bee_core::Policy;
+fn build_enforced_sandbox(
+    scenario: &Scenario,
+    policy: bee_core::Policy,
+    strip_env: Vec<String>,
+) -> Result<Sandbox, String> {
     use bee_userspace::{EnforcementPlan, Engine, ScopeMode, SystemResolver};
 
-    let policy = Policy::from_path(&scenario.policy_path)
-        .map_err(|e| format!("policy {}: {e}", scenario.policy_path.display()))?;
     let resolver = SystemResolver::current();
     let compiled = policy
         .compile(&resolver)
@@ -616,6 +849,8 @@ mod mcp_cgroup_spike {
             mode: Default::default(),
             workdir: Default::default(),
             mcp: Default::default(),
+            skills: Vec::new(),
+            ceiling_policy_path: None,
         };
         (scn, dir)
     }
@@ -626,7 +861,9 @@ mod mcp_cgroup_spike {
     #[ignore = "VM + root only: --features enforce,mcp on a BPF-LSM kernel"]
     async fn child_joins_scope_cgroup() {
         let (scenario, tmp) = spike_scenario();
-        let sandbox = build_enforced_sandbox(&scenario, sandbox::key_vars(None))
+        let policy =
+            bee_core::Policy::from_path(&scenario.policy_path).expect("parse spike policy");
+        let sandbox = build_enforced_sandbox(&scenario, policy, sandbox::key_vars(None))
             .expect("build enforced sandbox (need root + BPF-LSM)");
 
         let scope_cgid = match &sandbox {
