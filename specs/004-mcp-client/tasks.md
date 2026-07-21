@@ -119,13 +119,13 @@ built-ins and `/mcp` shows each server's transport, status, and the domain allow
 
 ### Tests for User Story 10 (write first, ensure they FAIL) ⚠️
 
-- [ ] T027 [P] [US10] Failing REPL test in `bee-harness/tests/mcp_repl.rs` using the `Collector` output impl: `/tools` output includes `mcp__filesystem__read_file`; `/mcp` output includes the server name, transport, status, and allowlist (US10 AS-1, AS-2).
+- [x] T027 [P] [US10] Failing REPL test in `bee-harness/tests/mcp_repl.rs` using the `Collector` output impl: `/tools` output includes `mcp__filesystem__read_file`; `/mcp` output includes the server name, transport, status, and allowlist (US10 AS-1, AS-2).
 
 ### Implementation for User Story 10
 
-- [ ] T028 [US10] Add the REPL MCP config surface: an `--mcp-config <path>` arg (and/or reuse the scenario `[mcp]`) parsed in `bee-harness/src/bin/bee-repl.rs`, connecting the bridge after `registry_for(...)` and registering proxies into the shared registry (mirrors T019).
-- [ ] T029 [US10] Add the `/mcp` meta-command in `bee-harness/src/repl.rs`: a `MetaCommand::Mcp` variant, a `"/mcp"` parser arm, a dispatch arm calling a new `mcp_summary(&McpBridge) -> String`, and a `/mcp` line in `HELP_TEXT`; render via `output.info(&str)` (plain multi-line, per contracts + research). Depends on T028.
-- [ ] T030 [US10] Confirm/extend `/tools`: since MCP proxies live in the shared `ToolRegistry`, `tools_summary` already lists them — add a coverage assertion and, if desired, annotate MCP rows with their server prefix in `bee-harness/src/repl.rs`. Depends on T028.
+- [x] T028 [US10] Add the REPL MCP config surface: an `--mcp-config <path>` arg (and/or reuse the scenario `[mcp]`) parsed in `bee-harness/src/bin/bee-repl.rs`, connecting the bridge after `registry_for(...)` and registering proxies into the shared registry (mirrors T019).
+- [x] T029 [US10] Add the `/mcp` meta-command in `bee-harness/src/repl.rs`: a `MetaCommand::Mcp` variant, a `"/mcp"` parser arm, a dispatch arm calling a new `mcp_summary(&McpBridge) -> String`, and a `/mcp` line in `HELP_TEXT`; render via `output.info(&str)` (plain multi-line, per contracts + research). Depends on T028.
+- [x] T030 [US10] Confirm/extend `/tools`: since MCP proxies live in the shared `ToolRegistry`, `tools_summary` already lists them — add a coverage assertion and, if desired, annotate MCP rows with their server prefix in `bee-harness/src/repl.rs`. Depends on T028.
 
 **Checkpoint**: All three user stories independently functional.
 

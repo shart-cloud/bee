@@ -63,6 +63,9 @@ pub struct ReplConfig {
     /// Play the bee mascot animation once at startup (003-visual-render, Slice 2, FR-032). Opt-in via
     /// `--bee` / `BEE_MASCOT=1`; off by default.
     pub mascot: bool,
+    /// Pre-rendered `/mcp` output: configured MCP servers, their status, and the domain policy
+    /// (004-mcp-client, US10). `None` when MCP is not configured / the `mcp` feature is off.
+    pub mcp_summary: Option<String>,
 }
 
 impl Default for ReplConfig {
@@ -77,6 +80,7 @@ impl Default for ReplConfig {
             max_retries: 3,
             policy_label: "none".to_string(),
             mascot: false,
+            mcp_summary: None,
         }
     }
 }
@@ -178,6 +182,8 @@ pub enum MetaCommand {
     Tools,
     /// `/policy` — show the active policy / enforcement mode.
     Policy,
+    /// `/mcp` — show configured MCP servers, their status, and the domain policy (004-mcp-client).
+    Mcp,
     /// `/system [text]` — show the system prompt, or replace it when text is given.
     System(Option<String>),
     /// `/history` — show recent user messages this session.
@@ -207,6 +213,7 @@ pub fn parse_meta_command(line: &str) -> Option<MetaCommand> {
         "/clear" => MetaCommand::Clear,
         "/tools" => MetaCommand::Tools,
         "/policy" => MetaCommand::Policy,
+        "/mcp" => MetaCommand::Mcp,
         "/system" => MetaCommand::System(arg),
         "/history" => MetaCommand::History,
         "/retry" => MetaCommand::Retry,
@@ -219,6 +226,7 @@ const HELP_TEXT: &str = "commands:\n  \
     /help           show this help\n  \
     /tools          list the tools the agent has\n  \
     /policy         show the active policy / enforcement mode\n  \
+    /mcp            show configured MCP servers and the domain policy\n  \
     /system [text]  show the system prompt, or replace it\n  \
     /history        show recent messages this session\n  \
     /retry          re-send your last message\n  \
@@ -796,6 +804,9 @@ pub async fn run_repl(
                 MetaCommand::Audit => output.info(&audit_summary(&audit_trail)),
                 MetaCommand::Tools => output.info(&tools_summary(registry)),
                 MetaCommand::Policy => output.info(&format!("policy: {}", config.policy_label)),
+                MetaCommand::Mcp => output.info(
+                    config.mcp_summary.as_deref().unwrap_or("MCP: not configured"),
+                ),
                 MetaCommand::System(None) => {
                     output.info(&format!("system prompt:\n{}", conversation.system));
                 }
@@ -1155,6 +1166,7 @@ mod tests {
         assert_eq!(parse_meta_command("/clear"), Some(MetaCommand::Clear));
         assert_eq!(parse_meta_command("/tools"), Some(MetaCommand::Tools));
         assert_eq!(parse_meta_command("/policy"), Some(MetaCommand::Policy));
+        assert_eq!(parse_meta_command("/mcp"), Some(MetaCommand::Mcp));
         assert_eq!(parse_meta_command("/history"), Some(MetaCommand::History));
         assert_eq!(parse_meta_command("/retry"), Some(MetaCommand::Retry));
         assert_eq!(parse_meta_command("/system"), Some(MetaCommand::System(None)));

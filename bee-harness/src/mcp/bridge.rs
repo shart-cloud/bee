@@ -147,6 +147,33 @@ impl McpBridge {
         &self.policy
     }
 
+    /// A human-readable multi-line summary for the REPL `/mcp` command (US10): each server's
+    /// transport, status, and tool count, plus the domain allow/deny lists.
+    pub fn summary(&self) -> String {
+        if !self.policy.enabled {
+            return "MCP: disabled".to_string();
+        }
+        let mut out = format!("MCP: {} server(s)", self.servers.len());
+        for (name, srv) in &self.servers {
+            let transport = match srv.config.transport {
+                McpTransport::Stdio => "stdio",
+                McpTransport::Sse => "sse",
+                McpTransport::StreamableHttp => "streamable_http",
+            };
+            out.push_str(&format!(
+                "\n  {name} [{transport}] — {} ({} tools)",
+                srv.status.label(),
+                srv.tools.len()
+            ));
+        }
+        let join = |ps: &[super::policy::DomainPattern]| {
+            ps.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")
+        };
+        out.push_str(&format!("\n  allowed_domains: [{}]", join(&self.policy.allowed_domains)));
+        out.push_str(&format!("\n  denied_domains: [{}]", join(&self.policy.denied_domains)));
+        out
+    }
+
     /// Tear down: drop every server handle, killing stdio children. Consumes the bridge.
     pub fn teardown(self) {
         // Dropping `self.servers` drops each `RunningService`, whose kill-on-drop reaps the child.

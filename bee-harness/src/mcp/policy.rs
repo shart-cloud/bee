@@ -129,6 +129,22 @@ impl Default for McpPolicy {
 }
 
 impl McpPolicy {
+    /// Load an MCP policy from a standalone TOML file with a top-level `[mcp]` table (and
+    /// `[[mcp.servers]]`) — used by the REPL's `--mcp-config` (US10).
+    pub fn from_path(path: &std::path::Path) -> Result<McpPolicy, crate::config::ConfigError> {
+        #[derive(Deserialize)]
+        struct McpFile {
+            #[serde(default)]
+            mcp: McpPolicy,
+        }
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| crate::config::ConfigError::read(path, e))?;
+        let file: McpFile =
+            toml::from_str(&text).map_err(|e| crate::config::ConfigError::parse(path, e))?;
+        file.mcp.validate().map_err(crate::config::ConfigError::Invalid)?;
+        Ok(file.mcp)
+    }
+
     /// The per-tool-call timeout as a `Duration`.
     pub fn tool_timeout(&self) -> Duration {
         Duration::from_secs(self.tool_timeout_secs)

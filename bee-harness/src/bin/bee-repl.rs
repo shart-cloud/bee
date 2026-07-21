@@ -40,6 +40,10 @@ struct Args {
     /// Play the bee mascot animation at startup (also enabled by `BEE_MASCOT=1`).
     #[arg(long)]
     bee: bool,
+    /// Standalone MCP config TOML (top-level `[mcp]` + `[[mcp.servers]]`). Requires building with
+    /// `--features mcp` (004-mcp-client).
+    #[arg(long)]
+    mcp_config: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -82,10 +86,37 @@ async fn main() -> ExitCode {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+    // `mut` only when MCP may register proxies into it (mirrors run_episode).
+    #[cfg(feature = "mcp")]
+    let mut registry = registry_for(&tools, None);
+    #[cfg(not(feature = "mcp"))]
     let registry = registry_for(&tools, None);
 
     let key_env = (!provider.api_key_env.is_empty()).then_some(provider.api_key_env.as_str());
-    let strip_env = sandbox::key_vars(key_env);
+    // Strip provider key vars plus any MCP token_env names from tool children (FR-018/FR-041).
+    #[cfg(feature = "mcp")]
+    let mcp_policy = match &args.mcp_config {
+        Some(path) => match bee_harness::McpPolicy::from_path(path) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                eprintln!("bee-repl: mcp config error: {e}");
+                return ExitCode::from(64);
+            }
+        },
+        None => None,
+    };
+    #[cfg(not(feature = "mcp"))]
+    if args.mcp_config.is_some() {
+        eprintln!("bee-repl: --mcp-config requires building with --features mcp");
+        return ExitCode::from(64);
+    }
+
+    #[cfg_attr(not(feature = "mcp"), allow(unused_mut))]
+    let mut strip_env = sandbox::key_vars(key_env);
+    #[cfg(feature = "mcp")]
+    if let Some(p) = &mcp_policy {
+        strip_env.extend(p.token_env_names());
+    }
 
     let (mut sbox, policy_label) = match build_sandbox(args.policy.as_ref(), strip_env) {
         Ok(pair) => pair,
@@ -93,6 +124,19 @@ async fn main() -> ExitCode {
             eprintln!("bee-repl: {detail}");
             return ExitCode::from(70);
         }
+    };
+
+    // Connect MCP servers (if configured) and register their tools alongside the built-ins. The
+    // bridge owns the stdio children for the session; it is torn down before the scope (US10).
+    #[cfg(feature = "mcp")]
+    let (mcp_bridge, mcp_summary) = match mcp_policy {
+        Some(policy) => {
+            let bridge = bee_harness::mcp::McpBridge::connect(policy, &sbox).await;
+            bridge.register_into(&mut registry);
+            let summary = bridge.summary();
+            (Some(bridge), Some(summary))
+        }
+        None => (None, None),
     };
 
     let config = ReplConfig {
@@ -103,6 +147,8 @@ async fn main() -> ExitCode {
         agent_turn_budget: args.budget.max(1),
         policy_label: policy_label.clone(),
         mascot: args.bee || std::env::var_os("BEE_MASCOT").is_some_and(|v| v == "1"),
+        #[cfg(feature = "mcp")]
+        mcp_summary,
         ..ReplConfig::default()
     };
 
@@ -111,9 +157,19 @@ async fn main() -> ExitCode {
     println!("  model:  {}", model.id());
     println!("  policy: {policy_label}");
     println!("  tools:  {}", tools.join(", "));
+    #[cfg(feature = "mcp")]
+    if let Some(s) = &config.mcp_summary {
+        println!("  {}", s.lines().next().unwrap_or("mcp: configured"));
+    }
     println!();
 
     let session = run_repl(model.as_ref(), &registry, &mut sbox, &config).await;
+
+    // Tear the MCP children down (they live in the scope cgroup) before the scope itself.
+    #[cfg(feature = "mcp")]
+    if let Some(bridge) = mcp_bridge {
+        bridge.teardown();
+    }
     sbox.teardown();
 
     // Persist the transcript to --save on exit, if requested.
