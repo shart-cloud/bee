@@ -31,6 +31,11 @@ enforce = ["bee-userspace/enforce"]
 # `tokio` feature (which implies `enforce`) and turns on the harness `enforce` path it builds on.
 # Kept separate from `enforce` so the plain enforce build stays async-runtime-free (SC-005).
 concurrent = ["enforce", "bee-userspace/tokio"]
+# MCP client (004-mcp-client). Default-off so the plain build stays rmcp-free (NFR-004/006, SC-026/027):
+# no MCP code compiles and `rmcp` never enters bee-core/bee-common's tree unless this is enabled. Gates
+# the optional `rmcp` dep below. Stdio (`transport-child-process`) ships first; the remote
+# Streamable-HTTP transport feature is added with the domain-gating slice (US9, task T024).
+mcp = ["dep:rmcp"]
 
 [dependencies]
 bee-core = { workspace = true }
@@ -53,6 +58,13 @@ rustyline = "17"
 # gives headless Buffer/widgets/layout without crossterm or any terminal backend (research D2/D3).
 rhai = { version = "1", default-features = false, features = ["only_i64", "sync"] }
 ratatui = { version = "0.29", default-features = false }
+
+# MCP client SDK (004-mcp-client, bee-harness only — MUST NOT propagate to bee-core/bee-common,
+# NFR-004/SC-026). Optional + gated by the `mcp` feature above. rmcp is v2.x (the spec's "1" is a
+# stale major with a different API; research R1). `default-features = false` because rmcp's defaults
+# enable the SERVER, not the client — we add `client` explicitly. `transport-child-process` is the
+# sandboxed stdio transport (research R3); the remote Streamable-HTTP transport feature joins in US9.
+rmcp = { version = "2.2", default-features = false, features = ["client", "transport-child-process"], optional = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

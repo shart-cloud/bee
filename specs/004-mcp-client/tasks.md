@@ -31,7 +31,7 @@ Single Rust workspace. New code: `bee-harness/src/mcp/` + `bee-harness/src/mcp.r
 
 **Purpose**: Add the feature-gated dependency and module skeleton so nothing compiles into default builds.
 
-- [ ] T001 Add a default-off `mcp` feature and the feature-gated `rmcp = { version = "2.2", default-features = false, features = ["client", "transport-child-process"], optional = true }` dependency to `bee-harness/Cargo.toml` (research R1); gate `mcp` on `dep:rmcp`.
+- [x] T001 Add a default-off `mcp` feature and the feature-gated `rmcp = { version = "2.2", default-features = false, features = ["client", "transport-child-process"], optional = true }` dependency to `bee-harness/Cargo.toml` (research R1); gate `mcp` on `dep:rmcp`. **Done**: verified default build stays rmcp-free, `cargo tree -p bee-core -i rmcp` finds nothing (SC-026), `--features mcp` compiles against rmcp 2.2.0.
 - [ ] T002 [P] Create the module skeleton with `#[cfg(feature = "mcp")]` glue: `bee-harness/src/mcp.rs` (re-exports + `McpBridge::connect` entry) and empty `bee-harness/src/mcp/{config,policy,bridge,transport,proxy}.rs`; register `pub mod mcp;` in `bee-harness/src/lib.rs` behind the feature.
 - [ ] T003 [P] Add the fail-closed guard: when a scenario has `[mcp].enabled = true` but the binary was built without `--features mcp`, return a clear startup error ("MCP configured but bee-harness built without --features mcp") in `bee-harness/src/episode.rs` and the binaries (research R11, Constitution I).
 - [ ] T004 [P] Add the SC-026 dependency-boundary assertion — a CI/test check that `cargo tree -p bee-core --no-default-features | grep rmcp` returns nothing — in `bee-harness/tests/mcp_dep_boundary.rs` (or a CI script).
