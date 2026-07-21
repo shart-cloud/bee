@@ -40,7 +40,7 @@ mcp = ["dep:rmcp"]
 # free of a terminal backend (Constitution V / SC-005): turns on ratatui's crossterm backend and pulls
 # the optional terminal deps below. Without it, `viz::buffer_render` keeps using the headless Buffer
 # and `bee-repl` runs the inline REPL only.
-tui = ["dep:crossterm", "dep:color-eyre", "dep:textwrap", "ratatui/crossterm"]
+tui = ["dep:crossterm", "dep:color-eyre", "dep:textwrap", "ratatui/crossterm", "tokio/sync"]
 
 [dependencies]
 bee-core = { workspace = true }

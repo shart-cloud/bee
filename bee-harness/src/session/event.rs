@@ -1,29 +1,44 @@
-//! [`SessionEvent`] (008-grid-tui, T004 / data-model.md): what the shared `SessionEngine` emits as a
-//! turn progresses. Renderer-agnostic — it holds no ratatui/crossterm types — so the inline REPL and
-//! the full-screen TUI can each render it their own way.
+//! [`SessionEvent`] (008-grid-tui, T004 / data-model.md): what the shared session core says as a turn
+//! progresses.
+//!
+//! The turn loop ([`crate::repl::run_exchange`]) already writes everything through the
+//! [`crate::repl::ReplOutput`] trait — that trait *is* the engine's output seam. `SessionEvent` is a
+//! faithful 1:1 mirror of those callbacks, so a front-end (the TUI) can reconstruct exactly what the
+//! inline REPL renders. Renderer-agnostic — no ratatui/rustyline types leak in.
 
-use crate::render_spec::{RenderSpec, RenderTarget};
+use bee_core::AuditEvent;
+use serde_json::Value;
 
-/// One thing the conversation core has to say. Front-ends fold these into their view.
-#[derive(Debug, Clone, PartialEq)]
+use crate::render_spec::RenderSpec;
+use crate::tools::ToolResult;
+
+/// One thing the session core emitted, mirroring one [`crate::repl::ReplOutput`] callback.
+#[derive(Debug, Clone)]
 pub enum SessionEvent {
-    /// The user's submitted line, echoed for display.
-    UserEcho(String),
-    /// A streamed assistant-token delta to append to the currently-open assistant message.
-    Token(String),
-    /// A tool call is starting (name + a short arg summary).
-    ToolCall { name: String, args: String },
-    /// A tool produced a result, possibly carrying a rendered widget and where it should go.
+    /// A streamed assistant-token delta (`assistant_delta`).
+    AssistantDelta(String),
+    /// End of an assistant prose block (`assistant_end`).
+    AssistantEnd,
+    /// A tool call the agent requested, before it runs (`tool_call`).
+    ToolCall { name: String, arguments: Value },
+    /// A tool result plus its kernel audit events (`tool_result`).
     ToolResult {
-        render_spec: Option<RenderSpec>,
-        target: RenderTarget,
+        result: ToolResult,
+        audit: Vec<AuditEvent>,
     },
-    /// A model-owned panel was (re)rendered — upsert by `id`, replacing in place (FR-009).
-    PanelUpdate { id: String, spec: RenderSpec },
-    /// A kernel/policy denial to surface (rendered as a bold `⚠ DENIED` line).
-    Denial(String),
-    /// The assistant turn began (drives the spinner / "thinking" state).
+    /// A visualization to draw (`render_widget`). The TUI routes it inline or to a panel by target
+    /// once `render_to` threads a [`crate::render_spec::RenderTarget`] through (tasks T024/T025).
+    RenderWidget { spec: RenderSpec },
+    /// An error line the user should see (`error`).
+    Error(String),
+    /// An informational line — banners, meta-command output (`info`).
+    Info(String),
+    /// A dim per-exchange summary footer (`footer`).
+    Footer(String),
+    /// A steering acknowledgement (`steering`).
+    Steering(String),
+    /// The "working" indicator began (`busy_start`) — the assistant turn is in flight.
     TurnStarted,
-    /// The assistant turn finished.
+    /// The "working" indicator ended (`busy_stop`).
     TurnDone,
 }

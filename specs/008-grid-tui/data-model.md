@@ -46,19 +46,27 @@ Everything that can change the model. `update(&mut App, Message)` is pure and to
 | `Session(SessionEvent)` | see below | the conversation core speaking (tokens, tool results, panels) |
 | `Quit` | — | set `should_quit` |
 
-## SessionEvent (from the shared `SessionEngine`, D4)
+## SessionEvent — the shared output seam (implemented, T004/T005)
 
-Emitted by the conversation core; consumed by **both** front-ends. Renderer-agnostic.
+The turn loop (`repl::run_exchange`) already writes through the `repl::ReplOutput` trait — that trait
+*is* the engine's output seam. `SessionEvent` is a faithful 1:1 mirror of those callbacks
+(`session/event.rs`), so the TUI reconstructs exactly what the inline REPL renders. A `SessionSink` (a
+`ReplOutput`) forwards each callback onto a channel the event loop consumes; the inline REPL keeps
+using its `TerminalOutput` unchanged (parity by construction — T006).
 
-| Variant | Payload | TUI handling |
+| Variant | From `ReplOutput` | TUI handling |
 |---|---|---|
-| `UserEcho(String)` | submitted text | append a `ChatMessage{role: User}` |
-| `Token(String)` | streamed delta | append to the open assistant message |
-| `ToolCall { name, args }` | | append a tool-call line to chat |
-| `ToolResult { render_spec: Option<RenderSpec>, target: RenderTarget }` | | inline → chat message; panel → `panels` upsert |
-| `PanelUpdate { id: PanelId, spec: RenderSpec }` | | upsert `panels[id] = spec` (coalesced, FR-011) |
-| `Denial(String)` | | append a bold `⚠ DENIED` chat line |
-| `TurnStarted` / `TurnDone` | | set `turn` Streaming/Idle |
+| `AssistantDelta(String)` | `assistant_delta` | append to the open assistant message |
+| `AssistantEnd` | `assistant_end` | close the assistant message |
+| `ToolCall { name, arguments }` | `tool_call` | append a tool-call line |
+| `ToolResult { result, audit }` | `tool_result` | append the result / denial line |
+| `RenderWidget { spec }` | `render_widget` | inline → chat (panel routing via target lands in T024/T025) |
+| `Error`/`Info`/`Footer`/`Steering(String)` | `error`/`info`/`footer`/`steering` | chat / status lines |
+| `TurnStarted` / `TurnDone` | `busy_start` / `busy_stop` | set `turn` Streaming/Idle (spinner) |
+
+Panel routing (`RenderTarget::Panel`) and the `PanelUpdate` transcript event arrive with `render_to`
+(tasks T023–T025); until then every `RenderWidget` is inline. A `Message::Session(SessionEvent)` wraps
+these into the reducer's input.
 
 ## ChatMessage
 

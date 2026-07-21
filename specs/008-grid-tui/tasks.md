@@ -38,8 +38,8 @@ tests in each story before/with implementation.
 
 - [X] T003 [P] Add pure-serde `RenderTarget` (`Inline` | `Panel(PanelId)`) in `bee-harness/src/render_spec.rs` (data-model.md).
 - [X] T004 Define `SessionEvent` enum (`UserEcho`, `Token`, `ToolCall`, `ToolResult{render_spec,target}`, `PanelUpdate`, `Denial`, `TurnStarted`, `TurnDone`) in `bee-harness/src/session/event.rs` (depends on T003).
-- [ ] T005 Extract the provider/tool/transcript turn loop out of `bee-harness/src/repl.rs` into `session::SessionEngine` (in `bee-harness/src/session/mod.rs`), emitting `SessionEvent`s over a channel (depends on T004).
-- [ ] T006 Rewire the inline REPL in `bee-harness/src/repl.rs` to consume `SessionEngine` events, preserving byte-for-byte output parity (fallback path) (depends on T005).
+- [X] T005 Expose the turn loop as an event stream via `session::SessionSink` (a `ReplOutput` that forwards each callback as a `SessionEvent` on a channel) in `bee-harness/src/session/mod.rs`. **Reframed (lower risk):** `repl::run_exchange` already writes exclusively through the `ReplOutput` trait, so it *is* the shared engine — no rewrite of the working loop was needed; the sink is the TUI's consumer. Fidelity unit-tested.
+- [X] T006 Inline-REPL parity **by construction**: the inline REPL keeps passing its `TerminalOutput` (a `ReplOutput`) to the unchanged `run_exchange`, so its byte-for-byte output is untouched while the TUI drives the same core via `SessionSink`. No rewrite of `repl.rs` was required (depends on T005).
 - [X] T007 [P] Add the theme→ratatui `Style` bridge in `bee-harness/src/tui/theme_bridge.rs`, reusing the color helpers in `viz::buffer_render`; it MUST return an **unstyled** `Style` (no fg/bg) when `NO_COLOR` is set, so the full-screen path stays legible in monochrome exactly like the inline path (research D1; **FR-014, SC-005** — resolves analysis G2).
 - [X] T008 [P] Add a truecolor sprite→`Buffer` rasterizer (half-block cells with fg+bg) in `bee-harness/src/viz/buffer_render.rs` so `RenderSpec::Sprite` composites into a sub-rect, plus a unit test that a sprite renders inside a grid cell (research D8; lifts the M1 placeholder).
 
