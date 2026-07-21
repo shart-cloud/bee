@@ -1,0 +1,33 @@
+# Example scenario: a domain-gated remote MCP server (SSE transport).
+#
+# The GitHub MCP server runs remotely and cannot be sandboxed with a cgroup. It is
+# gated by the domain allowlist: the connection is only opened because
+# mcp.internal.dev is in allowed_domains. A server at any other domain would be
+# refused before any MCP message is exchanged. Demonstrates User Story 9 (SC-021, SC-022).
+
+[scenario]
+id            = "remote-github"
+policy_path   = "remote-github.policy.toml"
+system_prompt = "You are a coding agent operating in a sandbox. Use tools to accomplish the task, then stop."
+task          = "Search the org's repositories for the string 'eBPF-LSM' and summarize the hits."
+turn_limit    = 8
+timeout_secs  = 120
+tools         = ["bash", "read_file", "list_directory"]
+
+[mcp]
+enabled = true
+allowed_domains = ["mcp.internal.dev"]   # only this host may be connected
+denied_domains  = []
+max_servers = 5
+tool_timeout_secs = 30
+allow_dynamic_connect = false
+
+[[mcp.servers]]
+name = "github"
+transport = "sse"
+url = "https://mcp.internal.dev/github"
+# NAME of the env var holding the bearer token — never the token itself (FR-041).
+token_env = "GITHUB_MCP_TOKEN"
+# Only these tools are exposed to the model; everything else is filtered out.
+allowed_tools = ["search_repositories", "get_file_contents"]
+denied_tools  = ["create_repository", "delete_repository"]
