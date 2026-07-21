@@ -24,6 +24,8 @@ pub use policy::{DomainPattern, McpPolicy};
 pub mod bridge;
 #[cfg(feature = "mcp")]
 pub mod proxy;
+#[cfg(feature = "mcp")]
+pub mod transport;
 
 #[cfg(feature = "mcp")]
 pub use bridge::{ConnectedServer, McpBridge, ServerStatus};

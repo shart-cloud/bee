@@ -522,3 +522,119 @@ fn sanitize(s: &str) -> String {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()
 }
+
+/// R3 cgroup-join spike (004-mcp-client, T016). **Constitution III gate**: proves a stdio MCP server
+/// child spawned through rmcp's `TokioChildProcess` actually joins the episode's scope cgroup — i.e.
+/// rmcp's `process-wrap` wrapper does NOT clobber bee's `pre_exec` cgroup-join closure. Source
+/// analysis says a wrapper-less `CommandWrap` preserves the inner command's `pre_exec` (research
+/// R3/§3.2); this test is the empirical proof.
+///
+/// Requires `--features enforce,mcp`, a BPF-LSM kernel, and root (scope creation + eBPF load).
+/// `#[ignore]` so it only runs when invoked explicitly on the VM:
+/// `sudo <testbin> --ignored --exact episode::mcp_cgroup_spike::child_joins_scope_cgroup`.
+#[cfg(all(test, feature = "enforce", feature = "mcp"))]
+mod mcp_cgroup_spike {
+    use super::*;
+    use crate::mcp::config::{McpServerConfig, McpTransport};
+
+    /// Read `/proc/<pid>/cgroup` (cgroup v2: `0::<relpath>`) and resolve the cgroup dir's inode.
+    fn child_cgroup_id(pid: u32) -> u64 {
+        let raw = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+            .unwrap_or_else(|e| panic!("read /proc/{pid}/cgroup: {e}"));
+        let rel = raw
+            .lines()
+            .find_map(|l| l.strip_prefix("0::"))
+            .unwrap_or_else(|| panic!("no cgroup-v2 line in: {raw:?}"))
+            .trim();
+        let full = format!("/sys/fs/cgroup{rel}");
+        bee_userspace::cgroup::cgroup_id(std::path::Path::new(&full))
+            .unwrap_or_else(|e| panic!("cgroup_id({full}): {e}"))
+    }
+
+    fn spike_scenario() -> (Scenario, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("bee-mcp-spike-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let policy = dir.join("spike.policy.toml");
+        // hello-style permissive policy: no exec allowlist (so `sleep` runs), one write grant.
+        std::fs::write(
+            &policy,
+            "[policy]\nname = \"mcp-spike\"\nmode = \"enforce\"\n\n[policy.filesystem]\n\"/tmp\" = \"write\"\n",
+        )
+        .unwrap();
+        let scn = Scenario {
+            id: "mcp-spike".into(),
+            policy_path: policy,
+            system_prompt: "spike".into(),
+            task: "spike".into(),
+            turn_limit: 1,
+            timeout_secs: 30,
+            tools: Vec::new(),
+            mode: Default::default(),
+            workdir: Default::default(),
+            mcp: Default::default(),
+        };
+        (scn, dir)
+    }
+
+    // `#[tokio::test]` (current-thread + enable_all) provides the reactor that tokio process
+    // spawning requires.
+    #[tokio::test]
+    #[ignore = "VM + root only: --features enforce,mcp on a BPF-LSM kernel"]
+    async fn child_joins_scope_cgroup() {
+        let (scenario, tmp) = spike_scenario();
+        let sandbox = build_enforced_sandbox(&scenario, sandbox::key_vars(None))
+            .expect("build enforced sandbox (need root + BPF-LSM)");
+
+        let scope_cgid = match &sandbox {
+            Sandbox::Enforced(e) => e.scope.cgroup_id,
+            _ => panic!("expected an enforced sandbox"),
+        };
+        assert_ne!(scope_cgid, 0, "scope cgroup id must be non-zero");
+
+        let cfg = McpServerConfig {
+            name: "spike".into(),
+            transport: McpTransport::Stdio,
+            command: Some("sleep".into()),
+            args: vec!["10".into()],
+            env: Default::default(),
+            url: None,
+            token_env: None,
+            allowed_tools: None,
+            denied_tools: None,
+        };
+
+        // Control: the raw production spawn primitive (tool_command → tokio) must join the scope.
+        {
+            let raw = sandbox.tool_command("sleep", &["10".into()]).expect("tool_command");
+            let mut raw = tokio::process::Command::from(raw);
+            raw.kill_on_drop(true);
+            let mut child = raw.spawn().expect("spawn raw control child");
+            let pid = child.id().expect("control pid");
+            assert_eq!(
+                child_cgroup_id(pid),
+                scope_cgid,
+                "CONTROL: raw tool_command child is not in the scope cgroup — the baseline is broken"
+            );
+            let _ = child.start_kill();
+        }
+
+        // The real question: does the rmcp TokioChildProcess path preserve the cgroup-join pre_exec?
+        {
+            let proc = crate::mcp::transport::spawn_stdio(&sandbox, &cfg)
+                .expect("spawn_stdio via TokioChildProcess");
+            let pid = proc.id().expect("rmcp child pid");
+            assert_eq!(
+                child_cgroup_id(pid),
+                scope_cgid,
+                "R3 FAIL: the rmcp TokioChildProcess child is NOT in the scope cgroup — \
+                 process-wrap clobbered bee's pre_exec; use the raw-pipe fallback (§3.3)"
+            );
+            drop(proc);
+        }
+
+        if let Sandbox::Enforced(e) = &sandbox {
+            let _ = e.scope.teardown();
+        }
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+}
