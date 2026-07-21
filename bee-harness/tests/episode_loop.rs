@@ -36,9 +36,9 @@ fn bash_call(id: &str, command: &str) -> ToolCall {
 async fn run(turns: Vec<Turn>, turn_limit: u32) -> bee_harness::EpisodeTranscript {
     let model = MockModel::scripted(turns);
     let scn = scenario(turn_limit);
-    let registry = registry_for(&scn.tools, None);
+    let mut registry = registry_for(&scn.tools, None);
     let mut sb = Sandbox::host(sandbox::key_vars(None));
-    run_loop(&model, &scn, &registry, &mut sb, &LoopOptions::default()).await
+    run_loop(&model, &scn, &mut registry, &mut sb, &LoopOptions::default()).await
 }
 
 #[tokio::test]

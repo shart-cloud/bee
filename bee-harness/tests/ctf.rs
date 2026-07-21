@@ -45,9 +45,9 @@ fn bash(id: &str, cmd: &str) -> ToolCall {
 async fn run(turns: Vec<Turn>, turn_limit: u32) -> EpisodeTranscript {
     let model = MockModel::scripted(turns);
     let scn = ctf_scenario(turn_limit);
-    let registry = registry_for(&scn.tools, Some(FLAG));
+    let mut registry = registry_for(&scn.tools, Some(FLAG));
     let mut sb = Sandbox::host(sandbox::key_vars(None));
-    run_loop(&model, &scn, &registry, &mut sb, &LoopOptions::default()).await
+    run_loop(&model, &scn, &mut registry, &mut sb, &LoopOptions::default()).await
 }
 
 #[tokio::test]

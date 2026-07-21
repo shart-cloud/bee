@@ -43,11 +43,11 @@ async fn tool_child_cannot_read_provider_key() {
     ]);
 
     let scn = scenario();
-    let registry = registry_for(&scn.tools, None);
+    let mut registry = registry_for(&scn.tools, None);
     // Strip list = default provider vars + the configured key var name.
     let mut sb = Sandbox::host(sandbox::key_vars(Some("FAKE_PROVIDER_KEY")));
 
-    let t = run_loop(&model, &scn, &registry, &mut sb, &LoopOptions::default()).await;
+    let t = run_loop(&model, &scn, &mut registry, &mut sb, &LoopOptions::default()).await;
 
     let out = &t.turns[0].calls[0].result.content;
     assert!(
