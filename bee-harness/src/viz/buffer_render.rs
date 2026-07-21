@@ -84,6 +84,27 @@ pub fn spec_height(spec: &RenderSpec, width: u16) -> u16 {
             .first()
             .map(|f| f.height.div_ceil(2))
             .unwrap_or(1),
+        RenderSpec::Grid {
+            rows,
+            cols,
+            gap,
+            cells,
+            ..
+        } => {
+            // Uniform-height rows: the row height is the tallest cell content (normalized by its
+            // row-span). Simple and deterministic for the inline snapshot; the full-screen renderer
+            // will honor row_weights for proportional sizing (docs/grid-tui-plan.md §2).
+            let gap = gap.unwrap_or(0);
+            let cell_w = (width / (*cols).max(1)).max(1);
+            let unit = cells
+                .iter()
+                .map(|c| spec_height(&c.content, cell_w).div_ceil(c.row_span.max(1)))
+                .max()
+                .unwrap_or(3)
+                .max(1);
+            rows.saturating_mul(unit)
+                .saturating_add(rows.saturating_sub(1).saturating_mul(gap))
+        }
     };
     h.max(1)
 }
@@ -325,6 +346,63 @@ fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
         }
         RenderSpec::Animation { spec } => {
             Paragraph::new(format!("[animation: {} frames]", spec.frames.len())).render(area, buf);
+        }
+        RenderSpec::Grid {
+            rows,
+            cols,
+            col_weights,
+            row_weights,
+            gap,
+            cells,
+        } => {
+            if *rows == 0 || *cols == 0 {
+                return;
+            }
+            let gap = gap.unwrap_or(0);
+            // Track boundaries: split the whole area into `cols` columns and `rows` rows (weighted by
+            // *_weights, default equal Fill). A spanning cell's Rect is the union of the base tracks
+            // it covers, so spans "just work" (docs/grid-tui-plan.md §2).
+            let col_c: Vec<Constraint> = (0..*cols)
+                .map(|c| Constraint::Fill(col_weights.get(c as usize).copied().unwrap_or(1).max(1)))
+                .collect();
+            let row_c: Vec<Constraint> = (0..*rows)
+                .map(|r| Constraint::Fill(row_weights.get(r as usize).copied().unwrap_or(1).max(1)))
+                .collect();
+            let col_rects = Layout::default()
+                .direction(LayoutDir::Horizontal)
+                .spacing(gap)
+                .constraints(col_c)
+                .split(area);
+            let row_rects = Layout::default()
+                .direction(LayoutDir::Vertical)
+                .spacing(gap)
+                .constraints(row_c)
+                .split(area);
+            for cell in cells {
+                let (c0, r0) = (cell.col as usize, cell.row as usize);
+                let c1 = (cell.col + cell.col_span - 1) as usize;
+                let r1 = (cell.row + cell.row_span - 1) as usize;
+                if r1 >= row_rects.len() || c1 >= col_rects.len() {
+                    continue; // out of bounds — validated away at build, guarded here for safety
+                }
+                let x = col_rects[c0].x;
+                let y = row_rects[r0].y;
+                let w = col_rects[c1].right().saturating_sub(x);
+                let h = row_rects[r1].bottom().saturating_sub(y);
+                let rect = Rect::new(x, y, w, h);
+                // An optional cell title wraps the content in a bordered block; otherwise the inner
+                // widget draws directly (most widgets carry their own titled block).
+                let inner = match &cell.title {
+                    Some(t) => {
+                        let block = Block::bordered().title(t.clone());
+                        let inner = block.inner(rect);
+                        block.render(rect, buf);
+                        inner
+                    }
+                    None => rect,
+                };
+                render_into(&cell.content, inner, buf);
+            }
         }
     }
 }

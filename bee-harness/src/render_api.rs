@@ -2,8 +2,8 @@
 //! [`register`] function that wires every drawing function onto a Rhai [`Engine`]. Scripts build
 //! opaque builders that accumulate into a [`RenderContext`]; `render(widget)` commits the final
 //! [`RenderSpec`]. Only these functions exist on the engine — everything else is denied by omission
-//! (contracts/rhai-api.md). Structural caps (nesting ≤ 3, ≤ 500 elements) are enforced at commit and
-//! surfaced as script errors (research D6).
+//! (contracts/rhai-api.md). Structural caps (nesting ≤ 4, ≤ 500 elements; grids ≤ 12×12, ≤ 64 cells)
+//! are enforced at commit / cell-placement and surfaced as script errors (research D6).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -11,10 +11,13 @@ use std::sync::{Arc, Mutex};
 use rhai::{Array, Dynamic, Engine, EvalAltResult};
 
 use crate::render_spec::{
-    AnimationSpec, Bar, Direction, Dot, DotState, Point, RenderSpec, Row, Series, SpriteSpec,
+    AnimationSpec, Bar, Direction, Dot, DotState, GridCell, Point, RenderSpec, Row, Series,
+    SpriteSpec,
 };
 
-const MAX_NESTING: usize = 3;
+/// Max layout-nesting depth. A `Grid` counts as one level (like a vsplit/hsplit), so 4 keeps a
+/// grid-of-splits legal (grid-tui, M1 — was 3 pre-grid).
+const MAX_NESTING: usize = 4;
 const MAX_ELEMENTS: usize = 500;
 /// Max sprite edge in pixels (Slice 2, FR-028).
 const MAX_SPRITE_DIM: i64 = 32;
@@ -22,6 +25,10 @@ const MAX_SPRITE_DIM: i64 = 32;
 const MAX_FRAMES: usize = 16;
 /// Max palette entries (Slice 2, contracts/sprite-api.md).
 const MAX_PALETTE: usize = 32;
+/// Max grid edge in tracks (grid-tui, M1).
+const MAX_GRID_DIM: i64 = 12;
+/// Max cells in one grid (grid-tui, M1).
+const MAX_CELLS: usize = 64;
 
 /// The `Clone + Send`-able accumulator pushed into a render evaluation. Holds the last committed
 /// widget and how many `render()` calls the script made (for the discarded-render note).
@@ -211,6 +218,80 @@ impl LayoutBuilder {
     }
 }
 
+/// Builder behind `grid` (grid-tui, M1): an N×M grid the script fills cell by cell. Cells are
+/// validated in-bounds and non-overlapping as they're added, so a committed grid is always valid.
+#[derive(Clone)]
+pub struct GridBuilder {
+    rows: u16,
+    cols: u16,
+    col_weights: Vec<u16>,
+    row_weights: Vec<u16>,
+    gap: Option<u16>,
+    cells: Vec<GridCell>,
+}
+
+impl GridBuilder {
+    fn to_spec(&self) -> RenderSpec {
+        RenderSpec::Grid {
+            rows: self.rows,
+            cols: self.cols,
+            col_weights: self.col_weights.clone(),
+            row_weights: self.row_weights.clone(),
+            gap: self.gap,
+            cells: self.cells.clone(),
+        }
+    }
+}
+
+/// Whether a proposed `(row, col, row_span, col_span)` rectangle overlaps an already-placed cell.
+fn cell_overlaps(c: &GridCell, row: u16, col: u16, rs: u16, cs: u16) -> bool {
+    let (a_r0, a_r1, a_c0, a_c1) = (c.row, c.row + c.row_span, c.col, c.col + c.col_span);
+    let (b_r0, b_r1, b_c0, b_c1) = (row, row + rs, col, col + cs);
+    a_r0 < b_r1 && b_r0 < a_r1 && a_c0 < b_c1 && b_c0 < a_c1
+}
+
+/// Place a cell into `g`, enforcing the cell cap, non-negative coords, spans ≥ 1, in-bounds, and
+/// non-overlap. A violation is surfaced as a script error (contracts/rhai-api.md style).
+fn push_cell(
+    g: &mut GridBuilder,
+    row: i64,
+    col: i64,
+    row_span: i64,
+    col_span: i64,
+    content: RenderSpec,
+) -> Result<(), Box<EvalAltResult>> {
+    if g.cells.len() >= MAX_CELLS {
+        return Err(format!("render: grid exceeds {MAX_CELLS} cells").into());
+    }
+    if row < 0 || col < 0 || row_span < 1 || col_span < 1 {
+        return Err("render: grid cell needs row/col ≥ 0 and spans ≥ 1".into());
+    }
+    let (row, col, rs, cs) = (row as u16, col as u16, row_span as u16, col_span as u16);
+    if row + rs > g.rows || col + cs > g.cols {
+        return Err(format!(
+            "render: cell ({row},{col}) span {rs}×{cs} exceeds the {}×{} grid",
+            g.rows, g.cols
+        )
+        .into());
+    }
+    if let Some(hit) = g.cells.iter().find(|c| cell_overlaps(c, row, col, rs, cs)) {
+        return Err(format!(
+            "render: cell ({row},{col}) overlaps the cell at ({},{})",
+            hit.row, hit.col
+        )
+        .into());
+    }
+    g.cells.push(GridCell {
+        row,
+        col,
+        row_span: rs,
+        col_span: cs,
+        title: None,
+        content,
+    });
+    Ok(())
+}
+
 /// Builder behind `palette` (Slice 2, FR-028): a char→color map (`None` = transparent).
 #[derive(Clone, Default)]
 pub struct PaletteBuilder {
@@ -289,6 +370,13 @@ fn array_to_strings(a: Array) -> Vec<String> {
         .collect()
 }
 
+/// Convert a Rhai `Array` of ints to `Vec<u16>` track weights (each clamped to 1..=255).
+fn array_to_u16(a: Array) -> Vec<u16> {
+    a.into_iter()
+        .map(|d| d.as_int().unwrap_or(1).clamp(1, 255) as u16)
+        .collect()
+}
+
 /// Turn any builder/`RenderSpec` `Dynamic` into a [`RenderSpec`], or a script error.
 fn dynamic_to_spec(d: Dynamic) -> Result<RenderSpec, Box<EvalAltResult>> {
     if d.is::<RenderSpec>() {
@@ -311,6 +399,9 @@ fn dynamic_to_spec(d: Dynamic) -> Result<RenderSpec, Box<EvalAltResult>> {
     }
     if d.is::<LayoutBuilder>() {
         return Ok(d.cast::<LayoutBuilder>().to_spec());
+    }
+    if d.is::<GridBuilder>() {
+        return Ok(d.cast::<GridBuilder>().to_spec());
     }
     if d.is::<SpriteBuilder>() {
         return Ok(RenderSpec::Sprite {
@@ -488,6 +579,58 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
             Ok(())
         },
     );
+
+    // --- Grid (grid-tui, M1): a model-defined N×M grid; cells hold any widget ---
+    engine.register_type_with_name::<GridBuilder>("Grid");
+    engine.register_fn(
+        "grid",
+        |rows: i64, cols: i64| -> Result<GridBuilder, Box<EvalAltResult>> {
+            if !(1..=MAX_GRID_DIM).contains(&rows) || !(1..=MAX_GRID_DIM).contains(&cols) {
+                return Err(format!("render: grid dimensions must be 1..={MAX_GRID_DIM}").into());
+            }
+            Ok(GridBuilder {
+                rows: rows as u16,
+                cols: cols as u16,
+                col_weights: Vec::new(),
+                row_weights: Vec::new(),
+                gap: None,
+                cells: Vec::new(),
+            })
+        },
+    );
+    engine.register_fn(
+        "cell",
+        |g: &mut GridBuilder,
+         row: i64,
+         col: i64,
+         widget: Dynamic|
+         -> Result<(), Box<EvalAltResult>> {
+            let spec = dynamic_to_spec(widget)?;
+            push_cell(g, row, col, 1, 1, flatten_for_layout(spec))
+        },
+    );
+    engine.register_fn(
+        "span",
+        |g: &mut GridBuilder,
+         row: i64,
+         col: i64,
+         row_span: i64,
+         col_span: i64,
+         widget: Dynamic|
+         -> Result<(), Box<EvalAltResult>> {
+            let spec = dynamic_to_spec(widget)?;
+            push_cell(g, row, col, row_span, col_span, flatten_for_layout(spec))
+        },
+    );
+    engine.register_fn("col_weights", |g: &mut GridBuilder, w: Array| {
+        g.col_weights = array_to_u16(w);
+    });
+    engine.register_fn("row_weights", |g: &mut GridBuilder, w: Array| {
+        g.row_weights = array_to_u16(w);
+    });
+    engine.register_fn("gap", |g: &mut GridBuilder, n: i64| {
+        g.gap = Some(n.clamp(0, 8) as u16);
+    });
 
     // --- Sprites & animation (Slice 2) ---
     engine.register_type_with_name::<PaletteBuilder>("Palette");

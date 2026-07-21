@@ -224,11 +224,12 @@ async fn transparent_sprite_summary_notes_it() {
 }
 
 #[tokio::test]
-async fn nesting_over_three_is_rejected() {
-    // 4 levels of vsplit exceeds the depth-3 structural cap (contracts/rhai-api.md).
+async fn nesting_over_four_is_rejected() {
+    // 5 levels of vsplit exceeds the depth-4 structural cap (grid-tui raised it from 3 to make a
+    // grid-of-splits legal; contracts/rhai-api.md).
     let script = r#"
-        let l1 = vsplit(); let l2 = vsplit(); let l3 = vsplit(); let l4 = vsplit();
-        l4.add(text("x")); l3.add(l4); l2.add(l3); l1.add(l2);
+        let l1 = vsplit(); let l2 = vsplit(); let l3 = vsplit(); let l4 = vsplit(); let l5 = vsplit();
+        l5.add(text("x")); l4.add(l5); l3.add(l4); l2.add(l3); l1.add(l2);
         render(l1);
     "#;
     let r = run(script).await;

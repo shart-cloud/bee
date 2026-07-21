@@ -113,7 +113,12 @@ The reusable chrome pieces, all built from the tokens + glyphs above:
 | **Tool-call line** | `▸` arrow, `✓`/`✗` result, dim args | live tool execution in the REPL |
 | **Denial line** | bold `⚠ DENIED` in sting-red | kernel/policy denials |
 | **Spinner** | braille `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` | in-flight work |
-| **Rules / splits** | `─` `│`, `vsplit`/`hsplit` (max depth 3) | layout separators |
+| **Rules / splits** | `─` `│`, `vsplit`/`hsplit` (max depth 4) | layout separators |
+| **Grid** | `grid(rows, cols)` → cells hold any widget; spans union tracks | model-defined N×M dashboards ([plan](./grid-tui-plan.md)) |
+
+Render widgets — charts, gauges, tables, dot grids, sprites, grids — are authored in Rhai
+(`viz::render_api`) and validated into a pure-serde `RenderSpec`. The full component pipeline and the
+grid system live in [the grid TUI plan](./grid-tui-plan.md).
 
 New chrome should compose these before introducing anything new. If a state needs a color, it needs
 a role; if it needs a mark, it needs a glyph from the vocabulary.

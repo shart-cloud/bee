@@ -880,11 +880,15 @@ pub async fn run_repl(
     };
     let output = TerminalOutput::new(Box::new(printer));
 
-    // Bee mascot (on by default; `--no-bee` / `BEE_MASCOT=0` to suppress): play the wing-flap once
-    // beside the session line, then it reclaims its rows (003-visual-render, Slice 2, FR-032).
+    // Bee mascot (on by default; `--no-bee` / `BEE_MASCOT=0` to suppress): a static sprite banner in
+    // the resting pose. (It was a fire-and-forget wing-flap, but the animation's deferred row-reclaim
+    // fought the info line + prompt printed immediately below it, leaving two stray black antenna rows
+    // after the first message. A static block has no reclaim, so no artifact. The flap belongs in the
+    // upcoming full-screen TUI, where a tick-driven redraw needs no cursor-reclaim hack — see
+    // docs/grid-tui-plan.md §5.)
     if config.mascot {
-        output.render_widget(&RenderSpec::Animation {
-            spec: crate::viz::bee::animation(),
+        output.render_widget(&RenderSpec::Sprite {
+            spec: crate::viz::bee::sprite(),
         });
     }
 
