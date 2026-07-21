@@ -101,11 +101,12 @@ pub trait ReplOutput: Send + Sync {
     fn steering(&self, msg: &str) {
         self.info(msg);
     }
-    /// A liveness heartbeat shown while waiting on a slow model call. Defaults to
-    /// [`ReplOutput::info`].
-    fn thinking(&self, msg: &str) {
-        self.info(msg);
-    }
+    /// Begin a "working" indicator — called the instant a model call is dispatched, so the wait for
+    /// the first token never looks dead. Defaults to a no-op (tests need no spinner).
+    fn busy_start(&self) {}
+    /// End the "working" indicator — called when the first token/tool arrives or the call fails.
+    /// Defaults to a no-op.
+    fn busy_stop(&self) {}
 }
 
 /// Why one user→agent exchange ended.
@@ -265,21 +266,18 @@ fn drain_steering(queue: &SteeringQueue, convo: &mut Conversation, output: &dyn 
     drained
 }
 
-/// Consume one model stream: render text deltas live and return the assembled [`Turn`]. A slow first
-/// event triggers a single "thinking" heartbeat. `saw_text` reports whether any prose was rendered
-/// (so the caller can close the assistant block).
+/// Consume one model stream: render text deltas live and return the assembled [`Turn`]. The "working"
+/// indicator (started by the caller when the call was dispatched) is stopped the instant the first
+/// event arrives. `saw_text` reports whether any prose was rendered (so the caller can close the
+/// assistant block).
 async fn consume_stream(
     mut stream: crate::provider::EventStream,
     output: &dyn ReplOutput,
 ) -> Result<Turn, String> {
-    // If the first event is slow, show one heartbeat so a long wait doesn't look dead.
-    let first = tokio::select! {
-        ev = stream.next() => ev,
-        _ = tokio::time::sleep(Duration::from_millis(700)) => {
-            output.thinking("· thinking…");
-            stream.next().await
-        }
-    };
+    // Wait for the first event, then drop the "working" indicator — from here on the stream itself
+    // (tokens, tool calls) shows liveness.
+    let first = stream.next().await;
+    output.busy_stop();
 
     let mut saw_text = false;
     let mut ev = first;
@@ -348,10 +346,15 @@ pub async fn run_exchange(
         drain_steering(steering, conversation, output);
 
         let turn_start = Instant::now();
+        // Show a "working" indicator from the instant the call is dispatched — this covers the
+        // stream-open latency and the wait for the first token, which is the gap that otherwise
+        // feels dead. `consume_stream` stops it on the first event.
+        output.busy_start();
         let stream = match stream_with_retry(model, conversation, &schemas, config.max_retries).await
         {
             Ok(s) => s,
             Err(detail) => {
+                output.busy_stop();
                 output.error(&detail);
                 return ExchangeResult {
                     outcome: ExchangeOutcome::ApiError(detail),

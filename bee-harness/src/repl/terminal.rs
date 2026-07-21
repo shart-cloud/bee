@@ -8,10 +8,13 @@
 //! arrives; tool calls and results are indented and tagged; audit denials are called out in bold
 //! red; a dim footer summarizes each exchange.
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use bee_core::AuditEvent;
 use rustyline::ExternalPrinter;
+use tokio::task::JoinHandle;
 
 use super::ReplOutput;
 use crate::tools::ToolResult;
@@ -22,6 +25,30 @@ const WRAP_WIDTH: usize = 88;
 const MAX_RESULT_LINES: usize = 40;
 /// Max characters of a tool call's argument JSON to show on the call line.
 const MAX_ARG_CHARS: usize = 100;
+/// How often the "working" spinner advances a frame.
+const SPINNER_INTERVAL: Duration = Duration::from_millis(90);
+/// Braille spinner frames.
+const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// A shared handle to the external printer — shared between the render path and the spinner task.
+type SharedPrinter = Arc<Mutex<Box<dyn ExternalPrinter + Send>>>;
+
+/// Render one spinner frame's text (dim when color is on). `tick` selects the glyph; once a second
+/// has passed, the elapsed time is appended so a long wait reads as progress, not a hang.
+fn spinner_frame(tick: u64, start: Instant, color: bool) -> String {
+    let glyph = SPINNER_FRAMES[(tick as usize) % SPINNER_FRAMES.len()];
+    let elapsed = start.elapsed().as_secs_f64();
+    let text = if elapsed >= 1.0 {
+        format!("{glyph} thinking… {elapsed:.1}s")
+    } else {
+        format!("{glyph} thinking…")
+    };
+    if color {
+        format!("\x1b[2m{text}\x1b[0m")
+    } else {
+        text
+    }
+}
 
 /// The mutable state of the in-progress streamed assistant paragraph. Deltas arrive a few tokens at
 /// a time; we buffer the current visual line and emit it (wrapped) as soon as it fills or a newline
@@ -37,8 +64,16 @@ struct StreamState {
 /// Writes the REPL through a rustyline external printer (with ANSI color unless `NO_COLOR` is set).
 pub struct TerminalOutput {
     color: bool,
-    printer: Mutex<Box<dyn ExternalPrinter + Send>>,
+    printer: SharedPrinter,
     stream: Mutex<StreamState>,
+    /// Whether a spinner is currently animating (shared with the spinner task, which stops when it
+    /// clears).
+    spinning: Arc<AtomicBool>,
+    /// Set when the spinner leaves a drawn row that the next emitted line should reclaim in place
+    /// (so the "thinking…" row is reused, not left as residue).
+    reclaim: AtomicBool,
+    /// The running spinner task, if any.
+    spin_task: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl TerminalOutput {
@@ -47,8 +82,11 @@ impl TerminalOutput {
     pub fn new(printer: Box<dyn ExternalPrinter + Send>) -> Self {
         TerminalOutput {
             color: std::env::var_os("NO_COLOR").is_none(),
-            printer: Mutex::new(printer),
+            printer: Arc::new(Mutex::new(printer)),
             stream: Mutex::new(StreamState::default()),
+            spinning: Arc::new(AtomicBool::new(false)),
+            reclaim: AtomicBool::new(false),
+            spin_task: Mutex::new(None),
         }
     }
 
@@ -62,11 +100,16 @@ impl TerminalOutput {
     }
 
     /// Print one line above the input line. A trailing newline is added; the external printer
-    /// redraws the prompt beneath it. Printer errors are swallowed — a REPL should not abort a
-    /// session because one line failed to render.
+    /// redraws the prompt beneath it. If a spinner row is pending reclaim, the line reuses that row
+    /// in place (cursor up + clear) so no "thinking…" residue is left behind. Printer errors are
+    /// swallowed — a REPL should not abort a session because one line failed to render.
     fn emit(&self, line: &str) {
         if let Ok(mut p) = self.printer.lock() {
-            let _ = p.print(format!("{line}\n"));
+            if self.reclaim.swap(false, Ordering::SeqCst) {
+                let _ = p.print(format!("\x1b[1A\r\x1b[2K{line}\n"));
+            } else {
+                let _ = p.print(format!("{line}\n"));
+            }
         }
     }
 
@@ -171,8 +214,54 @@ impl ReplOutput for TerminalOutput {
         self.emit(&self.paint("36", msg)); // cyan — user's steering nudge
     }
 
-    fn thinking(&self, msg: &str) {
-        self.emit(&self.paint("2", msg)); // dim heartbeat
+    fn busy_start(&self) {
+        // Idempotent: ignore if already spinning.
+        if self.spinning.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let start = Instant::now();
+        // Draw the first frame synchronously so feedback is instant on send, then let a background
+        // task advance it in place. Honor a pending reclaim so a new spinner reuses a prior
+        // unreclaimed spinner row rather than stacking beneath it.
+        if let Ok(mut p) = self.printer.lock() {
+            let frame = spinner_frame(0, start, self.color);
+            if self.reclaim.swap(false, Ordering::SeqCst) {
+                let _ = p.print(format!("\x1b[1A\r\x1b[2K{frame}\n"));
+            } else {
+                let _ = p.print(format!("{frame}\n"));
+            }
+        }
+        let printer = self.printer.clone();
+        let spinning = self.spinning.clone();
+        let color = self.color;
+        let handle = tokio::spawn(async move {
+            let mut tick = 1u64;
+            loop {
+                tokio::time::sleep(SPINNER_INTERVAL).await;
+                let Ok(mut p) = printer.lock() else { break };
+                // Re-check under the printer lock so we never draw a frame after a reclaiming
+                // emit has already reused the spinner row.
+                if !spinning.load(Ordering::SeqCst) {
+                    break;
+                }
+                // Redraw the row directly above the prompt in place.
+                let _ = p.print(format!("\x1b[1A\r\x1b[2K{}\n", spinner_frame(tick, start, color)));
+                drop(p);
+                tick += 1;
+            }
+        });
+        *self.spin_task.lock().expect("spin task") = Some(handle);
+    }
+
+    fn busy_stop(&self) {
+        if !self.spinning.swap(false, Ordering::SeqCst) {
+            return; // wasn't spinning
+        }
+        // The spinner drew a row above the prompt; the next emitted line reclaims it in place.
+        self.reclaim.store(true, Ordering::SeqCst);
+        if let Some(h) = self.spin_task.lock().expect("spin task").take() {
+            h.abort();
+        }
     }
 }
 
@@ -243,6 +332,34 @@ mod tests {
         let (t, buf) = term();
         t.info("hi");
         assert!(!buf.lock().unwrap().contains("\x1b["));
+    }
+
+    #[tokio::test]
+    async fn spinner_draws_immediately_then_reclaims_its_row() {
+        let (t, buf) = term();
+        t.busy_start();
+        // The first frame is drawn synchronously — instant feedback on send.
+        {
+            let s = buf.lock().unwrap();
+            assert!(s.contains("thinking…"), "spinner frame missing: {s:?}");
+            assert!(s.contains(SPINNER_FRAMES[0]), "spinner glyph missing: {s:?}");
+        }
+        // Stop before the ~90ms task ticks, then emit real output: it must reuse the spinner's row
+        // in place (cursor-up + clear-line) rather than leaving a "thinking…" line behind.
+        t.busy_stop();
+        t.info("real output");
+        let s = buf.lock().unwrap().clone();
+        assert!(s.contains("\x1b[1A\r\x1b[2Kreal output"), "row not reclaimed in place: {s:?}");
+    }
+
+    #[test]
+    fn spinner_frame_shows_glyph_and_advances() {
+        // Fresh start: under a second, no elapsed suffix, glyph advances with the tick.
+        let start = Instant::now();
+        let f = spinner_frame(3, start, false);
+        assert!(f.contains(SPINNER_FRAMES[3]), "glyph missing: {f:?}");
+        assert!(f.contains("thinking…"));
+        assert_ne!(spinner_frame(0, start, false), spinner_frame(1, start, false));
     }
 
     #[test]
