@@ -13,16 +13,19 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use rig_core::client::CompletionClient;
+use futures_util::StreamExt;
 use rig_core::completion::{
-    AssistantContent, CompletionError, CompletionModel, CompletionRequest, Message, ToolDefinition,
+    AssistantContent, CompletionError, CompletionModel, CompletionRequest, GetTokenUsage, Message,
+    ToolDefinition,
 };
+use rig_core::client::CompletionClient;
+use rig_core::streaming::{StreamedAssistantContent, StreamingCompletionResponse};
 use rig_core::OneOrMany;
 
 use crate::config::{ProviderConfig, ProviderType};
 use crate::provider::{
-    Conversation, Message as HMessage, Model, ModelError, StopReason, ToolCall, ToolSchema, Turn,
-    Usage,
+    Conversation, EventStream, Message as HMessage, Model, ModelError, StopReason, StreamEvent,
+    ToolCall, ToolSchema, Turn, Usage,
 };
 
 /// Default output token cap for providers (Anthropic *requires* `max_tokens`).
@@ -37,12 +40,16 @@ struct RigTurn {
 type CompleterFut = Pin<Box<dyn Future<Output = Result<RigTurn, CompletionError>> + Send>>;
 type Completer = Box<dyn Fn(CompletionRequest) -> CompleterFut + Send + Sync>;
 
+type StreamerFut = Pin<Box<dyn Future<Output = Result<EventStream, ModelError>> + Send>>;
+type Streamer = Box<dyn Fn(CompletionRequest) -> StreamerFut + Send + Sync>;
+
 /// A [`Model`] backed by a Rig completion model.
 pub struct RigModel {
     id: String,
     max_tokens: Option<u64>,
     temperature: Option<f64>,
     complete: Completer,
+    stream: Streamer,
 }
 
 /// Erase a concrete Rig `CompletionModel` into a boxed async closure that yields a [`RigTurn`].
@@ -59,16 +66,103 @@ where
     })
 }
 
+/// Erase a concrete Rig `CompletionModel` into a boxed async closure that opens a provider stream
+/// and maps it into an [`EventStream`]. R (the provider's streaming-response type) is erased here,
+/// where it is statically known, so no Rig type escapes this file (research H3).
+fn make_streamer<M>(model: M) -> Streamer
+where
+    M: CompletionModel + Clone + Send + Sync + 'static,
+    M::StreamingResponse: Send + 'static,
+{
+    Box::new(move |req: CompletionRequest| {
+        let model = model.clone();
+        Box::pin(async move {
+            let resp = model.stream(req).await.map_err(to_model_error)?;
+            Ok(map_rig_stream(resp))
+        })
+    })
+}
+
+/// Map a Rig streaming response into an [`EventStream`]: text deltas are forwarded live, each
+/// complete tool call is forwarded as it lands, and a single [`StreamEvent::Done`] carrying the
+/// assembled [`Turn`] is emitted when the provider stream ends. Partial tool-call deltas and
+/// reasoning are not surfaced (matching the non-streaming [`to_turn`]).
+fn map_rig_stream<R>(mut resp: StreamingCompletionResponse<R>) -> EventStream
+where
+    R: Clone + Unpin + GetTokenUsage + Send + 'static,
+{
+    Box::pin(async_stream::stream! {
+        let mut text = String::new();
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
+        let mut usage = Usage::default();
+
+        while let Some(item) = resp.next().await {
+            match item {
+                Ok(StreamedAssistantContent::Text(t)) => {
+                    text.push_str(&t.text);
+                    yield Ok(StreamEvent::TextDelta(t.text));
+                }
+                Ok(StreamedAssistantContent::ToolCall { tool_call, .. }) => {
+                    let tc = ToolCall {
+                        id: tool_call.id,
+                        name: tool_call.function.name,
+                        arguments: tool_call.function.arguments,
+                    };
+                    tool_calls.push(tc.clone());
+                    yield Ok(StreamEvent::ToolCall(tc));
+                }
+                Ok(StreamedAssistantContent::Final(r)) => {
+                    let u = r.token_usage();
+                    usage = Usage {
+                        input_tokens: u.input_tokens as u32,
+                        output_tokens: u.output_tokens as u32,
+                    };
+                }
+                // Partial tool-call deltas, reasoning, and provider-native items are not surfaced.
+                Ok(_) => {}
+                Err(e) => {
+                    yield Err(to_model_error(e));
+                    return;
+                }
+            }
+        }
+
+        // Some providers report usage only via the aggregated response after the stream drains,
+        // not as a `Final` event; fall back to it when no `Final` carried usage.
+        if usage == Usage::default() {
+            if let Some(r) = &resp.response {
+                let u = r.token_usage();
+                usage = Usage {
+                    input_tokens: u.input_tokens as u32,
+                    output_tokens: u.output_tokens as u32,
+                };
+            }
+        }
+
+        let stop = if tool_calls.is_empty() { StopReason::EndTurn } else { StopReason::ToolUse };
+        let turn = Turn {
+            text: (!text.is_empty()).then_some(text),
+            tool_calls,
+            stop,
+            usage: Some(usage),
+        };
+        yield Ok(StreamEvent::Done(turn));
+    })
+}
+
 impl RigModel {
     /// Build a `RigModel` from a provider config and a resolved API key. `api_key` may be empty for
     /// local OpenAI-compatible endpoints (e.g. Ollama) that don't authenticate.
     pub fn from_config(cfg: &ProviderConfig, api_key: &str) -> Result<Self, ModelError> {
         let id = cfg.model_id();
-        let complete = match cfg.provider {
+        // Build the completer and streamer from one model instance (both back-ends' models are
+        // `Clone`), so a single provider selection serves both the buffered and streaming paths.
+        let (complete, stream) = match cfg.provider {
             ProviderType::Anthropic => {
                 let client = rig_core::providers::anthropic::Client::new(api_key)
                     .map_err(|e| ModelError::Request(format!("anthropic client: {e}")))?;
-                make_completer(client.completion_model(&cfg.model))
+                let model = client.completion_model(&cfg.model);
+                (make_completer(model.clone()), make_streamer(model))
             }
             ProviderType::OpenAiCompat => {
                 let base_url = cfg
@@ -80,7 +174,8 @@ impl RigModel {
                     .api_key(api_key.to_string())
                     .build()
                     .map_err(|e| ModelError::Request(format!("openai client: {e}")))?;
-                make_completer(client.completion_model(&cfg.model))
+                let model = client.completion_model(&cfg.model);
+                (make_completer(model.clone()), make_streamer(model))
             }
             ProviderType::Mock => {
                 return Err(ModelError::Request(
@@ -93,6 +188,7 @@ impl RigModel {
             max_tokens: Some(cfg.max_tokens.map(u64::from).unwrap_or(DEFAULT_MAX_TOKENS)),
             temperature: cfg.temperature.map(f64::from),
             complete,
+            stream,
         })
     }
 
@@ -239,6 +335,15 @@ impl Model for RigModel {
         let req = self.build_request(convo, tools)?;
         let rt = (self.complete)(req).await.map_err(to_model_error)?;
         Ok(to_turn(rt))
+    }
+
+    async fn stream(
+        &self,
+        convo: &Conversation,
+        tools: &[ToolSchema],
+    ) -> Result<EventStream, ModelError> {
+        let req = self.build_request(convo, tools)?;
+        (self.stream)(req).await
     }
 }
 

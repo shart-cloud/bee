@@ -1,10 +1,17 @@
-//! The default [`ReplOutput`](super::ReplOutput): renders the session to stdout with ANSI color.
+//! The default [`ReplOutput`](super::ReplOutput): renders the session through a rustyline
+//! [`ExternalPrinter`](rustyline::ExternalPrinter) so agent output scrolls *above* the live input
+//! line without corrupting whatever the user is typing (which is what lets streaming output and
+//! concurrent steering input coexist).
 //!
 //! Color is inline escapes (no color crate) and is suppressed when `NO_COLOR` is set (per
-//! <https://no-color.org>). Assistant prose is word-wrapped; tool calls and results are indented and
-//! tagged; audit denials are called out in bold red.
+//! <https://no-color.org>). Assistant prose streams in, word-wrapped a line at a time as it
+//! arrives; tool calls and results are indented and tagged; audit denials are called out in bold
+//! red; a dim footer summarizes each exchange.
+
+use std::sync::Mutex;
 
 use bee_core::AuditEvent;
+use rustyline::ExternalPrinter;
 
 use super::ReplOutput;
 use crate::tools::ToolResult;
@@ -16,15 +23,33 @@ const MAX_RESULT_LINES: usize = 40;
 /// Max characters of a tool call's argument JSON to show on the call line.
 const MAX_ARG_CHARS: usize = 100;
 
-/// Writes the REPL to stdout with ANSI color (unless `NO_COLOR` is set).
+/// The mutable state of the in-progress streamed assistant paragraph. Deltas arrive a few tokens at
+/// a time; we buffer the current visual line and emit it (wrapped) as soon as it fills or a newline
+/// lands, so prose appears line-by-line as the model generates it.
+#[derive(Default)]
+struct StreamState {
+    /// Whether the leading blank separator line for this assistant block has been printed.
+    started: bool,
+    /// The current, not-yet-emitted visual line (never contains `\n`, kept within `WRAP_WIDTH`).
+    line: String,
+}
+
+/// Writes the REPL through a rustyline external printer (with ANSI color unless `NO_COLOR` is set).
 pub struct TerminalOutput {
     color: bool,
+    printer: Mutex<Box<dyn ExternalPrinter + Send>>,
+    stream: Mutex<StreamState>,
 }
 
 impl TerminalOutput {
-    /// Build a terminal output. Honors `NO_COLOR` (any value ⇒ no escapes).
-    pub fn new() -> Self {
-        TerminalOutput { color: std::env::var_os("NO_COLOR").is_none() }
+    /// Build a terminal output over an external printer taken from the active editor. Honors
+    /// `NO_COLOR` (any value ⇒ no escapes).
+    pub fn new(printer: Box<dyn ExternalPrinter + Send>) -> Self {
+        TerminalOutput {
+            color: std::env::var_os("NO_COLOR").is_none(),
+            printer: Mutex::new(printer),
+            stream: Mutex::new(StreamState::default()),
+        }
     }
 
     /// Wrap `text` in an ANSI SGR sequence, or return it unchanged when color is disabled.
@@ -35,62 +60,67 @@ impl TerminalOutput {
             text.to_string()
         }
     }
-}
 
-impl Default for TerminalOutput {
-    fn default() -> Self {
-        TerminalOutput::new()
-    }
-}
-
-/// Word-wrap `text` to `width` columns, preserving existing line breaks. Words longer than `width`
-/// are emitted on their own (over-long) line rather than split.
-fn wrap(text: &str, width: usize) -> String {
-    let mut out = String::new();
-    for (i, line) in text.split('\n').enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        let mut col = 0usize;
-        for word in line.split_whitespace() {
-            let wlen = word.chars().count();
-            if col == 0 {
-                out.push_str(word);
-                col = wlen;
-            } else if col + 1 + wlen <= width {
-                out.push(' ');
-                out.push_str(word);
-                col += 1 + wlen;
-            } else {
-                out.push('\n');
-                out.push_str(word);
-                col = wlen;
-            }
+    /// Print one line above the input line. A trailing newline is added; the external printer
+    /// redraws the prompt beneath it. Printer errors are swallowed — a REPL should not abort a
+    /// session because one line failed to render.
+    fn emit(&self, line: &str) {
+        if let Ok(mut p) = self.printer.lock() {
+            let _ = p.print(format!("{line}\n"));
         }
     }
-    out
+
+    /// Emit the current buffered assistant line and clear it.
+    fn flush_line(&self, st: &mut StreamState) {
+        let line = std::mem::take(&mut st.line);
+        self.emit(&line);
+    }
 }
 
-/// The first `max` chars of `s`'s single-line form, with an ellipsis when clipped.
-fn clip(s: &str, max: usize) -> String {
-    let one_line: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one_line.chars().count() > max {
-        let kept: String = one_line.chars().take(max).collect();
-        format!("{kept}…")
-    } else {
-        one_line
-    }
+/// Display width of a string in columns (char count; good enough for wrap decisions on prose).
+fn width(s: &str) -> usize {
+    s.chars().count()
 }
 
 impl ReplOutput for TerminalOutput {
-    fn assistant_text(&self, text: &str) {
-        println!("\n{}", wrap(text.trim_end(), WRAP_WIDTH));
+    fn assistant_delta(&self, chunk: &str) {
+        let mut st = self.stream.lock().expect("stream state");
+        if !st.started {
+            self.emit(""); // blank separator before the assistant block
+            st.started = true;
+        }
+        for c in chunk.chars() {
+            if c == '\n' {
+                self.flush_line(&mut st);
+                continue;
+            }
+            st.line.push(c);
+            if width(&st.line) > WRAP_WIDTH {
+                // Greedy wrap: break at the last space, else hard-break an over-long word.
+                if let Some(sp) = st.line.rfind(' ') {
+                    let tail = st.line[sp + 1..].to_string();
+                    st.line.truncate(sp);
+                    self.flush_line(&mut st);
+                    st.line = tail;
+                } else {
+                    self.flush_line(&mut st);
+                }
+            }
+        }
+    }
+
+    fn assistant_end(&self) {
+        let mut st = self.stream.lock().expect("stream state");
+        if !st.line.is_empty() {
+            self.flush_line(&mut st);
+        }
+        st.started = false;
     }
 
     fn tool_call(&self, name: &str, arguments: &serde_json::Value) {
         let args = clip(&arguments.to_string(), MAX_ARG_CHARS);
         let line = format!("  ▸ {name} {args}");
-        println!("{}", self.paint("2", &line)); // dim
+        self.emit(&self.paint("2", &line)); // dim
     }
 
     fn tool_result(&self, result: &ToolResult, audit: &[AuditEvent]) {
@@ -109,65 +139,117 @@ impl ReplOutput for TerminalOutput {
             } else {
                 format!("    {line}")
             };
-            println!("{}", self.paint(code, &prefixed));
+            self.emit(&self.paint(code, &prefixed));
         }
         if lines.len() > shown {
             let more = lines.len() - shown;
-            println!("{}", self.paint("2", &format!("    … {more} more line(s)")));
+            self.emit(&self.paint("2", &format!("    … {more} more line(s)")));
         }
 
         // Kernel denials stand out in bold red regardless of the result glyph above.
         for e in audit {
             if e.decision == "denied" {
                 let line = format!("  ⚠ DENIED {} {}", e.op, e.target);
-                println!("{}", self.paint("1;31", &line)); // bold red
+                self.emit(&self.paint("1;31", &line)); // bold red
             }
         }
     }
 
     fn error(&self, msg: &str) {
-        eprintln!("{}", self.paint("31", &format!("error: {msg}"))); // red
+        self.emit(&self.paint("31", &format!("error: {msg}"))); // red
     }
 
     fn info(&self, msg: &str) {
-        println!("{}", self.paint("33", msg)); // yellow
+        self.emit(&self.paint("33", msg)); // yellow
+    }
+
+    fn footer(&self, msg: &str) {
+        self.emit(&self.paint("2", msg)); // dim
+    }
+
+    fn steering(&self, msg: &str) {
+        self.emit(&self.paint("36", msg)); // cyan — user's steering nudge
+    }
+
+    fn thinking(&self, msg: &str) {
+        self.emit(&self.paint("2", msg)); // dim heartbeat
+    }
+}
+
+/// The first `max` chars of `s`'s single-line form, with an ellipsis when clipped.
+fn clip(s: &str, max: usize) -> String {
+    let one_line: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.chars().count() > max {
+        let kept: String = one_line.chars().take(max).collect();
+        format!("{kept}…")
+    } else {
+        one_line
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// An [`ExternalPrinter`] that captures printed messages into a shared buffer.
+    #[derive(Clone, Default)]
+    struct CapturePrinter(Arc<Mutex<String>>);
+
+    impl ExternalPrinter for CapturePrinter {
+        fn print(&mut self, msg: String) -> rustyline::Result<()> {
+            self.0.lock().unwrap().push_str(&msg);
+            Ok(())
+        }
+    }
+
+    fn term() -> (TerminalOutput, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let printer = CapturePrinter(buf.clone());
+        // Force color off so assertions match raw text.
+        let mut t = TerminalOutput::new(Box::new(printer));
+        t.color = false;
+        (t, buf)
+    }
 
     #[test]
-    fn wrap_breaks_long_lines() {
-        let text = "one two three four five six seven eight nine ten";
-        let wrapped = wrap(text, 12);
-        assert!(wrapped.contains('\n'), "expected a wrap: {wrapped:?}");
-        for line in wrapped.lines() {
-            assert!(line.chars().count() <= 12 || !line.contains(' '), "line too long: {line:?}");
+    fn streamed_deltas_reassemble_into_wrapped_lines() {
+        let (t, buf) = term();
+        // Feed a paragraph in arbitrary chunks; the emitted text (minus wrap newlines) must contain
+        // the original words in order.
+        for chunk in ["Hello ", "there, ", "how can ", "I help", " you today?"] {
+            t.assistant_delta(chunk);
+        }
+        t.assistant_end();
+        let out = buf.lock().unwrap().clone();
+        let collapsed: String = out.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(collapsed.contains("Hello there, how can I help you today?"), "got: {out:?}");
+    }
+
+    #[test]
+    fn long_line_wraps_at_width() {
+        let (t, buf) = term();
+        let words = "lorem ipsum ".repeat(30); // well over WRAP_WIDTH
+        t.assistant_delta(&words);
+        t.assistant_end();
+        let out = buf.lock().unwrap().clone();
+        for line in out.lines().filter(|l| !l.is_empty()) {
+            assert!(width(line) <= WRAP_WIDTH, "line exceeds width: {line:?}");
         }
     }
 
     #[test]
-    fn wrap_preserves_existing_newlines() {
-        let wrapped = wrap("alpha\nbeta", 80);
-        assert_eq!(wrapped, "alpha\nbeta");
+    fn no_color_emits_no_escapes() {
+        let (t, buf) = term();
+        t.info("hi");
+        assert!(!buf.lock().unwrap().contains("\x1b["));
     }
 
     #[test]
     fn clip_collapses_and_truncates() {
-        let clipped = clip("a  b\n c", 100);
-        assert_eq!(clipped, "a b c");
+        assert_eq!(clip("a  b\n c", 100), "a b c");
         let long = clip(&"x".repeat(200), 10);
         assert!(long.ends_with('…'));
         assert_eq!(long.chars().count(), 11);
-    }
-
-    #[test]
-    fn no_color_emits_no_escapes() {
-        let plain = TerminalOutput { color: false };
-        assert_eq!(plain.paint("31", "hi"), "hi");
-        let colored = TerminalOutput { color: true };
-        assert!(colored.paint("31", "hi").contains("\x1b["));
     }
 }

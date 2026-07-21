@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use futures_util::stream::{self, BoxStream};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -134,6 +135,25 @@ impl std::ops::Add for Usage {
     }
 }
 
+/// One incremental event from [`Model::stream`]. Text arrives in [`StreamEvent::TextDelta`]
+/// chunks as the model generates; each requested tool call arrives complete as a
+/// [`StreamEvent::ToolCall`]; the stream always ends with exactly one [`StreamEvent::Done`]
+/// carrying the fully-assembled [`Turn`] (its `text` is the concatenation of every delta, and its
+/// `usage` the provider's final count). A consumer that ignores the deltas and reads only `Done`
+/// sees exactly what [`Model::complete`] would have returned.
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    /// A chunk of assistant prose to render incrementally.
+    TextDelta(String),
+    /// A fully-formed tool call the model requested.
+    ToolCall(ToolCall),
+    /// The turn finished; carries the complete [`Turn`] (text, tool calls, stop reason, usage).
+    Done(Turn),
+}
+
+/// A boxed stream of [`StreamEvent`]s — the return of [`Model::stream`].
+pub type EventStream = BoxStream<'static, Result<StreamEvent, ModelError>>;
+
 /// A tool schema advertised to the model (becomes a Rig `ToolDefinition`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSchema {
@@ -207,4 +227,29 @@ pub trait Model: Send + Sync {
         convo: &Conversation,
         tools: &[ToolSchema],
     ) -> Result<Turn, ModelError>;
+
+    /// Like [`Model::complete`], but yields the turn incrementally as a stream of [`StreamEvent`]s
+    /// ending in exactly one [`StreamEvent::Done`]. The default implementation is a *buffered*
+    /// fallback: it performs the same single round-trip as `complete` and then replays the result as
+    /// one text delta, the tool calls, and `Done` — so a backend that cannot stream (e.g. the mock,
+    /// or a future provider) needs no extra code, and callers can always drive the streaming path.
+    /// Real backends override this to emit provider deltas live.
+    async fn stream(
+        &self,
+        convo: &Conversation,
+        tools: &[ToolSchema],
+    ) -> Result<EventStream, ModelError> {
+        let turn = self.complete(convo, tools).await?;
+        let mut events: Vec<Result<StreamEvent, ModelError>> = Vec::new();
+        if let Some(text) = &turn.text {
+            if !text.is_empty() {
+                events.push(Ok(StreamEvent::TextDelta(text.clone())));
+            }
+        }
+        for tc in &turn.tool_calls {
+            events.push(Ok(StreamEvent::ToolCall(tc.clone())));
+        }
+        events.push(Ok(StreamEvent::Done(turn)));
+        Ok(Box::pin(stream::iter(events)))
+    }
 }

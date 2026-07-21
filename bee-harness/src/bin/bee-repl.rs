@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use bee_harness::repl::{run_repl, ReplConfig, TerminalOutput};
+use bee_harness::repl::{run_repl, ReplConfig};
 use bee_harness::sandbox::{self, Sandbox};
 use bee_harness::tools::registry_for;
 use bee_harness::{model_from_config, set_non_dumpable, ProviderConfig};
@@ -98,6 +98,7 @@ async fn main() -> ExitCode {
             .clone()
             .unwrap_or_else(|| ReplConfig::default().system_prompt),
         agent_turn_budget: args.budget.max(1),
+        policy_label: policy_label.clone(),
         ..ReplConfig::default()
     };
 
@@ -108,8 +109,7 @@ async fn main() -> ExitCode {
     println!("  tools:  {}", tools.join(", "));
     println!();
 
-    let output = TerminalOutput::new();
-    let session = run_repl(model.as_ref(), &registry, &mut sbox, &config, &output).await;
+    let session = run_repl(model.as_ref(), &registry, &mut sbox, &config).await;
     sbox.teardown();
 
     // Persist the transcript to --save on exit, if requested.
