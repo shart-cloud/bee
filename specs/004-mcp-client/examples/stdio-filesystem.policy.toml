@@ -1,0 +1,9 @@
+# Policy for stdio-filesystem.toml: reads default-allow (so the MCP server binary can run); the
+# secrets subtree is denied, so a read there is refused by the KERNEL (not the server). No write grant
+# => writes are unrestricted (needed for the server's normal operation).
+[policy]
+name = "stdio-filesystem"
+mode = "enforce"
+
+[policy.filesystem]
+"/secrets" = "deny"

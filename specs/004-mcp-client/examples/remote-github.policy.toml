@@ -1,0 +1,8 @@
+# Policy for remote-github.toml. The remote MCP server is NOT constrained by this policy (it runs
+# off-host); the domain allowlist is the only control. This governs the agent's own built-in tools.
+[policy]
+name = "remote-github"
+mode = "enforce"
+
+[policy.filesystem]
+"/secrets" = "deny"

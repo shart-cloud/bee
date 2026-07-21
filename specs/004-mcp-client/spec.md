@@ -12,6 +12,27 @@
 
 ---
 
+## Implementation Amendments (post-research)
+
+These correct assumptions in the draft against the live harness and the `rmcp` crate; see
+[research.md](./research.md) R1–R12 for the full rationale.
+
+- **rmcp version & transports (amends FR-033).** The SDK is **`rmcp = "2.2"`**, not `"1"` (a stale
+  major with a different API). rmcp 2.x **removed the SSE client transport**, so remote MCP is
+  **Streamable HTTP only**; `transport = "sse"` in config is accepted as a **deprecated alias** routed
+  to the Streamable-HTTP client. FR-033 is read as "stdio + Streamable HTTP" accordingly.
+- **`[mcp]` is a top-level table** (a sibling of `[scenario]`), folded onto `Scenario` at load — see
+  R10.
+- **`is_known_tool` is unchanged** — MCP tool names bypass the built-in allowlist and dispatch through
+  the registry map (R12).
+- **Compile-time opt-in.** MCP is gated behind a default-off **`mcp` Cargo feature**; the config/policy
+  data types compile unconditionally so a build without the feature still **fails closed** on a
+  scenario that enables `[mcp]` (R11).
+- **Constitution III verified.** The stdio cgroup-join survives rmcp's `process-wrap` — proven on the
+  BPF-LSM VM (the R3 spike), so the primary `TokioChildProcess` path ships (raw-pipe fallback unused).
+
+---
+
 ## Overview
 
 MCP (Model Context Protocol) gives an LLM agent access to external tools, resources, and prompts

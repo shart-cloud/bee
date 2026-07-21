@@ -1,0 +1,8 @@
+# Policy for mixed.toml: governs the sandboxed stdio server (kernel-enforced) and the agent's
+# built-ins. The remote servers are domain-gated, not policy-constrained.
+[policy]
+name = "mixed"
+mode = "enforce"
+
+[policy.filesystem]
+"/secrets" = "deny"

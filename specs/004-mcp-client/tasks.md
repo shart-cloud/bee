@@ -134,10 +134,10 @@ built-ins and `/mcp` shows each server's transport, status, and the domain allow
 ## Phase 6: Polish & Cross-Cutting Concerns
 
 - [ ] T031 [P] Implement `tools/list_changed` (FR-043): replace the `()` client handler with an `rmcp::ClientHandler` impl whose `on_tool_list_changed` refreshes the cached schemas for the next turn, in `bee-harness/src/mcp/bridge.rs`. Add a test with a mock server emitting the notification.
-- [ ] T032 [P] Add the `*.policy.toml` companions for the example scenarios (`bee-harness` policy format, deny `/secrets`, allow `/workspace`) in `specs/004-mcp-client/examples/{stdio-filesystem,remote-github,mixed}.policy.toml`.
-- [ ] T033 [P] Update `specs/004-mcp-client/spec.md` to record the FR-033 amendment (SSE removed in rmcp 2.x → Streamable-HTTP only; `sse` = deprecated alias), cross-referencing research.md R2.
-- [ ] T034 SC-027 regression test in `bee-harness/tests/mcp_stdio.rs` (or a dedicated file): a scenario with no `[mcp]` section produces a transcript shape identical to the pre-feature path, and the default (no-`mcp`) build test suite is unchanged.
-- [ ] T035 Run the [quickstart.md](./quickstart.md) validation gates 0–7; fix any gaps and record results.
+- [x] T032 [P] Add the `*.policy.toml` companions for the example scenarios (`bee-harness` policy format, deny `/secrets`, allow `/workspace`) in `specs/004-mcp-client/examples/{stdio-filesystem,remote-github,mixed}.policy.toml`.
+- [x] T033 [P] Update `specs/004-mcp-client/spec.md` to record the FR-033 amendment (SSE removed in rmcp 2.x → Streamable-HTTP only; `sse` = deprecated alias), cross-referencing research.md R2.
+- [x] T034 SC-027 regression test in `bee-harness/tests/mcp_stdio.rs` (or a dedicated file): a scenario with no `[mcp]` section produces a transcript shape identical to the pre-feature path, and the default (no-`mcp`) build test suite is unchanged.
+- [x] T035 Run the [quickstart.md](./quickstart.md) validation gates 0–7; fix any gaps and record results.
 
 ---
 

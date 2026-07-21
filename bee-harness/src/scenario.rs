@@ -241,4 +241,25 @@ value = "FLAG{abc}"
         let p = write("zero", &body);
         assert!(matches!(Scenario::from_path(&p), Err(ConfigError::Invalid(_))));
     }
+
+    #[test]
+    fn no_mcp_section_is_disabled() {
+        // SC-027: a scenario with no `[mcp]` table has MCP off — behaves like the pre-feature harness.
+        let s = Scenario::from_path(&write("no-mcp", OK)).unwrap();
+        assert!(!s.mcp.enabled);
+        assert!(s.mcp.servers.is_empty());
+    }
+
+    #[test]
+    fn top_level_mcp_section_parses() {
+        // `[mcp]` is a sibling of `[scenario]` (research R10), folded onto the scenario.
+        let body = format!(
+            "{OK}\n[mcp]\nenabled = true\nallowed_domains = [\"*.company.com\"]\n\n\
+             [[mcp.servers]]\nname = \"fs\"\ntransport = \"stdio\"\ncommand = \"srv\"\n"
+        );
+        let s = Scenario::from_path(&write("with-mcp", &body)).unwrap();
+        assert!(s.mcp.enabled);
+        assert_eq!(s.mcp.servers.len(), 1);
+        assert_eq!(s.mcp.servers[0].name, "fs");
+    }
 }
