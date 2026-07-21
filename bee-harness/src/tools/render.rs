@@ -70,7 +70,11 @@ impl RenderTool {
         engine.set_max_map_size(100);
         engine.disable_symbol("eval");
         register(&mut engine, ctx.clone());
-        RenderTool { engine, ctx, eval_guard: Mutex::new(()) }
+        RenderTool {
+            engine,
+            ctx,
+            eval_guard: Mutex::new(()),
+        }
     }
 }
 

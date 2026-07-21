@@ -38,7 +38,14 @@ async fn run(turns: Vec<Turn>, turn_limit: u32) -> bee_harness::EpisodeTranscrip
     let scn = scenario(turn_limit);
     let mut registry = registry_for(&scn.tools, None);
     let mut sb = Sandbox::host(sandbox::key_vars(None));
-    run_loop(&model, &scn, &mut registry, &mut sb, &LoopOptions::default()).await
+    run_loop(
+        &model,
+        &scn,
+        &mut registry,
+        &mut sb,
+        &LoopOptions::default(),
+    )
+    .await
 }
 
 #[tokio::test]
@@ -68,7 +75,10 @@ async fn text_only_first_turn_is_no_tool_calls() {
 #[tokio::test]
 async fn agent_finishing_after_a_tool_call_is_completed() {
     let t = run(
-        vec![Turn::calls(vec![bash_call("1", "echo done")]), Turn::text("All finished.")],
+        vec![
+            Turn::calls(vec![bash_call("1", "echo done")]),
+            Turn::text("All finished."),
+        ],
         5,
     )
     .await;
@@ -90,7 +100,11 @@ async fn malformed_tool_args_error_and_loop_continues() {
     assert_eq!(t.status, EpisodeStatus::Completed);
     let result = &t.turns[0].calls[0].result;
     assert!(result.is_error);
-    assert!(result.content.contains("invalid arguments"), "got: {}", result.content);
+    assert!(
+        result.content.contains("invalid arguments"),
+        "got: {}",
+        result.content
+    );
 }
 
 #[tokio::test]
@@ -98,14 +112,21 @@ async fn oversized_output_is_truncated_and_marked() {
     // FR-015: > 100 KB of output is capped and flagged.
     let t = run(
         vec![
-            Turn::calls(vec![bash_call("1", "head -c 200000 /dev/zero | tr '\\0' 'a'")]),
+            Turn::calls(vec![bash_call(
+                "1",
+                "head -c 200000 /dev/zero | tr '\\0' 'a'",
+            )]),
             Turn::text("done"),
         ],
         5,
     )
     .await;
     let result = &t.turns[0].calls[0].result;
-    assert!(result.truncated, "expected truncation; len={}", result.content.len());
+    assert!(
+        result.truncated,
+        "expected truncation; len={}",
+        result.content.len()
+    );
     assert_eq!(result.original_len, Some(200000));
     assert!(result.content.len() <= DEFAULT_OUTPUT_CAP + 128);
 }
@@ -113,7 +134,14 @@ async fn oversized_output_is_truncated_and_marked() {
 #[tokio::test]
 async fn transcript_shape_is_recorded() {
     // FR-009: model id, turns, timing, and JSON serialization.
-    let t = run(vec![Turn::calls(vec![bash_call("1", "echo hi")]), Turn::text("bye")], 5).await;
+    let t = run(
+        vec![
+            Turn::calls(vec![bash_call("1", "echo hi")]),
+            Turn::text("bye"),
+        ],
+        5,
+    )
+    .await;
     assert_eq!(t.model_id, "mock/scripted");
     assert_eq!(t.scenario_id, "loop-test");
     assert!(!t.turns.is_empty());
@@ -123,7 +151,11 @@ async fn transcript_shape_is_recorded() {
 
 #[tokio::test]
 async fn unknown_tool_name_is_error_not_panic() {
-    let call = ToolCall { id: "1".into(), name: "nope".into(), arguments: serde_json::json!({}) };
+    let call = ToolCall {
+        id: "1".into(),
+        name: "nope".into(),
+        arguments: serde_json::json!({}),
+    };
     let t = run(vec![Turn::calls(vec![call]), Turn::text("done")], 5).await;
     assert_eq!(t.status, EpisodeStatus::Completed);
     assert!(t.turns[0].calls[0].result.is_error);

@@ -117,17 +117,25 @@ impl Scenario {
             ("task", &self.task),
         ] {
             if val.trim().is_empty() {
-                return Err(ConfigError::Invalid(format!("scenario.{field} is required")));
+                return Err(ConfigError::Invalid(format!(
+                    "scenario.{field} is required"
+                )));
             }
         }
         if self.policy_path.as_os_str().is_empty() {
-            return Err(ConfigError::Invalid("scenario.policy_path is required".into()));
+            return Err(ConfigError::Invalid(
+                "scenario.policy_path is required".into(),
+            ));
         }
         if self.turn_limit < 1 {
-            return Err(ConfigError::Invalid("scenario.turn_limit must be >= 1".into()));
+            return Err(ConfigError::Invalid(
+                "scenario.turn_limit must be >= 1".into(),
+            ));
         }
         if self.timeout_secs < 1 {
-            return Err(ConfigError::Invalid("scenario.timeout_secs must be >= 1".into()));
+            return Err(ConfigError::Invalid(
+                "scenario.timeout_secs must be >= 1".into(),
+            ));
         }
         // CTF mode (US3): a flag must be planted, and the terminal `submit_flag` tool must be
         // enabled (a CTF with no way to submit is unwinnable).
@@ -203,10 +211,12 @@ value = "FLAG{abc}"
     #[test]
     fn ctf_requires_flag() {
         // mode = "ctf" with submit_flag but no planted flag → rejected.
-        let body =
-            format!("{OK}mode = \"ctf\"\ntools = [\"bash\", \"submit_flag\"]\n");
+        let body = format!("{OK}mode = \"ctf\"\ntools = [\"bash\", \"submit_flag\"]\n");
         let p = write("ctf-noflag", &body);
-        assert!(matches!(Scenario::from_path(&p), Err(ConfigError::Invalid(_))));
+        assert!(matches!(
+            Scenario::from_path(&p),
+            Err(ConfigError::Invalid(_))
+        ));
     }
 
     #[test]
@@ -214,7 +224,10 @@ value = "FLAG{abc}"
         // mode = "ctf" with a flag but no submit_flag tool → rejected.
         let body = format!("{OK}mode = \"ctf\"\ntools = [\"bash\"]\n{CTF_FLAG}");
         let p = write("ctf-notool", &body);
-        assert!(matches!(Scenario::from_path(&p), Err(ConfigError::Invalid(_))));
+        assert!(matches!(
+            Scenario::from_path(&p),
+            Err(ConfigError::Invalid(_))
+        ));
     }
 
     #[test]
@@ -232,14 +245,20 @@ value = "FLAG{abc}"
     #[test]
     fn rejects_unknown_tool() {
         let p = write("badtool", &format!("{OK}tools = [\"bash\", \"nmap\"]\n"));
-        assert!(matches!(Scenario::from_path(&p), Err(ConfigError::Invalid(_))));
+        assert!(matches!(
+            Scenario::from_path(&p),
+            Err(ConfigError::Invalid(_))
+        ));
     }
 
     #[test]
     fn rejects_zero_turn_limit() {
         let body = OK.replace("turn_limit    = 5", "turn_limit    = 0");
         let p = write("zero", &body);
-        assert!(matches!(Scenario::from_path(&p), Err(ConfigError::Invalid(_))));
+        assert!(matches!(
+            Scenario::from_path(&p),
+            Err(ConfigError::Invalid(_))
+        ));
     }
 
     #[test]

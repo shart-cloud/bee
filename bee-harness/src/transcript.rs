@@ -122,7 +122,11 @@ impl EpisodeTranscript {
             status,
             turns: Vec::new(),
             audit_trail: Vec::new(),
-            timing: Timing { started_at: now.clone(), ended_at: now, total_ms: 0 },
+            timing: Timing {
+                started_at: now.clone(),
+                ended_at: now,
+                total_ms: 0,
+            },
             usage: None,
             score: None,
         }
@@ -195,9 +199,7 @@ fn normalize_json(v: &serde_json::Value) -> String {
                     m.iter().map(|(k, v)| (k.clone(), canon(v))).collect();
                 serde_json::to_value(sorted).unwrap_or(serde_json::Value::Null)
             }
-            serde_json::Value::Array(a) => {
-                serde_json::Value::Array(a.iter().map(canon).collect())
-            }
+            serde_json::Value::Array(a) => serde_json::Value::Array(a.iter().map(canon).collect()),
             other => other.clone(),
         }
     }
@@ -244,7 +246,15 @@ pub fn tool_result_from_output(
     cap: usize,
 ) -> ToolResult {
     let (content, truncated, original_len) = truncate(content, cap);
-    ToolResult { content, exit_code, is_error, truncated, original_len, terminal: false, render_spec: None }
+    ToolResult {
+        content,
+        exit_code,
+        is_error,
+        truncated,
+        original_len,
+        terminal: false,
+        render_spec: None,
+    }
 }
 
 #[cfg(test)]

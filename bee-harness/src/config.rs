@@ -27,10 +27,16 @@ pub enum ConfigError {
 
 impl ConfigError {
     pub(crate) fn read(path: &Path, source: std::io::Error) -> Self {
-        ConfigError::Io { path: path.display().to_string(), source }
+        ConfigError::Io {
+            path: path.display().to_string(),
+            source,
+        }
     }
     pub(crate) fn parse(path: &Path, source: toml::de::Error) -> Self {
-        ConfigError::Parse { path: path.display().to_string(), source }
+        ConfigError::Parse {
+            path: path.display().to_string(),
+            source,
+        }
     }
 }
 
@@ -119,9 +125,13 @@ impl ProviderConfig {
             return Err(ConfigError::Invalid("provider.model is required".into()));
         }
         if self.api_key_env.trim().is_empty() {
-            return Err(ConfigError::Invalid("provider.api_key_env is required".into()));
+            return Err(ConfigError::Invalid(
+                "provider.api_key_env is required".into(),
+            ));
         }
-        if self.provider == ProviderType::OpenAiCompat && self.base_url.as_deref().unwrap_or("").trim().is_empty() {
+        if self.provider == ProviderType::OpenAiCompat
+            && self.base_url.as_deref().unwrap_or("").trim().is_empty()
+        {
             return Err(ConfigError::Invalid(
                 "provider.base_url is required for openai-compat".into(),
             ));
@@ -136,7 +146,11 @@ impl ProviderConfig {
             ProviderType::OpenAiCompat => "openai-compat",
             ProviderType::Mock => "mock",
         };
-        let model = if self.model.is_empty() { "scripted" } else { &self.model };
+        let model = if self.model.is_empty() {
+            "scripted"
+        } else {
+            &self.model
+        };
         format!("{p}/{model}")
     }
 }

@@ -60,7 +60,12 @@ fn summarize(mut samples: Vec<u64>) -> Percentiles {
     samples.sort_unstable();
     let n = samples.len();
     let avg = samples.iter().sum::<u64>() as f64 / n as f64;
-    Percentiles { n, avg, p50: percentile(&samples, 0.5), p95: percentile(&samples, 0.95) }
+    Percentiles {
+        n,
+        avg,
+        p50: percentile(&samples, 0.5),
+        p95: percentile(&samples, 0.95),
+    }
 }
 
 /// Collapse a `key → GroupStat` map into a vector sorted by descending cost, then calls.
@@ -215,7 +220,13 @@ mod tests {
     use super::*;
     use crate::metrics::CallRecord;
 
-    fn rec(model: &str, cost: Option<f64>, latency: u64, ttft: Option<u64>, outcome: &str) -> CallRecord {
+    fn rec(
+        model: &str,
+        cost: Option<f64>,
+        latency: u64,
+        ttft: Option<u64>,
+        outcome: &str,
+    ) -> CallRecord {
         CallRecord {
             ts: "2026-07-20T10:00:00Z".to_string(),
             session_id: "s".to_string(),
@@ -248,8 +259,20 @@ mod tests {
     #[test]
     fn totals_and_grouping() {
         let records = vec![
-            rec("anthropic/claude-opus-4-8", Some(0.10), 1000, Some(300), "ok"),
-            rec("anthropic/claude-opus-4-8", Some(0.20), 2000, Some(500), "ok"),
+            rec(
+                "anthropic/claude-opus-4-8",
+                Some(0.10),
+                1000,
+                Some(300),
+                "ok",
+            ),
+            rec(
+                "anthropic/claude-opus-4-8",
+                Some(0.20),
+                2000,
+                Some(500),
+                "ok",
+            ),
             rec("mock/scripted", None, 50, None, "error:auth"),
         ];
         let r = aggregate(&records);

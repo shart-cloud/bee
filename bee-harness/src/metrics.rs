@@ -262,13 +262,25 @@ mod tests {
         assert_eq!(rec.provider, "anthropic");
         assert!(rec.cost_usd.unwrap() > 0.0);
         // throughput uses the post-first-token window: 500 tok / 1.6s = 312.5 tok/s
-        assert!((rec.throughput_tok_s.unwrap() - 312.5).abs() < 0.01, "{:?}", rec.throughput_tok_s);
+        assert!(
+            (rec.throughput_tok_s.unwrap() - 312.5).abs() < 0.01,
+            "{:?}",
+            rec.throughput_tok_s
+        );
     }
 
     #[test]
     fn unpriced_model_has_no_cost() {
         let rec = CallRecord::build(
-            "s1", "repl", "/p", "mock/scripted", sample_usage(), 100, None, "end_turn", "ok",
+            "s1",
+            "repl",
+            "/p",
+            "mock/scripted",
+            sample_usage(),
+            100,
+            None,
+            "end_turn",
+            "ok",
         );
         assert_eq!(rec.cost_usd, None);
     }
@@ -281,8 +293,15 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         for i in 0..3 {
             let rec = CallRecord::build(
-                "s", "episode", "/p", "anthropic/claude-haiku-4-5", sample_usage(), 100 + i, None,
-                "tool_use", "ok",
+                "s",
+                "episode",
+                "/p",
+                "anthropic/claude-haiku-4-5",
+                sample_usage(),
+                100 + i,
+                None,
+                "tool_use",
+                "ok",
             );
             append(&path, &rec);
         }

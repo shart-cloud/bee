@@ -21,13 +21,21 @@ use super::config::McpServerConfig;
 ///
 /// `stderr` is discarded (stdout is the JSON-RPC framing channel); the child is killed on drop.
 /// Returns the transport ready to hand to `().serve(...)`.
-pub fn spawn_stdio(sandbox: &Sandbox, config: &McpServerConfig) -> Result<TokioChildProcess, String> {
+pub fn spawn_stdio(
+    sandbox: &Sandbox,
+    config: &McpServerConfig,
+) -> Result<TokioChildProcess, String> {
     let command = config
         .command
         .as_deref()
         .map(str::trim)
         .filter(|c| !c.is_empty())
-        .ok_or_else(|| format!("mcp server '{}': stdio transport requires `command`", config.name))?;
+        .ok_or_else(|| {
+            format!(
+                "mcp server '{}': stdio transport requires `command`",
+                config.name
+            )
+        })?;
 
     // Same spawn path as built-in tools: cgroup join (under enforce) + env strip + hardening.
     let std_cmd = sandbox

@@ -107,9 +107,10 @@ impl ChartBuilder {
                     })
                     .collect(),
             },
-            ChartKind::Spark => {
-                RenderSpec::Sparkline { title: self.title.clone(), data: self.spark.clone() }
-            }
+            ChartKind::Spark => RenderSpec::Sparkline {
+                title: self.title.clone(),
+                data: self.spark.clone(),
+            },
         }
     }
 }
@@ -167,7 +168,10 @@ pub struct DotGridBuilder {
 
 impl DotGridBuilder {
     fn to_spec(&self) -> RenderSpec {
-        RenderSpec::DotGrid { title: self.title.clone(), dots: self.dots.clone() }
+        RenderSpec::DotGrid {
+            title: self.title.clone(),
+            dots: self.dots.clone(),
+        }
     }
 }
 
@@ -200,7 +204,10 @@ pub struct LayoutBuilder {
 
 impl LayoutBuilder {
     fn to_spec(&self) -> RenderSpec {
-        RenderSpec::Layout { direction: self.direction, children: self.children.clone() }
+        RenderSpec::Layout {
+            direction: self.direction,
+            children: self.children.clone(),
+        }
     }
 }
 
@@ -221,7 +228,11 @@ pub struct SpriteBuilder {
 
 impl SpriteBuilder {
     fn to_spec(&self) -> SpriteSpec {
-        SpriteSpec { width: self.width, height: self.height, pixels: self.pixels.clone() }
+        SpriteSpec {
+            width: self.width,
+            height: self.height,
+            pixels: self.pixels.clone(),
+        }
     }
 }
 
@@ -266,12 +277,16 @@ fn parse_color(s: &str) -> Result<Option<(u8, u8, u8)>, Box<EvalAltResult>> {
 
 /// Convert a Rhai `Array` of ints to `Vec<u64>` (negatives clamped to 0).
 fn array_to_u64(a: Array) -> Vec<u64> {
-    a.into_iter().map(|d| d.as_int().unwrap_or(0).max(0) as u64).collect()
+    a.into_iter()
+        .map(|d| d.as_int().unwrap_or(0).max(0) as u64)
+        .collect()
 }
 
 /// Convert a Rhai `Array` to `Vec<String>` (each element stringified).
 fn array_to_strings(a: Array) -> Vec<String> {
-    a.into_iter().map(|d| d.into_string().unwrap_or_default()).collect()
+    a.into_iter()
+        .map(|d| d.into_string().unwrap_or_default())
+        .collect()
 }
 
 /// Turn any builder/`RenderSpec` `Dynamic` into a [`RenderSpec`], or a script error.
@@ -298,10 +313,14 @@ fn dynamic_to_spec(d: Dynamic) -> Result<RenderSpec, Box<EvalAltResult>> {
         return Ok(d.cast::<LayoutBuilder>().to_spec());
     }
     if d.is::<SpriteBuilder>() {
-        return Ok(RenderSpec::Sprite { spec: d.cast::<SpriteBuilder>().to_spec() });
+        return Ok(RenderSpec::Sprite {
+            spec: d.cast::<SpriteBuilder>().to_spec(),
+        });
     }
     if d.is::<AnimationBuilder>() {
-        return Ok(RenderSpec::Animation { spec: d.cast::<AnimationBuilder>().to_spec() });
+        return Ok(RenderSpec::Animation {
+            spec: d.cast::<AnimationBuilder>().to_spec(),
+        });
     }
     Err("render: value is not a renderable widget".into())
 }
@@ -342,8 +361,12 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
     engine.register_type_with_name::<RenderSpec>("Widget");
 
     // --- Charts ---
-    engine.register_fn("bar_chart", |title: String| ChartBuilder::new(ChartKind::Bar, title));
-    engine.register_fn("line_chart", |title: String| ChartBuilder::new(ChartKind::Line, title));
+    engine.register_fn("bar_chart", |title: String| {
+        ChartBuilder::new(ChartKind::Bar, title)
+    });
+    engine.register_fn("line_chart", |title: String| {
+        ChartBuilder::new(ChartKind::Line, title)
+    });
     engine.register_fn("sparkline", |title: String, data: Array| {
         let mut c = ChartBuilder::new(ChartKind::Spark, title);
         c.spark = array_to_u64(data);
@@ -352,9 +375,15 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
     engine.register_fn("bar", |c: &mut ChartBuilder, label: String, value: i64| {
         c.bars.push(Bar { label, value });
     });
-    engine.register_fn("x_label", |c: &mut ChartBuilder, s: String| c.x_label = Some(s));
-    engine.register_fn("y_label", |c: &mut ChartBuilder, s: String| c.y_label = Some(s));
-    engine.register_fn("color", |c: &mut ChartBuilder, name: String| c.color = Some(name));
+    engine.register_fn("x_label", |c: &mut ChartBuilder, s: String| {
+        c.x_label = Some(s)
+    });
+    engine.register_fn("y_label", |c: &mut ChartBuilder, s: String| {
+        c.y_label = Some(s)
+    });
+    engine.register_fn("color", |c: &mut ChartBuilder, name: String| {
+        c.color = Some(name)
+    });
     engine.register_fn("series", |c: &mut ChartBuilder, label: String| {
         let pts = Arc::new(Mutex::new(Vec::new()));
         c.series.push((label, pts.clone()));
@@ -374,11 +403,20 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
         t.headers = array_to_strings(cols);
     });
     engine.register_fn("row", |t: &mut TableBuilder, cells: Array| {
-        t.rows.push(Row { cells: array_to_strings(cells), color: None });
+        t.rows.push(Row {
+            cells: array_to_strings(cells),
+            color: None,
+        });
     });
-    engine.register_fn("row_colored", |t: &mut TableBuilder, cells: Array, color: String| {
-        t.rows.push(Row { cells: array_to_strings(cells), color: Some(color) });
-    });
+    engine.register_fn(
+        "row_colored",
+        |t: &mut TableBuilder, cells: Array, color: String| {
+            t.rows.push(Row {
+                cells: array_to_strings(cells),
+                color: Some(color),
+            });
+        },
+    );
 
     // --- Status & indicators ---
     engine.register_fn("gauge", |title: String, value: f64| GaugeBuilder {
@@ -388,16 +426,30 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
         color: None,
     });
     engine.register_fn("label", |g: &mut GaugeBuilder, s: String| g.label = Some(s));
-    engine.register_fn("color", |g: &mut GaugeBuilder, name: String| g.color = Some(name));
-    engine.register_fn("dots", |title: String| DotGridBuilder { title, dots: Vec::new() });
+    engine.register_fn("color", |g: &mut GaugeBuilder, name: String| {
+        g.color = Some(name)
+    });
+    engine.register_fn("dots", |title: String| DotGridBuilder {
+        title,
+        dots: Vec::new(),
+    });
     engine.register_fn("pass", |d: &mut DotGridBuilder, label: String| {
-        d.dots.push(Dot { label, state: DotState::Pass });
+        d.dots.push(Dot {
+            label,
+            state: DotState::Pass,
+        });
     });
     engine.register_fn("fail", |d: &mut DotGridBuilder, label: String| {
-        d.dots.push(Dot { label, state: DotState::Fail });
+        d.dots.push(Dot {
+            label,
+            state: DotState::Fail,
+        });
     });
     engine.register_fn("skip", |d: &mut DotGridBuilder, label: String| {
-        d.dots.push(Dot { label, state: DotState::Skip });
+        d.dots.push(Dot {
+            label,
+            state: DotState::Skip,
+        });
     });
 
     // --- Decorative / identity ---
@@ -407,11 +459,15 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
         bold: false,
         dim: false,
     });
-    engine.register_fn("style", |t: &mut TextBuilder, name: String| t.style = Some(name));
+    engine.register_fn("style", |t: &mut TextBuilder, name: String| {
+        t.style = Some(name)
+    });
     engine.register_fn("bold", |t: &mut TextBuilder| t.bold = true);
     engine.register_fn("dim", |t: &mut TextBuilder| t.dim = true);
     engine.register_fn("ascii_art", |lines: Array| -> RenderSpec {
-        RenderSpec::AsciiArt { lines: array_to_strings(lines) }
+        RenderSpec::AsciiArt {
+            lines: array_to_strings(lines),
+        }
     });
     engine.register_fn("separator", || -> RenderSpec { RenderSpec::Separator });
 
@@ -424,10 +480,14 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
         direction: Direction::Horizontal,
         children: Vec::new(),
     });
-    engine.register_fn("add", |l: &mut LayoutBuilder, widget: Dynamic| -> Result<(), Box<EvalAltResult>> {
-        l.children.push(flatten_for_layout(dynamic_to_spec(widget)?));
-        Ok(())
-    });
+    engine.register_fn(
+        "add",
+        |l: &mut LayoutBuilder, widget: Dynamic| -> Result<(), Box<EvalAltResult>> {
+            l.children
+                .push(flatten_for_layout(dynamic_to_spec(widget)?));
+            Ok(())
+        },
+    );
 
     // --- Sprites & animation (Slice 2) ---
     engine.register_type_with_name::<PaletteBuilder>("Palette");
@@ -453,7 +513,9 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
         "sprite",
         |w: i64, h: i64, pal: PaletteBuilder| -> Result<SpriteBuilder, Box<EvalAltResult>> {
             if !(1..=MAX_SPRITE_DIM).contains(&w) || !(1..=MAX_SPRITE_DIM).contains(&h) {
-                return Err(format!("render: sprite dimensions must be 1..={MAX_SPRITE_DIM}").into());
+                return Err(
+                    format!("render: sprite dimensions must be 1..={MAX_SPRITE_DIM}").into(),
+                );
             }
             Ok(SpriteBuilder {
                 width: w as u16,
@@ -486,11 +548,14 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
             Ok(())
         },
     );
-    engine.register_fn("fill", |s: &mut SpriteBuilder, color: String| -> Result<(), Box<EvalAltResult>> {
-        let c = parse_color(&color)?;
-        s.pixels.iter_mut().for_each(|p| *p = c);
-        Ok(())
-    });
+    engine.register_fn(
+        "fill",
+        |s: &mut SpriteBuilder, color: String| -> Result<(), Box<EvalAltResult>> {
+            let c = parse_color(&color)?;
+            s.pixels.iter_mut().for_each(|p| *p = c);
+            Ok(())
+        },
+    );
     engine.register_fn("animation", |ms: i64| AnimationBuilder {
         interval_ms: ms.clamp(50, 1000) as u64,
         frames: Vec::new(),
@@ -514,19 +579,28 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
         },
     );
     engine.register_fn("bounce", |a: &mut AnimationBuilder, b: bool| a.bounce = b);
-    engine.register_fn("cycles", |a: &mut AnimationBuilder, n: i64| a.cycles = n.max(0) as u32);
+    engine.register_fn("cycles", |a: &mut AnimationBuilder, n: i64| {
+        a.cycles = n.max(0) as u32
+    });
     engine.register_fn("bee_sprite", || -> RenderSpec {
-        RenderSpec::Sprite { spec: crate::viz::bee::sprite() }
+        RenderSpec::Sprite {
+            spec: crate::viz::bee::sprite(),
+        }
     });
     engine.register_fn("bee_animation", || -> RenderSpec {
-        RenderSpec::Animation { spec: crate::viz::bee::animation() }
+        RenderSpec::Animation {
+            spec: crate::viz::bee::animation(),
+        }
     });
 
     // --- Commit ---
-    engine.register_fn("render", move |widget: Dynamic| -> Result<(), Box<EvalAltResult>> {
-        let spec = dynamic_to_spec(widget)?;
-        validate(&spec)?;
-        ctx.commit(spec);
-        Ok(())
-    });
+    engine.register_fn(
+        "render",
+        move |widget: Dynamic| -> Result<(), Box<EvalAltResult>> {
+            let spec = dynamic_to_spec(widget)?;
+            validate(&spec)?;
+            ctx.commit(spec);
+            Ok(())
+        },
+    );
 }

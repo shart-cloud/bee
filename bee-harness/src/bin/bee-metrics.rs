@@ -13,7 +13,10 @@ use clap::Parser;
 use bee_harness::metrics::{self, report};
 
 #[derive(Parser)]
-#[command(name = "bee-metrics", about = "Report on recorded LLM usage, cost, and latency")]
+#[command(
+    name = "bee-metrics",
+    about = "Report on recorded LLM usage, cost, and latency"
+)]
 struct Args {
     /// Override the metrics log path (default: $XDG_STATE_HOME/bee/metrics/events.jsonl).
     #[arg(long)]
@@ -47,7 +50,10 @@ fn main() -> ExitCode {
     records.retain(|r| {
         args.project.as_ref().is_none_or(|p| r.project.contains(p))
             && args.model.as_ref().is_none_or(|m| r.model_id.contains(m))
-            && args.since.as_ref().is_none_or(|d| r.ts.as_str() >= d.as_str())
+            && args
+                .since
+                .as_ref()
+                .is_none_or(|d| r.ts.as_str() >= d.as_str())
     });
 
     if args.json {

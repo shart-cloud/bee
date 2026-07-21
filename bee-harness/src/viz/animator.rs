@@ -56,8 +56,17 @@ mod tests {
     use crate::render_spec::SpriteSpec;
 
     fn anim(frames: usize, bounce: bool, cycles: u32) -> AnimationSpec {
-        let f = SpriteSpec { width: 2, height: 2, pixels: vec![None; 4] };
-        AnimationSpec { frames: vec![f; frames], interval_ms: 150, bounce, cycles }
+        let f = SpriteSpec {
+            width: 2,
+            height: 2,
+            pixels: vec![None; 4],
+        };
+        AnimationSpec {
+            frames: vec![f; frames],
+            interval_ms: 150,
+            bounce,
+            cycles,
+        }
     }
 
     #[test]

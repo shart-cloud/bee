@@ -13,7 +13,10 @@ use bee_harness::sandbox::Sandbox;
 use bee_harness::McpPolicy;
 
 fn patterns(items: &[&str]) -> Vec<DomainPattern> {
-    items.iter().map(|s| DomainPattern::try_from(s.to_string()).unwrap()).collect()
+    items
+        .iter()
+        .map(|s| DomainPattern::try_from(s.to_string()).unwrap())
+        .collect()
 }
 
 fn remote_server(name: &str, url: &str, token_env: Option<&str>) -> McpServerConfig {
@@ -45,7 +48,10 @@ async fn expect_refused(pol: McpPolicy, needle: &str) {
     let bridge = McpBridge::connect(pol, &Sandbox::host(vec![])).await;
     let (_, srv) = bridge.servers().next().expect("one server present");
     let label = srv.status().label();
-    assert!(label.starts_with("failed:"), "expected failed, got: {label}");
+    assert!(
+        label.starts_with("failed:"),
+        "expected failed, got: {label}"
+    );
     assert!(
         label.contains(needle),
         "reason {label:?} should mention {needle:?}"
@@ -68,14 +74,22 @@ async fn denied_domain_wins_over_wildcard() {
     let pol = policy(
         &["*.company.com"],
         &["admin.company.com"],
-        vec![remote_server("admin", "https://admin.company.com/mcp", None)],
+        vec![remote_server(
+            "admin",
+            "https://admin.company.com/mcp",
+            None,
+        )],
     );
     expect_refused(pol, "denylist").await;
 }
 
 #[tokio::test]
 async fn empty_allowlist_refuses_all_remote() {
-    let pol = policy(&[], &[], vec![remote_server("any", "https://anything.example/mcp", None)]);
+    let pol = policy(
+        &[],
+        &[],
+        vec![remote_server("any", "https://anything.example/mcp", None)],
+    );
     expect_refused(pol, "not in the allowlist").await;
 }
 
@@ -90,12 +104,19 @@ async fn token_value_never_leaks_in_status() {
     let pol = policy(
         &["mcp.internal.dev"],
         &[],
-        vec![remote_server("evil", "https://mcp.evil.dev/tools", Some("BEE_TEST_MCP_TOKEN"))],
+        vec![remote_server(
+            "evil",
+            "https://mcp.evil.dev/tools",
+            Some("BEE_TEST_MCP_TOKEN"),
+        )],
     );
     let bridge = McpBridge::connect(pol, &Sandbox::host(vec![])).await;
     for (name, srv) in bridge.servers() {
         let label = srv.status().label();
-        assert!(!label.contains(SENTINEL), "server {name} leaked the token in: {label}");
+        assert!(
+            !label.contains(SENTINEL),
+            "server {name} leaked the token in: {label}"
+        );
     }
     unsafe { std::env::remove_var("BEE_TEST_MCP_TOKEN") };
 }

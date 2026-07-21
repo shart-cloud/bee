@@ -7,8 +7,17 @@ use bee_harness::render_spec::{AnimationSpec, SpriteSpec};
 use bee_harness::viz::animator::{playback, redraw_block};
 
 fn anim(frames: usize, bounce: bool, cycles: u32) -> AnimationSpec {
-    let f = SpriteSpec { width: 2, height: 2, pixels: vec![None; 4] };
-    AnimationSpec { frames: vec![f; frames], interval_ms: 150, bounce, cycles }
+    let f = SpriteSpec {
+        width: 2,
+        height: 2,
+        pixels: vec![None; 4],
+    };
+    AnimationSpec {
+        frames: vec![f; frames],
+        interval_ms: 150,
+        bounce,
+        cycles,
+    }
 }
 
 #[test]
@@ -24,6 +33,12 @@ fn redraw_block_starts_with_cursor_up() {
     // SC-016 cursor-up: an N-row redraw begins by moving the cursor up N rows.
     let rows = vec!["xx".to_string(), "yy".to_string(), "zz".to_string()];
     let block = redraw_block(&rows);
-    assert!(block.starts_with("\x1b[3A"), "3-row block should move up 3: {block:?}");
-    assert!(block.contains("\r\x1b[2Kyy\n"), "each row is cleared + rewritten: {block:?}");
+    assert!(
+        block.starts_with("\x1b[3A"),
+        "3-row block should move up 3: {block:?}"
+    );
+    assert!(
+        block.contains("\r\x1b[2Kyy\n"),
+        "each row is cleared + rewritten: {block:?}"
+    );
 }

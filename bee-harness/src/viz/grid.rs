@@ -3,8 +3,8 @@
 //! widget so both surfaces draw dots identically (analysis finding I2).
 
 use crate::transcript::EpisodeStatus;
-use crate::viz::palette::{self, POLLEN, SMOKE, STING};
 use crate::viz::glyph::{DOT_FAIL, DOT_PASS, DOT_SKIP};
+use crate::viz::palette::{self, POLLEN, SMOKE, STING};
 
 /// A dot's colored state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,7 +49,11 @@ pub fn dot(status: Status) -> String {
 /// widest name, the fraction right-aligned. `rows` pairs a scenario name with its per-attempt
 /// statuses. Colors suppressed under `NO_COLOR` (AS-3); glyphs always present.
 pub fn status_grid(rows: &[(String, Vec<Status>)]) -> String {
-    let name_w = rows.iter().map(|(n, _)| n.chars().count()).max().unwrap_or(0);
+    let name_w = rows
+        .iter()
+        .map(|(n, _)| n.chars().count())
+        .max()
+        .unwrap_or(0);
     let mut out = String::new();
     for (name, dots) in rows {
         let pass = dots.iter().filter(|s| matches!(s, Status::Pass)).count();
@@ -78,8 +82,16 @@ mod tests {
             vec![Status::Pass, Status::Pass, Status::Pass, Status::Fail],
         )];
         let out = status_grid(&rows);
-        assert_eq!(out.matches(&format!("\x1b[32m{DOT_PASS}")).count(), 3, "3 green: {out:?}");
-        assert_eq!(out.matches(&format!("\x1b[31m{DOT_FAIL}")).count(), 1, "1 red: {out:?}");
+        assert_eq!(
+            out.matches(&format!("\x1b[32m{DOT_PASS}")).count(),
+            3,
+            "3 green: {out:?}"
+        );
+        assert_eq!(
+            out.matches(&format!("\x1b[31m{DOT_FAIL}")).count(),
+            1,
+            "1 red: {out:?}"
+        );
         assert!(out.contains("3/4 pass"));
 
         // Color off (AS-3): glyphs remain, no SGR.

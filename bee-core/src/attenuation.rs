@@ -109,7 +109,10 @@ impl Policy {
         }
         let parent_access = match eff {
             None => {
-                return Err(AttenuationError::new(cap, "no parent rule covers this path"));
+                return Err(AttenuationError::new(
+                    cap,
+                    "no parent rule covers this path",
+                ));
             }
             Some((Access::Deny, _)) => {
                 return Err(AttenuationError::new(cap, "parent denies this path"));
@@ -139,7 +142,9 @@ impl Policy {
                     }
                 }
                 // A parent glob restriction could intersect pc; require the child replicates it.
-                Some(Region::Glob(kind, bytes)) if !child_replicates_glob(child, kind, &bytes, pa) => {
+                Some(Region::Glob(kind, bytes))
+                    if !child_replicates_glob(child, kind, &bytes, pa) =>
+                {
                     return Err(AttenuationError::new(
                         cap,
                         "parent has a glob restriction that may intersect this grant; child must replicate it",
@@ -182,7 +187,11 @@ impl Policy {
     }
 }
 
-fn child_replicates_prefix(child: &BTreeMap<String, Access>, pd: &[u8], parent_access: Access) -> bool {
+fn child_replicates_prefix(
+    child: &BTreeMap<String, Access>,
+    pd: &[u8],
+    parent_access: Access,
+) -> bool {
     child.iter().any(|(cr, &ca)| {
         ca.is_subset_of(parent_access)
             && matches!(region_of(cr), Some(Region::Prefix(cp)) if prefix_contains(&cp, pd))

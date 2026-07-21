@@ -51,7 +51,10 @@ impl Resolver for SystemResolver {
             .map_err(|e| CompileError::UnresolvableHost(host.into(), e.to_string()))?;
         let ips: Vec<IpAddr> = addrs.map(|sa| sa.ip()).collect();
         if ips.is_empty() {
-            return Err(CompileError::UnresolvableHost(host.into(), "no addresses".into()));
+            return Err(CompileError::UnresolvableHost(
+                host.into(),
+                "no addresses".into(),
+            ));
         }
         Ok(ips)
     }

@@ -52,7 +52,10 @@ async fn agent_render_call_draws_widget_and_summarizes_to_model() {
 
     let mut registry = registry_for(&["render".to_string()], None);
     let mut sb = Sandbox::host(sandbox::key_vars(None));
-    let mut convo = Conversation { system: String::new(), messages: Vec::new() };
+    let mut convo = Conversation {
+        system: String::new(),
+        messages: Vec::new(),
+    };
     let out = WidgetCapture::default();
     let steering: SteeringQueue = Arc::new(Mutex::new(VecDeque::new()));
     let config = ReplConfig::default();
@@ -88,7 +91,10 @@ async fn agent_render_call_draws_widget_and_summarizes_to_model() {
     // summary — no ANSI.
     let call = &res.turns[0].calls[0];
     assert!(call.result.render_spec.is_some(), "result carries the spec");
-    assert!(!call.result.content.contains('\u{1b}'), "content is ANSI-free");
+    assert!(
+        !call.result.content.contains('\u{1b}'),
+        "content is ANSI-free"
+    );
     assert!(
         call.result.content.contains("bar chart") && call.result.content.contains("5 bars"),
         "summary names the chart + bar count: {}",

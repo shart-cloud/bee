@@ -473,7 +473,10 @@ pub async fn run_episode(
     #[cfg_attr(not(feature = "mcp"), allow(unused_mut))]
     let mut opts = LoopOptions {
         progress,
-        metrics: Recorder::new("episode", format!("episode:{}:{}", scenario.id, std::process::id())),
+        metrics: Recorder::new(
+            "episode",
+            format!("episode:{}:{}", scenario.id, std::process::id()),
+        ),
         ..LoopOptions::default()
     };
 
@@ -494,7 +497,9 @@ pub async fn run_episode(
     // hold a clone) owns the stdio children; dropping it at the end kills them (FR-034/42).
     #[cfg(feature = "mcp")]
     let bridge = {
-        let b = std::sync::Arc::new(crate::mcp::McpBridge::connect(scenario.mcp.clone(), &sandbox).await);
+        let b = std::sync::Arc::new(
+            crate::mcp::McpBridge::connect(scenario.mcp.clone(), &sandbox).await,
+        );
         b.register_into(&mut registry);
         let hook = b.clone();
         opts.refresh_tools = Some(Box::new(move |reg: &mut ToolRegistry| {
@@ -644,7 +649,9 @@ mod mcp_cgroup_spike {
 
         // Control: the raw production spawn primitive (tool_command → tokio) must join the scope.
         {
-            let raw = sandbox.tool_command("sleep", &["10".into()]).expect("tool_command");
+            let raw = sandbox
+                .tool_command("sleep", &["10".into()])
+                .expect("tool_command");
             let mut raw = tokio::process::Command::from(raw);
             raw.kill_on_drop(true);
             let mut child = raw.spawn().expect("spawn raw control child");

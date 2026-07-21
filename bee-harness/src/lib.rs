@@ -17,9 +17,9 @@
 #![warn(rust_2018_idioms)]
 
 pub mod batch;
-pub mod config;
 #[cfg(feature = "concurrent")]
 pub mod concurrent;
+pub mod config;
 pub mod episode;
 pub mod mcp;
 pub mod metrics;

@@ -38,7 +38,11 @@ impl AsyncAuditStream {
     pub fn new(rb: RingBuf<MapData>, scope_id: String) -> io::Result<Self> {
         let raw = rb.as_raw_fd();
         let async_fd = AsyncFd::with_interest(RingBufFd(raw), Interest::READABLE)?;
-        Ok(AsyncAuditStream { async_fd, rb, scope_id })
+        Ok(AsyncAuditStream {
+            async_fd,
+            rb,
+            scope_id,
+        })
     }
 
     /// Wait until the ring has data, then drain and return all currently-available events. A

@@ -10,12 +10,7 @@ use bee_core::policy::{Access, ExecPolicy, ExfilPolicy, Mode, NetPolicy};
 use bee_core::Policy;
 use proptest::prelude::*;
 
-fn mk(
-    mode: Mode,
-    fs: BTreeMap<String, Access>,
-    exec: Vec<String>,
-    net: Vec<String>,
-) -> Policy {
+fn mk(mode: Mode, fs: BTreeMap<String, Access>, exec: Vec<String>, net: Vec<String>) -> Policy {
     Policy {
         name: "p".into(),
         description: None,

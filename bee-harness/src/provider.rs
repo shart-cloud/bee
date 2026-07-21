@@ -228,7 +228,9 @@ pub fn model_from_config(
                     None => Turn::text(step.text.clone().unwrap_or_default()),
                 })
                 .collect();
-            Ok(Box::new(mock_model::MockModel::scripted(turns).with_id(cfg.model_id())))
+            Ok(Box::new(
+                mock_model::MockModel::scripted(turns).with_id(cfg.model_id()),
+            ))
         }
     }
 }

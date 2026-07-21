@@ -82,7 +82,10 @@ impl SpriteSpec {
         if x >= self.width || y >= self.height {
             return None;
         }
-        self.pixels.get((y as usize) * (self.width as usize) + x as usize).copied().flatten()
+        self.pixels
+            .get((y as usize) * (self.width as usize) + x as usize)
+            .copied()
+            .flatten()
     }
 
     /// True when every pixel is transparent (renders as blank rows; the tool summary notes it).
@@ -197,7 +200,11 @@ impl RenderSpec {
     pub fn nesting_depth(&self) -> usize {
         match self {
             RenderSpec::Layout { children, .. } => {
-                1 + children.iter().map(|c| c.nesting_depth()).max().unwrap_or(0)
+                1 + children
+                    .iter()
+                    .map(|c| c.nesting_depth())
+                    .max()
+                    .unwrap_or(0)
             }
             _ => 0,
         }
@@ -212,7 +219,12 @@ impl RenderSpec {
                 let max = bars.iter().map(|b| b.value).max().unwrap_or(1).max(1);
                 for b in bars {
                     let filled = ((b.value.max(0) as f64 / max as f64) * 20.0) as usize;
-                    s.push_str(&format!("  {:<12} {} {}\n", b.label, "#".repeat(filled), b.value));
+                    s.push_str(&format!(
+                        "  {:<12} {} {}\n",
+                        b.label,
+                        "#".repeat(filled),
+                        b.value
+                    ));
                 }
                 s
             }
@@ -226,15 +238,26 @@ impl RenderSpec {
             RenderSpec::Sparkline { title, data } => {
                 format!("{title}\n  {data:?}\n")
             }
-            RenderSpec::Table { title, headers, rows } => {
+            RenderSpec::Table {
+                title,
+                headers,
+                rows,
+            } => {
                 let mut s = format!("{title}\n  {}\n", headers.join(" | "));
                 for r in rows {
                     s.push_str(&format!("  {}\n", r.cells.join(" | ")));
                 }
                 s
             }
-            RenderSpec::Gauge { title, value, label, .. } => {
-                let pct = label.clone().unwrap_or_else(|| format!("{:.0}%", value * 100.0));
+            RenderSpec::Gauge {
+                title,
+                value,
+                label,
+                ..
+            } => {
+                let pct = label
+                    .clone()
+                    .unwrap_or_else(|| format!("{:.0}%", value * 100.0));
                 format!("{title}: {pct}\n")
             }
             RenderSpec::DotGrid { title, dots } => {
@@ -253,9 +276,11 @@ impl RenderSpec {
             RenderSpec::Text { content, .. } => format!("{content}\n"),
             RenderSpec::AsciiArt { lines } => format!("{}\n", lines.join("\n")),
             RenderSpec::Separator => "----\n".to_string(),
-            RenderSpec::Layout { children, .. } => {
-                children.iter().map(|c| c.to_ascii()).collect::<Vec<_>>().join("\n")
-            }
+            RenderSpec::Layout { children, .. } => children
+                .iter()
+                .map(|c| c.to_ascii())
+                .collect::<Vec<_>>()
+                .join("\n"),
             RenderSpec::Sprite { spec } => format!("[sprite {}×{}]\n", spec.width, spec.height),
             RenderSpec::Animation { spec } => {
                 format!("[animation: {} frames]\n", spec.frames.len())
@@ -275,8 +300,16 @@ impl RenderSpec {
             RenderSpec::Sparkline { title, data } => {
                 format!("a sparkline {title:?} with {} points", data.len())
             }
-            RenderSpec::Table { title, headers, rows } => {
-                format!("a {}-column table {title:?} with {} rows", headers.len(), rows.len())
+            RenderSpec::Table {
+                title,
+                headers,
+                rows,
+            } => {
+                format!(
+                    "a {}-column table {title:?} with {} rows",
+                    headers.len(),
+                    rows.len()
+                )
             }
             RenderSpec::Gauge { title, value, .. } => {
                 format!("a gauge {title:?} at {:.0}%", value * 100.0)
@@ -287,7 +320,10 @@ impl RenderSpec {
             RenderSpec::Text { .. } => "a text block".to_string(),
             RenderSpec::AsciiArt { lines } => format!("ASCII art ({} lines)", lines.len()),
             RenderSpec::Separator => "a separator".to_string(),
-            RenderSpec::Layout { direction, children } => {
+            RenderSpec::Layout {
+                direction,
+                children,
+            } => {
                 let dir = match direction {
                     Direction::Vertical => "vsplit",
                     Direction::Horizontal => "hsplit",

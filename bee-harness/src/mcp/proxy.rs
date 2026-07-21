@@ -87,8 +87,7 @@ impl McpToolProxy {
         peer: Peer<RoleClient>,
         timeout: Duration,
     ) -> Self {
-        let name: &'static str =
-            Box::leak(format!("mcp__{server}__{bare_tool}").into_boxed_str());
+        let name: &'static str = Box::leak(format!("mcp__{server}__{bare_tool}").into_boxed_str());
         McpToolProxy {
             name,
             server: server.to_string(),
@@ -123,7 +122,10 @@ impl Tool for McpToolProxy {
                     Value::Bool(_) => "bool",
                     _ => "value",
                 };
-                return ToolResult::invalid_args(self.name, format!("expected a JSON object, got {kind}"));
+                return ToolResult::invalid_args(
+                    self.name,
+                    format!("expected a JSON object, got {kind}"),
+                );
             }
         };
 
@@ -131,7 +133,9 @@ impl Tool for McpToolProxy {
         params.arguments = args;
 
         match tokio::time::timeout(self.timeout, self.peer.call_tool(params)).await {
-            Ok(Ok(res)) => call_tool_result_to_tool_result(res, crate::transcript::DEFAULT_OUTPUT_CAP),
+            Ok(Ok(res)) => {
+                call_tool_result_to_tool_result(res, crate::transcript::DEFAULT_OUTPUT_CAP)
+            }
             Ok(Err(e)) => {
                 use rmcp::service::ServiceError;
                 let msg = match &e {
@@ -158,7 +162,10 @@ mod tests {
 
     #[test]
     fn maps_text_success() {
-        let res = CallToolResult::success(vec![ContentBlock::text("hello"), ContentBlock::text("world")]);
+        let res = CallToolResult::success(vec![
+            ContentBlock::text("hello"),
+            ContentBlock::text("world"),
+        ]);
         let tr = call_tool_result_to_tool_result(res, 1024);
         assert_eq!(tr.content, "hello\nworld");
         assert!(!tr.is_error);

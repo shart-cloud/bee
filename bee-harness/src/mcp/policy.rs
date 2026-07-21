@@ -78,7 +78,10 @@ impl std::fmt::Display for DomainPattern {
 pub fn url_host(url: &str) -> Option<&str> {
     let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
-    let host_port = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+    let host_port = authority
+        .rsplit_once('@')
+        .map(|(_, h)| h)
+        .unwrap_or(authority);
     let host = if let Some(rest) = host_port.strip_prefix('[') {
         rest.split_once(']').map(|(h, _)| h).unwrap_or(rest) // IPv6 literal
     } else {
@@ -137,11 +140,13 @@ impl McpPolicy {
             #[serde(default)]
             mcp: McpPolicy,
         }
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| crate::config::ConfigError::read(path, e))?;
+        let text =
+            std::fs::read_to_string(path).map_err(|e| crate::config::ConfigError::read(path, e))?;
         let file: McpFile =
             toml::from_str(&text).map_err(|e| crate::config::ConfigError::parse(path, e))?;
-        file.mcp.validate().map_err(crate::config::ConfigError::Invalid)?;
+        file.mcp
+            .validate()
+            .map_err(crate::config::ConfigError::Invalid)?;
         Ok(file.mcp)
     }
 
@@ -164,8 +169,9 @@ impl McpPolicy {
     /// **denied → allowed → deny-by-default**. Returns `Ok(())` to allow, or `Err(reason)` with a
     /// transcript-ready message to refuse — evaluated **before** any transport is opened (SC-021).
     pub fn allow_url(&self, url: &str) -> Result<(), String> {
-        let host = url_host(url)
-            .ok_or_else(|| format!("connection refused by MCP policy — cannot parse host from {url:?}"))?;
+        let host = url_host(url).ok_or_else(|| {
+            format!("connection refused by MCP policy — cannot parse host from {url:?}")
+        })?;
         if self.denied_domains.iter().any(|p| p.matches(host)) {
             return Err(format!(
                 "connection refused by MCP policy — domain {host} is in the denylist"
@@ -211,13 +217,19 @@ mod tests {
 
     #[test]
     fn parses_exact_and_wildcard() {
-        assert_eq!(parse("Example.com").unwrap(), DomainPattern::Exact("example.com".into()));
+        assert_eq!(
+            parse("Example.com").unwrap(),
+            DomainPattern::Exact("example.com".into())
+        );
         assert_eq!(
             parse("*.Company.com").unwrap(),
             DomainPattern::Wildcard("company.com".into())
         );
         // trailing dot normalized away
-        assert_eq!(parse("example.com.").unwrap(), DomainPattern::Exact("example.com".into()));
+        assert_eq!(
+            parse("example.com.").unwrap(),
+            DomainPattern::Exact("example.com".into())
+        );
     }
 
     #[test]
@@ -268,31 +280,61 @@ mod tests {
     fn resolution_matrix() {
         let pol = |allow: &[&str], deny: &[&str]| McpPolicy {
             enabled: true,
-            allowed_domains: allow.iter().map(|s| DomainPattern::try_from(s.to_string()).unwrap()).collect(),
-            denied_domains: deny.iter().map(|s| DomainPattern::try_from(s.to_string()).unwrap()).collect(),
+            allowed_domains: allow
+                .iter()
+                .map(|s| DomainPattern::try_from(s.to_string()).unwrap())
+                .collect(),
+            denied_domains: deny
+                .iter()
+                .map(|s| DomainPattern::try_from(s.to_string()).unwrap())
+                .collect(),
             ..Default::default()
         };
         let host_of = |p: &McpPolicy, url: &str| p.allow_url(url).is_ok();
 
         // 1: exact allow
-        assert!(host_of(&pol(&["mcp.internal.dev"], &[]), "https://mcp.internal.dev/tools"));
+        assert!(host_of(
+            &pol(&["mcp.internal.dev"], &[]),
+            "https://mcp.internal.dev/tools"
+        ));
         // 2: not allowed → refuse
-        assert!(!host_of(&pol(&["mcp.internal.dev"], &[]), "https://mcp.evil.dev/tools"));
+        assert!(!host_of(
+            &pol(&["mcp.internal.dev"], &[]),
+            "https://mcp.evil.dev/tools"
+        ));
         // 3: denied wins over wildcard allow
-        assert!(!host_of(&pol(&["*.company.com"], &["admin.company.com"]), "https://admin.company.com/mcp"));
+        assert!(!host_of(
+            &pol(&["*.company.com"], &["admin.company.com"]),
+            "https://admin.company.com/mcp"
+        ));
         // 4: wildcard allow
-        assert!(host_of(&pol(&["*.company.com"], &["admin.company.com"]), "https://app.company.com/mcp"));
+        assert!(host_of(
+            &pol(&["*.company.com"], &["admin.company.com"]),
+            "https://app.company.com/mcp"
+        ));
         // 5: wildcard ≠ apex
-        assert!(!host_of(&pol(&["*.company.com"], &[]), "https://company.com/mcp"));
+        assert!(!host_of(
+            &pol(&["*.company.com"], &[]),
+            "https://company.com/mcp"
+        ));
         // 6: empty allowlist → refuse everything
         assert!(!host_of(&pol(&[], &[]), "https://anything.example/mcp"));
     }
 
     #[test]
     fn url_host_extraction() {
-        assert_eq!(url_host("https://mcp.internal.dev/github"), Some("mcp.internal.dev"));
-        assert_eq!(url_host("https://user@db.company.com:8443/mcp?x=1"), Some("db.company.com"));
-        assert_eq!(url_host("http://[2001:db8::1]:9000/mcp"), Some("2001:db8::1"));
+        assert_eq!(
+            url_host("https://mcp.internal.dev/github"),
+            Some("mcp.internal.dev")
+        );
+        assert_eq!(
+            url_host("https://user@db.company.com:8443/mcp?x=1"),
+            Some("db.company.com")
+        );
+        assert_eq!(
+            url_host("http://[2001:db8::1]:9000/mcp"),
+            Some("2001:db8::1")
+        );
         assert_eq!(url_host("mcp.internal.dev/x"), Some("mcp.internal.dev"));
     }
 

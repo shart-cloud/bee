@@ -94,7 +94,11 @@ mod tests {
 
     #[test]
     fn maps_record_to_json() {
-        let ev = AuditEvent::from_record(&rec(), Some("cargo-test-1a2b".into()), OffsetDateTime::UNIX_EPOCH);
+        let ev = AuditEvent::from_record(
+            &rec(),
+            Some("cargo-test-1a2b".into()),
+            OffsetDateTime::UNIX_EPOCH,
+        );
         assert_eq!(ev.op, "file_open");
         assert_eq!(ev.decision, "denied");
         assert_eq!(ev.errno, -13);

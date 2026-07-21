@@ -34,7 +34,10 @@ pub fn pre_exec_hardening() -> io::Result<()> {
 
 /// `setrlimit(RLIMIT_CORE, 0, 0)`.
 pub fn disable_core_dumps() -> io::Result<()> {
-    let lim = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    let lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
     // SAFETY: `lim` is a valid, fully-initialized rlimit for the duration of the call.
     let rc = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &lim) };
     if rc != 0 {
@@ -92,7 +95,10 @@ mod tests {
         ];
         let mut got = ld_env_keys(vars);
         got.sort();
-        assert_eq!(got, vec!["LD_LIBRARY_PATH".to_string(), "LD_PRELOAD".to_string()]);
+        assert_eq!(
+            got,
+            vec!["LD_LIBRARY_PATH".to_string(), "LD_PRELOAD".to_string()]
+        );
     }
 
     #[test]

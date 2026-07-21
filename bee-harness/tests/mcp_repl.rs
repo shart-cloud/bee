@@ -39,10 +39,19 @@ async fn mcp_summary_reports_servers_and_domain_policy() {
 
     // What `/mcp` shows the operator (US10 AS-2).
     assert!(summary.contains("gh"), "server name missing: {summary}");
-    assert!(summary.contains("[streamable_http]"), "transport missing: {summary}");
+    assert!(
+        summary.contains("[streamable_http]"),
+        "transport missing: {summary}"
+    );
     assert!(summary.contains("failed:"), "status missing: {summary}");
-    assert!(summary.contains("allowed_domains: [mcp.internal.dev]"), "allowlist missing: {summary}");
-    assert!(summary.contains("denied_domains: []"), "denylist missing: {summary}");
+    assert!(
+        summary.contains("allowed_domains: [mcp.internal.dev]"),
+        "allowlist missing: {summary}"
+    );
+    assert!(
+        summary.contains("denied_domains: []"),
+        "denylist missing: {summary}"
+    );
 }
 
 #[tokio::test]

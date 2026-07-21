@@ -29,7 +29,11 @@ fn build(rows: &[&str; 16]) -> SpriteSpec {
             pixels.push(palette(c));
         }
     }
-    SpriteSpec { width: 16, height: 16, pixels }
+    SpriteSpec {
+        width: 16,
+        height: 16,
+        pixels,
+    }
 }
 
 const FRAME_UP: [&str; 16] = [

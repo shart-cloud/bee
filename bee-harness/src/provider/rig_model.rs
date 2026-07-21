@@ -14,11 +14,11 @@ use std::future::Future;
 use std::pin::Pin;
 
 use futures_util::StreamExt;
+use rig_core::client::CompletionClient;
 use rig_core::completion::{
     AssistantContent, CompletionError, CompletionModel, CompletionRequest, GetTokenUsage, Message,
     ToolDefinition,
 };
-use rig_core::client::CompletionClient;
 use rig_core::streaming::{StreamedAssistantContent, StreamingCompletionResponse};
 use rig_core::OneOrMany;
 
@@ -61,7 +61,10 @@ where
         let model = model.clone();
         Box::pin(async move {
             let resp = model.completion(req).await?;
-            Ok(RigTurn { choice: resp.choice, usage: resp.usage })
+            Ok(RigTurn {
+                choice: resp.choice,
+                usage: resp.usage,
+            })
         })
     })
 }
@@ -223,10 +226,15 @@ fn to_completion_request(
                 }
                 // An assistant turn always has text or tool calls; guard anyway.
                 if let Ok(oom) = OneOrMany::many(content) {
-                    history.push(Message::Assistant { id: None, content: oom });
+                    history.push(Message::Assistant {
+                        id: None,
+                        content: oom,
+                    });
                 }
             }
-            HMessage::ToolResult { call_id, content, .. } => {
+            HMessage::ToolResult {
+                call_id, content, ..
+            } => {
                 history.push(Message::tool_result(call_id, content.clone()));
             }
         }
@@ -277,9 +285,18 @@ fn to_turn(rt: RigTurn) -> Turn {
             _ => {}
         }
     }
-    let stop = if tool_calls.is_empty() { StopReason::EndTurn } else { StopReason::ToolUse };
+    let stop = if tool_calls.is_empty() {
+        StopReason::EndTurn
+    } else {
+        StopReason::ToolUse
+    };
     let usage = Some(usage_from_rig(&rt.usage));
-    Turn { text, tool_calls, stop, usage }
+    Turn {
+        text,
+        tool_calls,
+        stop,
+        usage,
+    }
 }
 
 /// Map Rig's usage into the harness [`Usage`], carrying the cache and reasoning counts (dropped by
@@ -303,7 +320,10 @@ fn to_model_error(e: CompletionError) -> ModelError {
         if let Some(status) = e.provider_response_status() {
             return classify_status(status.as_u16(), &e);
         }
-        return ModelError::Transient { status: 0, retry_after: None };
+        return ModelError::Transient {
+            status: 0,
+            retry_after: None,
+        };
     }
     if let Some(status) = e.provider_response_status() {
         return classify_status(status.as_u16(), &e);
@@ -316,7 +336,10 @@ fn to_model_error(e: CompletionError) -> ModelError {
 
 fn classify_status(status: u16, e: &CompletionError) -> ModelError {
     match status {
-        429 | 500..=599 => ModelError::Transient { status, retry_after: None },
+        429 | 500..=599 => ModelError::Transient {
+            status,
+            retry_after: None,
+        },
         401 | 403 => ModelError::Auth,
         _ => ModelError::Request(format!("status {status}: {e}")),
     }
@@ -357,7 +380,9 @@ mod tests {
         Conversation {
             system: "SYSTEM-PROMPT".to_string(),
             messages: vec![
-                HMessage::User { text: "read the file".to_string() },
+                HMessage::User {
+                    text: "read the file".to_string(),
+                },
                 HMessage::Assistant {
                     text: Some("I'll read it.".to_string()),
                     tool_calls: vec![ToolCall {
@@ -403,7 +428,10 @@ mod tests {
 
     #[test]
     fn empty_conversation_is_rejected() {
-        let convo = Conversation { system: "s".into(), messages: vec![] };
+        let convo = Conversation {
+            system: "s".into(),
+            messages: vec![],
+        };
         assert!(matches!(
             to_completion_request(&convo, &[], None, None),
             Err(ModelError::Request(_))
@@ -421,11 +449,20 @@ mod tests {
         let wire = serde_json::to_string(&req.chat_history).expect("serialize chat_history");
 
         // assistant text + tool call
-        assert!(wire.contains("I'll read it."), "assistant text missing: {wire}");
+        assert!(
+            wire.contains("I'll read it."),
+            "assistant text missing: {wire}"
+        );
         assert!(wire.contains("read_file"), "tool name missing: {wire}");
         assert!(wire.contains("call-1"), "tool call id missing: {wire}");
-        assert!(wire.contains("/etc/hostname"), "tool call arguments missing: {wire}");
+        assert!(
+            wire.contains("/etc/hostname"),
+            "tool call arguments missing: {wire}"
+        );
         // tool result fed back as user content, keyed by the same call id
-        assert!(wire.contains("myhost"), "tool result content missing: {wire}");
+        assert!(
+            wire.contains("myhost"),
+            "tool result content missing: {wire}"
+        );
     }
 }

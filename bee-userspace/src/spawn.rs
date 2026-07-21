@@ -31,7 +31,9 @@ pub fn resolve_in_path(cmd: &str) -> Option<PathBuf> {
         return p.exists().then(|| p.to_path_buf());
     }
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|dir| dir.join(cmd)).find(|c| c.exists())
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(cmd))
+        .find(|c| c.exists())
 }
 
 /// True if `path` is setuid/setgid or carries file capabilities — bee must refuse these (FR-015).
@@ -54,9 +56,7 @@ pub fn is_privileged_target(path: &Path) -> io::Result<bool> {
 fn has_file_caps(path: &CString) -> bool {
     let name = c"security.capability";
     // SAFETY: null value pointer with size 0 asks only for the attribute size; -1/ENODATA if absent.
-    let rc = unsafe {
-        libc::getxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0)
-    };
+    let rc = unsafe { libc::getxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0) };
     rc > 0
 }
 
@@ -113,13 +113,21 @@ mod tests {
     #[test]
     fn plain_binary_is_not_privileged() {
         let sh = resolve_in_path("sh").expect("sh exists");
-        assert!(!is_privileged_target(&sh).unwrap(), "sh should not be setuid");
+        assert!(
+            !is_privileged_target(&sh).unwrap(),
+            "sh should not be setuid"
+        );
     }
 
     #[test]
     fn refuses_setuid_target_if_present() {
         // Find a setuid binary in common locations; skip if none (environment-dependent).
-        for cand in ["/usr/bin/sudo", "/bin/su", "/usr/bin/passwd", "/usr/bin/mount"] {
+        for cand in [
+            "/usr/bin/sudo",
+            "/bin/su",
+            "/usr/bin/passwd",
+            "/usr/bin/mount",
+        ] {
             let p = Path::new(cand);
             if p.exists() && is_privileged_target(p).unwrap() {
                 let err = hardened_command::<fn() -> io::Result<()>>(cand, &[], None).unwrap_err();

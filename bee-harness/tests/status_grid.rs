@@ -10,19 +10,36 @@ fn status_grid_colors_then_no_color() {
     // Serial (NO_COLOR is process-global). SC-013: color on.
     std::env::remove_var("NO_COLOR");
     let rows = vec![
-        ("read-denied".to_string(), vec![Status::Pass, Status::Pass, Status::Pass, Status::Fail]),
-        ("write-allowed".to_string(), vec![Status::Pass, Status::Pass]),
+        (
+            "read-denied".to_string(),
+            vec![Status::Pass, Status::Pass, Status::Pass, Status::Fail],
+        ),
+        (
+            "write-allowed".to_string(),
+            vec![Status::Pass, Status::Pass],
+        ),
     ];
     let colored = status_grid(&rows);
-    assert_eq!(colored.matches("\x1b[32m").count(), 5, "5 green dots: {colored:?}");
-    assert_eq!(colored.matches("\x1b[31m").count(), 1, "1 red dot: {colored:?}");
+    assert_eq!(
+        colored.matches("\x1b[32m").count(),
+        5,
+        "5 green dots: {colored:?}"
+    );
+    assert_eq!(
+        colored.matches("\x1b[31m").count(),
+        1,
+        "1 red dot: {colored:?}"
+    );
     assert!(colored.contains("3/4 pass") && colored.contains("2/2 pass"));
 
     // AS-3: color off.
     std::env::set_var("NO_COLOR", "1");
     let plain = status_grid(&rows);
     std::env::remove_var("NO_COLOR");
-    assert!(!plain.contains('\u{1b}'), "no SGR under NO_COLOR: {plain:?}");
+    assert!(
+        !plain.contains('\u{1b}'),
+        "no SGR under NO_COLOR: {plain:?}"
+    );
     assert!(plain.contains('\u{25CF}'), "dot glyph still present");
 }
 
@@ -49,7 +66,16 @@ impl ReplOutput for InfoCapture {
 fn default_render_widget_emits_non_blank_ascii() {
     let spec = RenderSpec::BarChart {
         title: "Sizes".into(),
-        bars: vec![Bar { label: "a".into(), value: 3 }, Bar { label: "b".into(), value: 7 }],
+        bars: vec![
+            Bar {
+                label: "a".into(),
+                value: 3,
+            },
+            Bar {
+                label: "b".into(),
+                value: 7,
+            },
+        ],
         x_label: None,
         y_label: None,
         color: None,
@@ -60,5 +86,8 @@ fn default_render_widget_emits_non_blank_ascii() {
     assert!(!lines.is_empty(), "fallback must emit lines, not a blank");
     let joined = lines.join("\n");
     assert!(joined.contains("Sizes") && joined.contains('a') && joined.contains('b'));
-    assert!(!joined.contains('\u{1b}'), "fallback is plain text (no ANSI)");
+    assert!(
+        !joined.contains('\u{1b}'),
+        "fallback is plain text (no ANSI)"
+    );
 }

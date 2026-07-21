@@ -47,7 +47,14 @@ async fn one_episode(scn: Arc<Scenario>) -> EpisodeTranscript {
     let mut registry = registry_for(&["bash".to_string()], None);
     let model = MockModel::scripted(sleeper("0.4"));
     let mut sb = Sandbox::host(sandbox::key_vars(None));
-    run_loop(&model, &scn, &mut registry, &mut sb, &LoopOptions::default()).await
+    run_loop(
+        &model,
+        &scn,
+        &mut registry,
+        &mut sb,
+        &LoopOptions::default(),
+    )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -65,7 +65,11 @@ mod tests {
     use super::*;
 
     fn usage(input: u32, output: u32) -> Usage {
-        Usage { input_tokens: input, output_tokens: output, ..Default::default() }
+        Usage {
+            input_tokens: input,
+            output_tokens: output,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -80,9 +84,9 @@ mod tests {
         let u = Usage {
             input_tokens: 0,
             output_tokens: 0,
-            cache_read_tokens: 1_000_000, // 0.1 × $5 = $0.50
+            cache_read_tokens: 1_000_000,  // 0.1 × $5 = $0.50
             cache_write_tokens: 1_000_000, // 1.25 × $5 = $6.25
-            reasoning_tokens: 1_000_000,  // billed as output: $25
+            reasoning_tokens: 1_000_000,   // billed as output: $25
         };
         let c = cost("claude-opus-4-8", &u).unwrap();
         assert!((c - (0.5 + 6.25 + 25.0)).abs() < 1e-9, "{c}");
@@ -98,7 +102,10 @@ mod tests {
 
     #[test]
     fn local_and_mock_are_unpriced() {
-        assert_eq!(cost("openai-compat/qwen2.5-coder", &usage(1000, 1000)), None);
+        assert_eq!(
+            cost("openai-compat/qwen2.5-coder", &usage(1000, 1000)),
+            None
+        );
         assert_eq!(cost("mock/scripted", &usage(1000, 1000)), None);
         assert!(!is_priced("mock/scripted"));
         assert!(is_priced("claude-sonnet-5"));

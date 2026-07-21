@@ -47,16 +47,29 @@ async fn tool_child_cannot_read_provider_key() {
     // Strip list = default provider vars + the configured key var name.
     let mut sb = Sandbox::host(sandbox::key_vars(Some("FAKE_PROVIDER_KEY")));
 
-    let t = run_loop(&model, &scn, &mut registry, &mut sb, &LoopOptions::default()).await;
+    let t = run_loop(
+        &model,
+        &scn,
+        &mut registry,
+        &mut sb,
+        &LoopOptions::default(),
+    )
+    .await;
 
     let out = &t.turns[0].calls[0].result.content;
     assert!(
         !out.contains("sk-super-secret-value"),
         "provider key leaked to tool child: {out}"
     );
-    assert!(out.contains("KEY=[]"), "key var should be empty in the child: {out}");
+    assert!(
+        out.contains("KEY=[]"),
+        "key var should be empty in the child: {out}"
+    );
     // Control: a var we did NOT strip is still visible, proving the strip is selective.
-    assert!(out.contains("i-am-visible"), "non-stripped control var missing: {out}");
+    assert!(
+        out.contains("i-am-visible"),
+        "non-stripped control var missing: {out}"
+    );
 
     std::env::remove_var("FAKE_PROVIDER_KEY");
     std::env::remove_var("FAKE_VISIBLE_VAR");

@@ -31,19 +31,19 @@ fn le_u32(b: &[u8], off: usize) -> Result<u32, String> {
 /// the next type. `None` for an unknown kind — the walk cannot continue safely, so we fail closed.
 fn trailing_len(kind: u32, vlen: usize) -> Option<usize> {
     Some(match kind {
-        1 => 4,                          // INT       (u32)
-        2 => 0,                          // PTR
-        3 => 12,                         // ARRAY     (btf_array)
-        4 | 5 => vlen * 12,              // STRUCT/UNION (btf_member[])
-        6 => vlen * 8,                   // ENUM      (btf_enum[])
-        7..=12 => 0,                     // FWD/TYPEDEF/VOLATILE/CONST/RESTRICT/FUNC
-        13 => vlen * 8,                  // FUNC_PROTO (btf_param[])
-        14 => 4,                         // VAR       (btf_var)
-        15 => vlen * 12,                 // DATASEC   (btf_var_secinfo[])
-        16 => 0,                         // FLOAT
-        17 => 4,                         // DECL_TAG  (btf_decl_tag)
-        18 => 0,                         // TYPE_TAG
-        19 => vlen * 12,                 // ENUM64    (btf_enum64[])
+        1 => 4,             // INT       (u32)
+        2 => 0,             // PTR
+        3 => 12,            // ARRAY     (btf_array)
+        4 | 5 => vlen * 12, // STRUCT/UNION (btf_member[])
+        6 => vlen * 8,      // ENUM      (btf_enum[])
+        7..=12 => 0,        // FWD/TYPEDEF/VOLATILE/CONST/RESTRICT/FUNC
+        13 => vlen * 8,     // FUNC_PROTO (btf_param[])
+        14 => 4,            // VAR       (btf_var)
+        15 => vlen * 12,    // DATASEC   (btf_var_secinfo[])
+        16 => 0,            // FLOAT
+        17 => 4,            // DECL_TAG  (btf_decl_tag)
+        18 => 0,            // TYPE_TAG
+        19 => vlen * 12,    // ENUM64    (btf_enum64[])
         _ => return None,
     })
 }
@@ -51,7 +51,9 @@ fn trailing_len(kind: u32, vlen: usize) -> Option<usize> {
 /// Read a NUL-terminated string at `strs[name_off..]`.
 fn string_at(strs: &[u8], name_off: u32) -> Result<&str, String> {
     let start = name_off as usize;
-    let slice = strs.get(start..).ok_or_else(|| "BTF string offset out of range".to_string())?;
+    let slice = strs
+        .get(start..)
+        .ok_or_else(|| "BTF string offset out of range".to_string())?;
     let end = slice.iter().position(|&c| c == 0).unwrap_or(slice.len());
     core::str::from_utf8(&slice[..end]).map_err(|_| "BTF string is not UTF-8".to_string())
 }
@@ -89,15 +91,18 @@ pub fn probe_field_offsets(btf: &[u8], wanted: &[(&str, &str)]) -> Result<Vec<us
         let kind = (info >> 24) & 0x1f;
         let vlen = (info & 0xffff) as usize;
         let kflag = (info >> 31) & 1;
-        let trailing = trailing_len(kind, vlen).ok_or_else(|| format!("unknown BTF kind {kind}"))?;
+        let trailing =
+            trailing_len(kind, vlen).ok_or_else(|| format!("unknown BTF kind {kind}"))?;
         let body = pos + 12;
 
         if kind == BTF_KIND_STRUCT {
             let sname = string_at(strs, name_off)?;
             // Only scan members if this struct name is still wanted (avoids the per-member work for
             // the tens of thousands of unrelated structs in vmlinux BTF).
-            let interested =
-                wanted.iter().enumerate().any(|(i, (s, _))| *s == sname && found[i].is_none());
+            let interested = wanted
+                .iter()
+                .enumerate()
+                .any(|(i, (s, _))| *s == sname && found[i].is_none());
             if interested {
                 for m in 0..vlen {
                     let mp = body + m * 12;
@@ -106,7 +111,11 @@ pub fn probe_field_offsets(btf: &[u8], wanted: &[(&str, &str)]) -> Result<Vec<us
                     let mname = string_at(strs, m_name_off)?;
                     // With the struct's kflag set, a member's low 24 bits are the bit offset and the
                     // high 8 are the bitfield size; otherwise the whole word is the bit offset.
-                    let bit_off = if kflag == 1 { m_raw_off & 0x00ff_ffff } else { m_raw_off };
+                    let bit_off = if kflag == 1 {
+                        m_raw_off & 0x00ff_ffff
+                    } else {
+                        m_raw_off
+                    };
                     for (i, (s, mem)) in wanted.iter().enumerate() {
                         if found[i].is_none() && *s == sname && *mem == mname {
                             found[i] = Some((bit_off / 8) as usize);
@@ -137,8 +146,10 @@ pub fn probe_field_offsets(btf: &[u8], wanted: &[(&str, &str)]) -> Result<Vec<us
 /// disagrees. The error names each mismatch so the operator knows bee must be retargeted/rebuilt.
 pub fn check_running() -> Result<(), String> {
     let btf = std::fs::read(VMLINUX_BTF).map_err(|e| format!("cannot read {VMLINUX_BTF}: {e}"))?;
-    let wanted: Vec<(&str, &str)> =
-        bee_common::offsets::VALIDATED.iter().map(|(s, m, _)| (*s, *m)).collect();
+    let wanted: Vec<(&str, &str)> = bee_common::offsets::VALIDATED
+        .iter()
+        .map(|(s, m, _)| (*s, *m))
+        .collect();
     let found = probe_field_offsets(&btf, &wanted)?;
     diff_offsets(&found, bee_common::offsets::VALIDATED)
 }
@@ -179,8 +190,10 @@ mod tests {
             off
         };
         let sname_off = name_off(struct_name, &mut strs);
-        let member_offs: Vec<(u32, u32)> =
-            members.iter().map(|(n, bit)| (name_off(n, &mut strs), *bit)).collect();
+        let member_offs: Vec<(u32, u32)> = members
+            .iter()
+            .map(|(n, bit)| (name_off(n, &mut strs), *bit))
+            .collect();
 
         // Type section: one btf_type (STRUCT) + its btf_member[].
         let mut types = Vec::new();
@@ -249,8 +262,14 @@ mod tests {
         assert!(diff_offsets(&[20, 152], table).is_ok());
         // A drifted kernel where f_path moved to byte 160 must be reported (fail-closed).
         let err = diff_offsets(&[20, 160], table).unwrap_err();
-        assert!(err.contains("file.f_path: compiled 152, kernel 160"), "{err}");
-        assert!(!err.contains("f_mode"), "unchanged field must not be flagged: {err}");
+        assert!(
+            err.contains("file.f_path: compiled 152, kernel 160"),
+            "{err}"
+        );
+        assert!(
+            !err.contains("f_mode"),
+            "unchanged field must not be flagged: {err}"
+        );
     }
 
     /// End-to-end of the guard's decision: a probed layout that differs from the compiled table
@@ -258,8 +277,16 @@ mod tests {
     #[test]
     fn mismatch_makes_support_unsupported() {
         use crate::detect::Support;
-        let drifted = synth_btf("file", &[("f_mode", 160 /* byte 20 */), ("f_path", 1280 /* byte 160, not 152 */)], false);
-        let found = probe_field_offsets(&drifted, &[("file", "f_mode"), ("file", "f_path")]).unwrap();
+        let drifted = synth_btf(
+            "file",
+            &[
+                ("f_mode", 160 /* byte 20 */),
+                ("f_path", 1280 /* byte 160, not 152 */),
+            ],
+            false,
+        );
+        let found =
+            probe_field_offsets(&drifted, &[("file", "f_mode"), ("file", "f_path")]).unwrap();
         let offsets_ok =
             diff_offsets(&found, &[("file", "f_mode", 20), ("file", "f_path", 152)]).is_ok();
         assert!(!offsets_ok);
@@ -271,6 +298,9 @@ mod tests {
             kernel_version: Some((6, 8)),
             reason: None,
         };
-        assert!(!s.is_supported(), "an offset mismatch must make the kernel unsupported");
+        assert!(
+            !s.is_supported(),
+            "an offset mismatch must make the kernel unsupported"
+        );
     }
 }

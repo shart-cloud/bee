@@ -46,7 +46,14 @@ impl Tool for ReadFile {
             Ok(a) => a,
             Err(e) => return ToolResult::invalid_args("read_file", e),
         };
-        run_child(sandbox, "cat", &["--".to_string(), args.path], None, DEFAULT_OUTPUT_CAP).await
+        run_child(
+            sandbox,
+            "cat",
+            &["--".to_string(), args.path],
+            None,
+            DEFAULT_OUTPUT_CAP,
+        )
+        .await
     }
 }
 

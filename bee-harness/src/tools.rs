@@ -94,13 +94,19 @@ impl ToolResult {
     /// A successful `render`-tool result: `content` is the text summary, `render_spec` the widget
     /// (003-visual-render, FR-023).
     pub fn rendered(summary: impl Into<String>, spec: RenderSpec) -> Self {
-        ToolResult { render_spec: Some(spec), ..ToolResult::ok(summary) }
+        ToolResult {
+            render_spec: Some(spec),
+            ..ToolResult::ok(summary)
+        }
     }
 
     /// A successful **terminal** result (a CTF tool that ends the episode, US3). `terminal = true`,
     /// `is_error = false`.
     pub fn terminal_ok(content: impl Into<String>) -> Self {
-        ToolResult { terminal: true, ..ToolResult::ok(content) }
+        ToolResult {
+            terminal: true,
+            ..ToolResult::ok(content)
+        }
     }
 
     /// The FR-016 malformed-arguments result: `"<tool>: invalid arguments: <detail>"`.

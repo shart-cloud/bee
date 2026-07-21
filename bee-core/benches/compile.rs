@@ -28,7 +28,9 @@ fn big_policy() -> Policy {
     for i in 0..100 {
         toml.push_str(&format!("\"/home/u/project/dir{i}\" = \"write\"\n"));
     }
-    toml.push_str("\n[policy.exec]\nallow = [\"cargo\", \"rustc\", \"cc\"]\n\n[policy.network]\nallow = [");
+    toml.push_str(
+        "\n[policy.exec]\nallow = [\"cargo\", \"rustc\", \"cc\"]\n\n[policy.network]\nallow = [",
+    );
     for i in 0..50 {
         if i > 0 {
             toml.push_str(", ");

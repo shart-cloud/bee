@@ -103,11 +103,17 @@ fn no_network_child_is_subset() {
 fn child_may_not_be_looser_mode() {
     let parent = p("[policy]\nname=\"p\"\nmode=\"enforce\"\n");
     let child = p("[policy]\nname=\"c\"\nmode=\"observe\"\n");
-    assert!(parent.derive(child).is_err(), "observe child under enforce parent is looser");
+    assert!(
+        parent.derive(child).is_err(),
+        "observe child under enforce parent is looser"
+    );
 
     let parent2 = p("[policy]\nname=\"p\"\nmode=\"observe\"\n");
     let child2 = p("[policy]\nname=\"c\"\nmode=\"enforce\"\n");
-    assert!(parent2.derive(child2).is_ok(), "enforce child under observe parent is stricter");
+    assert!(
+        parent2.derive(child2).is_ok(),
+        "enforce child under observe parent is stricter"
+    );
 }
 
 #[test]
@@ -121,5 +127,8 @@ fn identical_glob_grant_is_allowed() {
 fn novel_glob_grant_rejected() {
     let parent = p("[policy]\nname=\"p\"\n[policy.filesystem]\n\"/proj\" = \"write\"\n");
     let child = p("[policy]\nname=\"c\"\n[policy.filesystem]\n\"*.log\" = \"write\"\n");
-    assert!(parent.derive(child).is_err(), "glob not provably contained in a prefix grant");
+    assert!(
+        parent.derive(child).is_err(),
+        "glob not provably contained in a prefix grant"
+    );
 }

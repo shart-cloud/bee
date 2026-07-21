@@ -88,7 +88,10 @@ impl McpServerConfig {
             return Err("mcp server name is required".into());
         }
         if self.name.contains("__") {
-            return Err(format!("mcp server name '{}' must not contain '__'", self.name));
+            return Err(format!(
+                "mcp server name '{}' must not contain '__'",
+                self.name
+            ));
         }
         if !self
             .name

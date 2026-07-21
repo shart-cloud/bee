@@ -17,8 +17,12 @@ use bee_userspace::{hardened_command, SpawnError};
 
 /// Credential env vars stripped from **every** tool child regardless of config (FR-018). The
 /// configured `api_key_env` is appended to this set at construction.
-pub const DEFAULT_KEY_VARS: &[&str] =
-    &["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY"];
+pub const DEFAULT_KEY_VARS: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GROQ_API_KEY",
+];
 
 /// A hardened host process with no kernel scope.
 pub struct HostSandbox {
@@ -82,7 +86,12 @@ impl Sandbox {
         reader: bee_userspace::events::AuditReader,
         strip_env: Vec<String>,
     ) -> Self {
-        Sandbox::Enforced(Box::new(EnforcedSandbox { engine, scope, reader, strip_env }))
+        Sandbox::Enforced(Box::new(EnforcedSandbox {
+            engine,
+            scope,
+            reader,
+            strip_env,
+        }))
     }
 
     /// A scope-confined sandbox that receives audit events from a demux subscription (US4). The
@@ -93,7 +102,11 @@ impl Sandbox {
         subscription: bee_userspace::AuditSubscription,
         strip_env: Vec<String>,
     ) -> Self {
-        Sandbox::Concurrent(Box::new(ConcurrentSandbox { scope, subscription, strip_env }))
+        Sandbox::Concurrent(Box::new(ConcurrentSandbox {
+            scope,
+            subscription,
+            strip_env,
+        }))
     }
 
     /// The scope's cgroup id, when enforcing (used to filter audit events).
@@ -119,18 +132,20 @@ impl Sandbox {
             }
             #[cfg(feature = "enforce")]
             Sandbox::Enforced(e) => {
-                let join = e.scope.join_closure().map_err(|err| {
-                    SpawnError::Io(io::Error::other(err.to_string()))
-                })?;
+                let join = e
+                    .scope
+                    .join_closure()
+                    .map_err(|err| SpawnError::Io(io::Error::other(err.to_string())))?;
                 let mut cmd = hardened_command(program, args, Some(join))?;
                 strip(&mut cmd, &e.strip_env);
                 Ok(cmd)
             }
             #[cfg(feature = "concurrent")]
             Sandbox::Concurrent(c) => {
-                let join = c.scope.join_closure().map_err(|err| {
-                    SpawnError::Io(io::Error::other(err.to_string()))
-                })?;
+                let join = c
+                    .scope
+                    .join_closure()
+                    .map_err(|err| SpawnError::Io(io::Error::other(err.to_string())))?;
                 let mut cmd = hardened_command(program, args, Some(join))?;
                 strip(&mut cmd, &c.strip_env);
                 Ok(cmd)

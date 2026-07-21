@@ -41,7 +41,9 @@ impl fmt::Display for Support {
             f,
             "kernel>=5.7      [{}] {}",
             mark(self.kernel_ok),
-            self.kernel_version.map(|(a, b)| format!("{a}.{b}")).unwrap_or_else(|| "unknown".into())
+            self.kernel_version
+                .map(|(a, b)| format!("{a}.{b}"))
+                .unwrap_or_else(|| "unknown".into())
         )?;
         writeln!(f, "bpf in LSM list  [{}]", mark(self.bpf_lsm_active))?;
         writeln!(f, "cgroup v2        [{}]", mark(self.cgroup_v2))?;
@@ -93,7 +95,9 @@ pub fn detect() -> Support {
     let reason = if !kernel_ok {
         Some(format!(
             "kernel {} is below the required {}.{} for BPF LSM",
-            kernel_version.map(|(a, b)| format!("{a}.{b}")).unwrap_or_else(|| "unknown".into()),
+            kernel_version
+                .map(|(a, b)| format!("{a}.{b}"))
+                .unwrap_or_else(|| "unknown".into()),
             MIN_KERNEL.0,
             MIN_KERNEL.1
         ))
@@ -111,12 +115,21 @@ pub fn detect() -> Support {
         None
     };
 
-    Support { kernel_ok, bpf_lsm_active, cgroup_v2, offsets_ok, kernel_version, reason }
+    Support {
+        kernel_ok,
+        bpf_lsm_active,
+        cgroup_v2,
+        offsets_ok,
+        kernel_version,
+        reason,
+    }
 }
 
 fn read_kernel_release() -> Option<String> {
     // /proc/sys/kernel/osrelease is the release string without a syscall.
-    std::fs::read_to_string("/proc/sys/kernel/osrelease").ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 #[cfg(test)]
@@ -125,7 +138,10 @@ mod tests {
 
     #[test]
     fn version_parsing() {
-        assert_eq!(parse_kernel_version("6.6.114.1-microsoft-standard-WSL2"), Some((6, 6)));
+        assert_eq!(
+            parse_kernel_version("6.6.114.1-microsoft-standard-WSL2"),
+            Some((6, 6))
+        );
         assert_eq!(parse_kernel_version("5.7.0"), Some((5, 7)));
         assert_eq!(parse_kernel_version("5.15.0-generic"), Some((5, 15)));
         assert_eq!(parse_kernel_version("garbage"), None);

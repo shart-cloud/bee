@@ -32,9 +32,11 @@ use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use time::OffsetDateTime;
 
-use crate::provider::{Conversation, Message, Model, ModelError, StreamEvent, ToolSchema, Turn, Usage};
-use crate::sandbox::Sandbox;
+use crate::provider::{
+    Conversation, Message, Model, ModelError, StreamEvent, ToolSchema, Turn, Usage,
+};
 use crate::render_spec::RenderSpec;
+use crate::sandbox::Sandbox;
 use crate::tools::{ToolRegistry, ToolResult};
 use crate::transcript::{EpisodeStatus, EpisodeTranscript, RecordedCall, Timing, TranscriptTurn};
 
@@ -210,7 +212,11 @@ pub fn parse_meta_command(line: &str) -> Option<MetaCommand> {
     }
     let mut parts = line.splitn(2, char::is_whitespace);
     let cmd = parts.next().unwrap_or("");
-    let arg = parts.next().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let arg = parts
+        .next()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     Some(match cmd {
         "/quit" | "/exit" => MetaCommand::Quit,
         "/save" => MetaCommand::Save(arg),
@@ -256,7 +262,10 @@ async fn stream_with_retry(
     loop {
         match model.stream(convo, schemas).await {
             Ok(stream) => return Ok(stream),
-            Err(ModelError::Transient { status, retry_after }) => {
+            Err(ModelError::Transient {
+                status,
+                retry_after,
+            }) => {
                 if attempt >= max_retries {
                     return Err(format!(
                         "transient provider error (status {status}) after {attempt} retries"
@@ -306,7 +315,9 @@ async fn consume_stream(
     // (tokens, tool calls) shows liveness.
     let first = stream.next().await;
     output.busy_stop();
-    let ttft = first.is_some().then(|| call_start.elapsed().as_millis() as u64);
+    let ttft = first
+        .is_some()
+        .then(|| call_start.elapsed().as_millis() as u64);
 
     let mut saw_text = false;
     let mut ev = first;
@@ -361,7 +372,9 @@ pub async fn run_exchange(
     steering: &SteeringQueue,
     recorder: Option<&crate::metrics::Recorder>,
 ) -> ExchangeResult {
-    conversation.push(Message::User { text: user_message.to_string() });
+    conversation.push(Message::User {
+        text: user_message.to_string(),
+    });
 
     let mut turns: Vec<TranscriptTurn> = Vec::new();
     let mut audit_all: Vec<AuditEvent> = Vec::new();
@@ -385,33 +398,33 @@ pub async fn run_exchange(
         // stream-open latency and the wait for the first token, which is the gap that otherwise
         // feels dead. `consume_stream` stops it on the first event.
         output.busy_start();
-        let stream = match stream_with_retry(model, conversation, &schemas, config.max_retries).await
-        {
-            Ok(s) => s,
-            Err(detail) => {
-                output.busy_stop();
-                output.error(&detail);
-                if let Some(rec) = recorder {
-                    rec.record(
-                        model.id(),
-                        Usage::default(),
-                        turn_start.elapsed().as_millis() as u64,
-                        None,
-                        "error",
-                        "error",
-                    );
+        let stream =
+            match stream_with_retry(model, conversation, &schemas, config.max_retries).await {
+                Ok(s) => s,
+                Err(detail) => {
+                    output.busy_stop();
+                    output.error(&detail);
+                    if let Some(rec) = recorder {
+                        rec.record(
+                            model.id(),
+                            Usage::default(),
+                            turn_start.elapsed().as_millis() as u64,
+                            None,
+                            "error",
+                            "error",
+                        );
+                    }
+                    return ExchangeResult {
+                        outcome: ExchangeOutcome::ApiError(detail),
+                        model_calls,
+                        tool_calls,
+                        denials,
+                        turns,
+                        audit: audit_all,
+                        usage: usage_total,
+                    };
                 }
-                return ExchangeResult {
-                    outcome: ExchangeOutcome::ApiError(detail),
-                    model_calls,
-                    tool_calls,
-                    denials,
-                    turns,
-                    audit: audit_all,
-                    usage: usage_total,
-                };
-            }
-        };
+            };
         let (turn, ttft_ms) = match consume_stream(stream, output, turn_start).await {
             Ok(t) => t,
             Err(detail) => {
@@ -458,7 +471,10 @@ pub async fn run_exchange(
         // steering message while it was finishing, don't hand control back yet — record this turn
         // and loop so the agent responds to the nudge instead of forcing a cold re-send.
         if turn.tool_calls.is_empty() {
-            conversation.push(Message::Assistant { text: turn.text, tool_calls: Vec::new() });
+            conversation.push(Message::Assistant {
+                text: turn.text,
+                tool_calls: Vec::new(),
+            });
             turns.push(TranscriptTurn {
                 index: turns.len() as u32,
                 assistant_text,
@@ -521,7 +537,11 @@ pub async fn run_exchange(
                 is_error: result.is_error,
             });
             audit_all.extend(audit.iter().cloned());
-            recorded.push(RecordedCall { call: tc.clone(), result, audit });
+            recorded.push(RecordedCall {
+                call: tc.clone(),
+                result,
+                audit,
+            });
         }
 
         turns.push(TranscriptTurn {
@@ -574,7 +594,11 @@ fn exchange_footer(result: &ExchangeResult, elapsed: Duration, model_id: &str) -
     ];
     match &result.usage {
         Some(u) => {
-            let mut tok = format!("{}→{} tok", human_tokens(u.input_tokens), human_tokens(u.output_tokens));
+            let mut tok = format!(
+                "{}→{} tok",
+                human_tokens(u.input_tokens),
+                human_tokens(u.output_tokens)
+            );
             if u.cache_read_tokens > 0 {
                 tok.push_str(&format!(" ({} cached)", human_tokens(u.cache_read_tokens)));
             }
@@ -628,7 +652,9 @@ fn audit_summary(audit: &[AuditEvent]) -> String {
     let denials = audit.iter().filter(|e| e.decision == "denied").count();
     let mut by_op: std::collections::BTreeMap<(&str, &str), u32> = Default::default();
     for e in audit {
-        *by_op.entry((e.op.as_str(), e.decision.as_str())).or_default() += 1;
+        *by_op
+            .entry((e.op.as_str(), e.decision.as_str()))
+            .or_default() += 1;
     }
     let mut out = format!(
         "{} total, {}:",
@@ -716,8 +742,10 @@ pub async fn run_repl(
     let started_at = OffsetDateTime::now_utc();
     let start = Instant::now();
 
-    let mut conversation =
-        Conversation { system: config.system_prompt.clone(), messages: Vec::new() };
+    let mut conversation = Conversation {
+        system: config.system_prompt.clone(),
+        messages: Vec::new(),
+    };
     let mut turns: Vec<TranscriptTurn> = Vec::new();
     let mut audit_trail: Vec<AuditEvent> = Vec::new();
     let mut usage_total: Option<Usage> = None;
@@ -733,8 +761,14 @@ pub async fn run_repl(
         Ok(e) => e,
         Err(e) => {
             eprintln!("bee-repl: could not initialize readline: {e}");
-            let transcript =
-                build_transcript(model.id(), started_at, start, &turns, &audit_trail, usage_total);
+            let transcript = build_transcript(
+                model.id(),
+                started_at,
+                start,
+                &turns,
+                &audit_trail,
+                usage_total,
+            );
             return ReplSession {
                 conversation,
                 exchanges,
@@ -752,8 +786,14 @@ pub async fn run_repl(
         Ok(p) => p,
         Err(e) => {
             eprintln!("bee-repl: could not initialize terminal output: {e}");
-            let transcript =
-                build_transcript(model.id(), started_at, start, &turns, &audit_trail, usage_total);
+            let transcript = build_transcript(
+                model.id(),
+                started_at,
+                start,
+                &turns,
+                &audit_trail,
+                usage_total,
+            );
             return ReplSession {
                 conversation,
                 exchanges,
@@ -768,10 +808,15 @@ pub async fn run_repl(
     // Opt-in bee mascot: play the wing-flap once beside the session line, then it reclaims its rows
     // (003-visual-render, Slice 2, FR-032).
     if config.mascot {
-        output.render_widget(&RenderSpec::Animation { spec: crate::viz::bee::animation() });
+        output.render_widget(&RenderSpec::Animation {
+            spec: crate::viz::bee::animation(),
+        });
     }
 
-    output.info(&format!("interactive session — {} — type /help for commands", model.id()));
+    output.info(&format!(
+        "interactive session — {} — type /help for commands",
+        model.id()
+    ));
 
     // One metrics recorder for the whole session (None if no metrics path is resolvable).
     let recorder = crate::metrics::Recorder::new("repl", format!("repl:{}", std::process::id()));
@@ -815,7 +860,10 @@ pub async fn run_repl(
                 MetaCommand::Tools => output.info(&tools_summary(registry)),
                 MetaCommand::Policy => output.info(&format!("policy: {}", config.policy_label)),
                 MetaCommand::Mcp => output.info(
-                    config.mcp_summary.as_deref().unwrap_or("MCP: not configured"),
+                    config
+                        .mcp_summary
+                        .as_deref()
+                        .unwrap_or("MCP: not configured"),
                 ),
                 MetaCommand::System(None) => {
                     output.info(&format!("system prompt:\n{}", conversation.system));
@@ -938,8 +986,14 @@ pub async fn run_repl(
         plural(total_denials, "denial")
     ));
 
-    let transcript =
-        build_transcript(model.id(), started_at, start, &turns, &audit_trail, usage_total);
+    let transcript = build_transcript(
+        model.id(),
+        started_at,
+        start,
+        &turns,
+        &audit_trail,
+        usage_total,
+    );
     ReplSession {
         conversation,
         exchanges,
@@ -970,7 +1024,11 @@ mod tests {
 
     impl Collector {
         fn contains(&self, needle: &str) -> bool {
-            self.lines.lock().unwrap().iter().any(|l| l.contains(needle))
+            self.lines
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.contains(needle))
         }
         fn dump(&self) -> String {
             self.lines.lock().unwrap().join("\n")
@@ -986,7 +1044,10 @@ mod tests {
             self.lines.lock().unwrap().push(format!("TEXT {text}"));
         }
         fn tool_call(&self, name: &str, arguments: &serde_json::Value) {
-            self.lines.lock().unwrap().push(format!("CALL {name} {arguments}"));
+            self.lines
+                .lock()
+                .unwrap()
+                .push(format!("CALL {name} {arguments}"));
         }
         fn tool_result(&self, result: &ToolResult, audit: &[AuditEvent]) {
             let mut buf = self.lines.lock().unwrap();
@@ -1025,11 +1086,22 @@ mod tests {
     async fn exchange(model: &dyn Model, config: &ReplConfig) -> (ExchangeResult, Collector) {
         let mut registry = registry_for(&["bash".to_string(), "read_file".to_string()], None);
         let mut sb = host_sandbox();
-        let mut convo = Conversation { system: config.system_prompt.clone(), messages: Vec::new() };
+        let mut convo = Conversation {
+            system: config.system_prompt.clone(),
+            messages: Vec::new(),
+        };
         let out = Collector::default();
         let steering = empty_steering();
         let res = run_exchange(
-            "hello", model, &mut convo, &mut registry, &mut sb, config, &out, &steering, None,
+            "hello",
+            model,
+            &mut convo,
+            &mut registry,
+            &mut sb,
+            config,
+            &out,
+            &steering,
+            None,
         )
         .await;
         (res, out)
@@ -1066,7 +1138,10 @@ mod tests {
             script.push(Turn::calls(vec![bash_call(&i.to_string(), "echo loop")]));
         }
         let model = MockModel::scripted(script);
-        let config = ReplConfig { agent_turn_budget: 3, ..ReplConfig::default() };
+        let config = ReplConfig {
+            agent_turn_budget: 3,
+            ..ReplConfig::default()
+        };
         let (res, out) = exchange(&model, &config).await;
         assert_eq!(res.outcome, ExchangeOutcome::BudgetExhausted);
         assert_eq!(res.model_calls, 3);
@@ -1101,13 +1176,26 @@ mod tests {
         let model = MockModel::scripted(vec![Turn::text("ack")]);
         let mut registry = registry_for(&["bash".to_string()], None);
         let mut sb = host_sandbox();
-        let mut convo = Conversation { system: "sys".into(), messages: Vec::new() };
+        let mut convo = Conversation {
+            system: "sys".into(),
+            messages: Vec::new(),
+        };
         let out = Collector::default();
         let steering = empty_steering();
-        steering.lock().unwrap().push_back("actually, focus on tests".to_string());
+        steering
+            .lock()
+            .unwrap()
+            .push_back("actually, focus on tests".to_string());
 
         let res = run_exchange(
-            "start", &model, &mut convo, &mut registry, &mut sb, &ReplConfig::default(), &out, &steering,
+            "start",
+            &model,
+            &mut convo,
+            &mut registry,
+            &mut sb,
+            &ReplConfig::default(),
+            &out,
+            &steering,
             None,
         )
         .await;
@@ -1123,8 +1211,15 @@ mod tests {
             })
             .collect();
         assert_eq!(user_texts, vec!["start", "actually, focus on tests"]);
-        assert!(out.contains("↳ steering: actually, focus on tests"), "output: {}", out.dump());
-        assert!(steering.lock().unwrap().is_empty(), "steering queue should be drained");
+        assert!(
+            out.contains("↳ steering: actually, focus on tests"),
+            "output: {}",
+            out.dump()
+        );
+        assert!(
+            steering.lock().unwrap().is_empty(),
+            "steering queue should be drained"
+        );
     }
 
     #[tokio::test]
@@ -1139,7 +1234,10 @@ mod tests {
         let model = MockModel::from_fn(move |_convo| {
             if calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 // The user types a steering message while the agent is mid-turn.
-                steer_clone.lock().unwrap().push_back("keep going".to_string());
+                steer_clone
+                    .lock()
+                    .unwrap()
+                    .push_back("keep going".to_string());
                 Turn::text("first")
             } else {
                 Turn::text("second")
@@ -1147,16 +1245,30 @@ mod tests {
         });
         let mut registry = registry_for(&["bash".to_string()], None);
         let mut sb = host_sandbox();
-        let mut convo = Conversation { system: "sys".into(), messages: Vec::new() };
+        let mut convo = Conversation {
+            system: "sys".into(),
+            messages: Vec::new(),
+        };
         let out = Collector::default();
 
         let res = run_exchange(
-            "go", &model, &mut convo, &mut registry, &mut sb, &ReplConfig::default(), &out, &steering, None,
+            "go",
+            &model,
+            &mut convo,
+            &mut registry,
+            &mut sb,
+            &ReplConfig::default(),
+            &out,
+            &steering,
+            None,
         )
         .await;
 
         assert_eq!(res.outcome, ExchangeOutcome::Responded);
-        assert_eq!(res.model_calls, 2, "should have taken a second turn for the steering message");
+        assert_eq!(
+            res.model_calls, 2,
+            "should have taken a second turn for the steering message"
+        );
         assert!(out.contains("first"), "output: {}", out.dump());
         assert!(out.contains("second"), "output: {}", out.dump());
     }
@@ -1179,7 +1291,10 @@ mod tests {
         assert_eq!(parse_meta_command("/mcp"), Some(MetaCommand::Mcp));
         assert_eq!(parse_meta_command("/history"), Some(MetaCommand::History));
         assert_eq!(parse_meta_command("/retry"), Some(MetaCommand::Retry));
-        assert_eq!(parse_meta_command("/system"), Some(MetaCommand::System(None)));
+        assert_eq!(
+            parse_meta_command("/system"),
+            Some(MetaCommand::System(None))
+        );
         assert_eq!(
             parse_meta_command("/system be terse"),
             Some(MetaCommand::System(Some("be terse".to_string())))
@@ -1209,9 +1324,17 @@ mod tests {
             denials: 0,
             turns: Vec::new(),
             audit: Vec::new(),
-            usage: Some(Usage { input_tokens: 1234, output_tokens: 340, ..Default::default() }),
+            usage: Some(Usage {
+                input_tokens: 1234,
+                output_tokens: 340,
+                ..Default::default()
+            }),
         };
-        let footer = exchange_footer(&result, Duration::from_millis(4100), "anthropic/claude-opus-4-8");
+        let footer = exchange_footer(
+            &result,
+            Duration::from_millis(4100),
+            "anthropic/claude-opus-4-8",
+        );
         assert!(footer.contains("2 turns"), "{footer}");
         assert!(footer.contains("1 tool call"), "{footer}");
         assert!(footer.contains("1.2k→340 tok"), "{footer}");
@@ -1229,7 +1352,11 @@ mod tests {
             denials: 0,
             turns: Vec::new(),
             audit: Vec::new(),
-            usage: Some(Usage { input_tokens: 100, output_tokens: 50, ..Default::default() }),
+            usage: Some(Usage {
+                input_tokens: 100,
+                output_tokens: 50,
+                ..Default::default()
+            }),
         };
         let footer = exchange_footer(&result, Duration::from_millis(500), "mock/scripted");
         assert!(!footer.contains('$'), "{footer}");

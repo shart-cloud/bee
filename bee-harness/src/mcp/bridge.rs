@@ -159,7 +159,11 @@ impl McpBridge {
                 servers.insert(cfg.name.clone(), server);
             }
         }
-        McpBridge { policy, servers, dirty }
+        McpBridge {
+            policy,
+            servers,
+            dirty,
+        }
     }
 
     /// Consume the dirty flag: returns `true` (and resets it) if a `tools/list_changed` notification
@@ -215,10 +219,19 @@ impl McpBridge {
             ));
         }
         let join = |ps: &[super::policy::DomainPattern]| {
-            ps.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")
+            ps.iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         };
-        out.push_str(&format!("\n  allowed_domains: [{}]", join(&self.policy.allowed_domains)));
-        out.push_str(&format!("\n  denied_domains: [{}]", join(&self.policy.denied_domains)));
+        out.push_str(&format!(
+            "\n  allowed_domains: [{}]",
+            join(&self.policy.allowed_domains)
+        ));
+        out.push_str(&format!(
+            "\n  denied_domains: [{}]",
+            join(&self.policy.denied_domains)
+        ));
         out
     }
 
@@ -254,31 +267,49 @@ async fn finalize_connection(
         config: cfg.clone(),
         tools: shared,
         status: ServerStatus::Connected,
-        handle: Some(ServerHandle { service: running, peer }),
+        handle: Some(ServerHandle {
+            service: running,
+            peer,
+        }),
     }
 }
 
 /// Build the `NotifyHandler` + shared cache for a server about to connect.
 fn handler_for(cfg: &McpServerConfig, dirty: Arc<AtomicBool>) -> (NotifyHandler, SharedTools) {
     let shared: SharedTools = Arc::new(Mutex::new(Vec::new()));
-    let handler = NotifyHandler { cfg: cfg.clone(), tools: shared.clone(), dirty };
+    let handler = NotifyHandler {
+        cfg: cfg.clone(),
+        tools: shared.clone(),
+        dirty,
+    };
     (handler, shared)
 }
 
 /// Connect one stdio MCP server: spawn it sandboxed, run the `initialize` handshake under the
 /// startup budget, then finalize. Never panics — any failure yields a [`ServerStatus::Failed`]
 /// server with no tools (fail-closed, Constitution I).
-async fn connect_stdio(cfg: &McpServerConfig, sandbox: &Sandbox, dirty: Arc<AtomicBool>) -> ConnectedServer {
+async fn connect_stdio(
+    cfg: &McpServerConfig,
+    sandbox: &Sandbox,
+    dirty: Arc<AtomicBool>,
+) -> ConnectedServer {
     let transport = match spawn_stdio(sandbox, cfg) {
         Ok(t) => t,
         Err(e) => return failed_server(cfg, e),
     };
     let (handler, shared) = handler_for(cfg, dirty);
-    let running = match tokio::time::timeout(STDIO_STARTUP_TIMEOUT, handler.serve(transport)).await {
+    let running = match tokio::time::timeout(STDIO_STARTUP_TIMEOUT, handler.serve(transport)).await
+    {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => return failed_server(cfg, format!("initialize failed: {e}")),
         Err(_) => {
-            return failed_server(cfg, format!("initialize timed out (>{}s)", STDIO_STARTUP_TIMEOUT.as_secs()))
+            return failed_server(
+                cfg,
+                format!(
+                    "initialize timed out (>{}s)",
+                    STDIO_STARTUP_TIMEOUT.as_secs()
+                ),
+            )
         }
     };
     finalize_connection(cfg, running, shared).await
@@ -316,11 +347,18 @@ async fn connect_remote(
 
     let transport = StreamableHttpClientTransport::from_config(config);
     let (handler, shared) = handler_for(cfg, dirty);
-    let running = match tokio::time::timeout(REMOTE_STARTUP_TIMEOUT, handler.serve(transport)).await {
+    let running = match tokio::time::timeout(REMOTE_STARTUP_TIMEOUT, handler.serve(transport)).await
+    {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => return failed_server(cfg, format!("initialize failed: {e}")),
         Err(_) => {
-            return failed_server(cfg, format!("initialize timed out (>{}s)", REMOTE_STARTUP_TIMEOUT.as_secs()))
+            return failed_server(
+                cfg,
+                format!(
+                    "initialize timed out (>{}s)",
+                    REMOTE_STARTUP_TIMEOUT.as_secs()
+                ),
+            )
         }
     };
     finalize_connection(cfg, running, shared).await

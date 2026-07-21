@@ -9,9 +9,18 @@ fn bar_chart() -> RenderSpec {
     RenderSpec::BarChart {
         title: "Sizes".into(),
         bars: vec![
-            Bar { label: "a".into(), value: 10 },
-            Bar { label: "b".into(), value: 25 },
-            Bar { label: "c".into(), value: 40 },
+            Bar {
+                label: "a".into(),
+                value: 10,
+            },
+            Bar {
+                label: "b".into(),
+                value: 25,
+            },
+            Bar {
+                label: "c".into(),
+                value: 40,
+            },
         ],
         x_label: None,
         y_label: None,
@@ -35,14 +44,20 @@ fn bar_chart_renders_inline_ansi_box_color_and_no_color() {
     // Colored content — an SGR sequence is present (bars/title styled).
     assert!(joined.contains('\u{1b}'), "expected ANSI color: {joined:?}");
     // Headless: nothing entered an alternate screen / raw mode (no such escape emitted).
-    assert!(!joined.contains("\x1b[?1049"), "must not switch to alt-screen");
+    assert!(
+        !joined.contains("\x1b[?1049"),
+        "must not switch to alt-screen"
+    );
     assert!(!joined.contains("\x1b[?25l"), "must not hide the cursor");
 
     // AS-3: color off drops all escapes, keeps glyphs.
     std::env::set_var("NO_COLOR", "1");
     let plain = render_to_ansi(&bar_chart(), 60, 40).join("\n");
     std::env::remove_var("NO_COLOR");
-    assert!(!plain.contains('\u{1b}'), "no SGR under NO_COLOR: {plain:?}");
+    assert!(
+        !plain.contains('\u{1b}'),
+        "no SGR under NO_COLOR: {plain:?}"
+    );
 }
 
 #[test]
@@ -57,8 +72,14 @@ fn vsplit_height_is_sum_of_children_plus_separators() {
         title: "results".into(),
         headers: vec!["name".into(), "status".into()],
         rows: vec![
-            Row { cells: vec!["a".into(), "ok".into()], color: None },
-            Row { cells: vec!["b".into(), "ok".into()], color: None },
+            Row {
+                cells: vec!["a".into(), "ok".into()],
+                color: None,
+            },
+            Row {
+                cells: vec!["b".into(), "ok".into()],
+                color: None,
+            },
         ],
     };
     let layout = RenderSpec::Layout {
@@ -73,5 +94,9 @@ fn vsplit_height_is_sum_of_children_plus_separators() {
     assert_eq!(spec_height(&layout, width), gh + 1 + th);
 
     let lines = render_to_ansi(&layout, width, 40);
-    assert_eq!(lines.len() as u16, gh + 1 + th, "rendered height matches spec_height");
+    assert_eq!(
+        lines.len() as u16,
+        gh + 1 + th,
+        "rendered height matches spec_height"
+    );
 }

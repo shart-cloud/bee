@@ -26,16 +26,25 @@ pub fn status_grid_summary(transcripts: &[EpisodeTranscript]) -> String {
     use crate::viz::grid::{status_grid, Status};
     // Group by scenario in first-seen order so multiple providers appear as attempts on one row.
     let mut order: Vec<String> = Vec::new();
-    let mut by_scenario: std::collections::HashMap<String, Vec<Status>> = std::collections::HashMap::new();
+    let mut by_scenario: std::collections::HashMap<String, Vec<Status>> =
+        std::collections::HashMap::new();
     for t in transcripts {
         by_scenario.entry(t.scenario_id.clone()).or_insert_with(|| {
             order.push(t.scenario_id.clone());
             Vec::new()
         });
-        by_scenario.get_mut(&t.scenario_id).unwrap().push(Status::from_episode(&t.status));
+        by_scenario
+            .get_mut(&t.scenario_id)
+            .unwrap()
+            .push(Status::from_episode(&t.status));
     }
-    let rows: Vec<(String, Vec<Status>)> =
-        order.into_iter().map(|s| { let v = by_scenario.remove(&s).unwrap(); (s, v) }).collect();
+    let rows: Vec<(String, Vec<Status>)> = order
+        .into_iter()
+        .map(|s| {
+            let v = by_scenario.remove(&s).unwrap();
+            (s, v)
+        })
+        .collect();
     status_grid(&rows)
 }
 
@@ -83,7 +92,12 @@ pub async fn run_batch(config: &BatchConfig, progress: Option<ProgressSink>) -> 
     let providers: Vec<(PathBuf, Result<ProviderConfig, String>)> = config
         .providers
         .iter()
-        .map(|p| (p.clone(), ProviderConfig::parse_unchecked(p).map_err(|e| e.to_string())))
+        .map(|p| {
+            (
+                p.clone(),
+                ProviderConfig::parse_unchecked(p).map_err(|e| e.to_string()),
+            )
+        })
         .collect();
 
     let mut transcripts = Vec::new();
@@ -121,13 +135,11 @@ pub async fn run_batch(config: &BatchConfig, progress: Option<ProgressSink>) -> 
 
             match model_from_config(cfg, &api_key) {
                 Ok(model) => {
-                    let key_env =
-                        (!cfg.api_key_env.is_empty()).then_some(cfg.api_key_env.as_str());
+                    let key_env = (!cfg.api_key_env.is_empty()).then_some(cfg.api_key_env.as_str());
                     let ep_progress = shared.as_ref().map(|s| {
                         let s = s.clone();
                         let label = format!("{}/{}", scenario.id, cfg.model_id());
-                        Box::new(move |line: &str| s(&format!("[{label}] {line}")))
-                            as ProgressSink
+                        Box::new(move |line: &str| s(&format!("[{label}] {line}"))) as ProgressSink
                     });
                     transcripts
                         .push(run_episode(model.as_ref(), scenario, key_env, ep_progress).await);
@@ -138,12 +150,17 @@ pub async fn run_batch(config: &BatchConfig, progress: Option<ProgressSink>) -> 
                     transcripts.push(EpisodeTranscript::setup_error(
                         scenario.id.clone(),
                         cfg.model_id(),
-                        EpisodeStatus::InfraError { detail: e.to_string() },
+                        EpisodeStatus::InfraError {
+                            detail: e.to_string(),
+                        },
                     ));
                 }
             }
         }
     }
 
-    BatchResult { transcripts, errors }
+    BatchResult {
+        transcripts,
+        errors,
+    }
 }

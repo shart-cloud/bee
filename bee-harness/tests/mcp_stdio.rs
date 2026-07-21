@@ -34,7 +34,11 @@ fn fs_server(root: &str, denied: Option<Vec<String>>) -> McpServerConfig {
 }
 
 fn policy(server: McpServerConfig) -> McpPolicy {
-    McpPolicy { enabled: true, servers: vec![server], ..Default::default() }
+    McpPolicy {
+        enabled: true,
+        servers: vec![server],
+        ..Default::default()
+    }
 }
 
 fn workspace(tag: &str) -> std::path::PathBuf {
@@ -50,11 +54,19 @@ async fn connect_lists_and_calls() {
     std::fs::write(dir.join("hello.txt"), "hi from mcp").unwrap();
 
     let sandbox = Sandbox::host(vec![]);
-    let bridge = McpBridge::connect(policy(fs_server(&dir.display().to_string(), None)), &sandbox).await;
+    let bridge = McpBridge::connect(
+        policy(fs_server(&dir.display().to_string(), None)),
+        &sandbox,
+    )
+    .await;
 
     // Surface the server's status/tools so a connection failure is legible.
     for (name, srv) in bridge.servers() {
-        eprintln!("server {name}: {} ({} tools)", srv.status().label(), srv.tool_count());
+        eprintln!(
+            "server {name}: {} ({} tools)",
+            srv.status().label(),
+            srv.tool_count()
+        );
     }
 
     let mut reg = ToolRegistry::new();
@@ -79,7 +91,11 @@ async fn call_read_returns_content() {
     std::fs::write(&file, "hi from mcp").unwrap();
 
     let sandbox = Sandbox::host(vec![]);
-    let bridge = McpBridge::connect(policy(fs_server(&dir.display().to_string(), None)), &sandbox).await;
+    let bridge = McpBridge::connect(
+        policy(fs_server(&dir.display().to_string(), None)),
+        &sandbox,
+    )
+    .await;
     let mut reg = ToolRegistry::new();
     bridge.register_into(&mut reg);
 
@@ -89,9 +105,16 @@ async fn call_read_returns_content() {
         arguments: serde_json::json!({ "path": file.display().to_string() }),
     };
     let result = reg.execute(&call, &sandbox).await;
-    eprintln!("read result: is_error={} content={:?}", result.is_error, result.content);
+    eprintln!(
+        "read result: is_error={} content={:?}",
+        result.is_error, result.content
+    );
     assert!(!result.is_error, "read failed: {}", result.content);
-    assert!(result.content.contains("hi from mcp"), "unexpected content: {}", result.content);
+    assert!(
+        result.content.contains("hi from mcp"),
+        "unexpected content: {}",
+        result.content
+    );
     bridge.teardown();
 }
 
@@ -102,7 +125,10 @@ async fn call_read_returns_content() {
 #[ignore = "needs Node (tests/fixtures/notify_server.mjs)"]
 async fn tools_list_changed_refreshes_registry() {
     use std::time::Duration;
-    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/notify_server.mjs");
+    let script = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/notify_server.mjs"
+    );
     let cfg = McpServerConfig {
         name: "nf".into(),
         transport: McpTransport::Stdio,
@@ -120,8 +146,14 @@ async fn tools_list_changed_refreshes_registry() {
     let mut reg = ToolRegistry::new();
     bridge.register_into(&mut reg);
     let names0: Vec<String> = reg.schemas().into_iter().map(|s| s.name).collect();
-    assert!(names0.iter().any(|n| n == "mcp__nf__alpha"), "initial set: {names0:?}");
-    assert!(!names0.iter().any(|n| n == "mcp__nf__beta"), "beta should not be present yet");
+    assert!(
+        names0.iter().any(|n| n == "mcp__nf__alpha"),
+        "initial set: {names0:?}"
+    );
+    assert!(
+        !names0.iter().any(|n| n == "mcp__nf__beta"),
+        "beta should not be present yet"
+    );
 
     // The loop's per-turn refresh: poll for the notification, then re-register (as run_loop does).
     let mut refreshed = false;
@@ -137,7 +169,10 @@ async fn tools_list_changed_refreshes_registry() {
     assert!(refreshed, "no tools/list_changed observed within budget");
 
     let names1: Vec<String> = reg.schemas().into_iter().map(|s| s.name).collect();
-    assert!(names1.iter().any(|n| n == "mcp__nf__beta"), "beta should appear after refresh: {names1:?}");
+    assert!(
+        names1.iter().any(|n| n == "mcp__nf__beta"),
+        "beta should appear after refresh: {names1:?}"
+    );
     bridge.teardown();
 }
 
@@ -153,7 +188,10 @@ async fn denied_tools_are_hidden() {
     bridge.register_into(&mut reg);
     let names: Vec<String> = reg.schemas().into_iter().map(|s| s.name).collect();
 
-    assert!(names.iter().any(|n| n == "mcp__fs__read_text_file"), "read tool should remain");
+    assert!(
+        names.iter().any(|n| n == "mcp__fs__read_text_file"),
+        "read tool should remain"
+    );
     assert!(
         !names.iter().any(|n| n == "mcp__fs__write_file"),
         "denied write_file must not appear: {names:?}"

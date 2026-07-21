@@ -34,7 +34,10 @@ pub fn detect_color_mode() -> ColorMode {
             return ColorMode::TrueColor;
         }
     }
-    if std::env::var("TERM").map(|t| t.contains("256color")).unwrap_or(false) {
+    if std::env::var("TERM")
+        .map(|t| t.contains("256color"))
+        .unwrap_or(false)
+    {
         return ColorMode::Ansi256;
     }
     ColorMode::Ansi16
@@ -145,7 +148,11 @@ fn bg_seq(mode: ColorMode, (r, g, b): (u8, u8, u8)) -> String {
 
 /// Render one frame using the ambient terminal capabilities (`detect_color_mode` + `NO_COLOR`).
 pub fn render_frame(spec: &SpriteSpec) -> Vec<String> {
-    render_frame_with(spec, detect_color_mode(), crate::viz::palette::is_color_enabled())
+    render_frame_with(
+        spec,
+        detect_color_mode(),
+        crate::viz::palette::is_color_enabled(),
+    )
 }
 
 /// Render one frame with an explicit color `mode` and `color` flag (exposed for deterministic tests).

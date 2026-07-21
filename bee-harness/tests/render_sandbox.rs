@@ -13,7 +13,8 @@ fn host() -> Sandbox {
 
 async fn run(script: &str) -> bee_harness::tools::ToolResult {
     let tool = RenderTool::new();
-    tool.call(serde_json::json!({ "script": script }), &host()).await
+    tool.call(serde_json::json!({ "script": script }), &host())
+        .await
 }
 
 #[tokio::test]
@@ -21,7 +22,10 @@ async fn loop_hits_operation_limit() {
     // SC-009: an infinite loop is terminated by the engine's op budget, fast.
     let start = std::time::Instant::now();
     let r = run("loop {}").await;
-    assert!(start.elapsed().as_millis() < 500, "should terminate quickly");
+    assert!(
+        start.elapsed().as_millis() < 500,
+        "should terminate quickly"
+    );
     assert!(r.is_error, "expected error result");
     assert!(
         r.content.to_lowercase().contains("operation limit"),
@@ -69,7 +73,11 @@ async fn last_render_wins_with_discard_note() {
         Some(RenderSpec::BarChart { title, .. }) => assert_eq!(title, "second"),
         other => panic!("expected the last BarChart, got {other:?}"),
     }
-    assert!(r.content.contains("discarded"), "summary should note discard: {}", r.content);
+    assert!(
+        r.content.contains("discarded"),
+        "summary should note discard: {}",
+        r.content
+    );
 }
 
 #[tokio::test]
@@ -113,15 +121,24 @@ async fn oversized_palette_is_rejected() {
         let s = sprite(2, 2, p); render(s);
     "##;
     let r = run(script).await;
-    assert!(r.is_error, "oversized palette must be rejected: {}", r.content);
+    assert!(
+        r.is_error,
+        "oversized palette must be rejected: {}",
+        r.content
+    );
     assert!(r.content.contains("palette"), "got: {}", r.content);
 }
 
 #[tokio::test]
 async fn bad_hex_color_is_rejected() {
-    let r = run(r##"let p = palette(); p.set("K", "#zzzz"); let s = sprite(2, 2, p); render(s);"##).await;
+    let r = run(r##"let p = palette(); p.set("K", "#zzzz"); let s = sprite(2, 2, p); render(s);"##)
+        .await;
     assert!(r.is_error, "bad hex must be rejected: {}", r.content);
-    assert!(r.content.to_lowercase().contains("color"), "got: {}", r.content);
+    assert!(
+        r.content.to_lowercase().contains("color"),
+        "got: {}",
+        r.content
+    );
 }
 
 #[tokio::test]
@@ -147,7 +164,11 @@ async fn mismatched_frame_dims_is_rejected() {
         render(a);
     "#;
     let r = run(script).await;
-    assert!(r.is_error, "mismatched dims must be rejected: {}", r.content);
+    assert!(
+        r.is_error,
+        "mismatched dims must be rejected: {}",
+        r.content
+    );
     assert!(r.content.contains("dimensions"), "got: {}", r.content);
 }
 
@@ -163,7 +184,9 @@ async fn interval_is_clamped_not_an_error() {
     let r = run(script).await;
     assert!(!r.is_error, "clamped interval must succeed: {}", r.content);
     match r.render_spec {
-        Some(RenderSpec::Animation { spec }) => assert_eq!(spec.interval_ms, 50, "clamped to floor"),
+        Some(RenderSpec::Animation { spec }) => {
+            assert_eq!(spec.interval_ms, 50, "clamped to floor")
+        }
         other => panic!("expected Animation, got {other:?}"),
     }
 }
@@ -193,7 +216,11 @@ async fn transparent_sprite_summary_notes_it() {
     // M1: a fully-transparent sprite's summary says so.
     let r = run(r#"let p = palette(); let s = sprite(4, 4, p); render(s);"#).await;
     assert!(!r.is_error, "got: {}", r.content);
-    assert!(r.content.contains("fully transparent"), "summary should note it: {}", r.content);
+    assert!(
+        r.content.contains("fully transparent"),
+        "summary should note it: {}",
+        r.content
+    );
 }
 
 #[tokio::test]

@@ -28,11 +28,15 @@ pub async fn run_child(
     };
 
     let mut cmd = TokioCommand::from(std_cmd);
-    cmd.stdin(if stdin_data.is_some() { Stdio::piped() } else { Stdio::null() })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // If the loop's per-call timeout drops this future, kill the child rather than leak it.
-        .kill_on_drop(true);
+    cmd.stdin(if stdin_data.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    // If the loop's per-call timeout drops this future, kill the child rather than leak it.
+    .kill_on_drop(true);
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,

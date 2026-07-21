@@ -45,6 +45,13 @@ impl Tool for Bash {
             Ok(a) => a,
             Err(e) => return ToolResult::invalid_args("bash", e),
         };
-        run_child(sandbox, "sh", &["-c".to_string(), args.command], None, DEFAULT_OUTPUT_CAP).await
+        run_child(
+            sandbox,
+            "sh",
+            &["-c".to_string(), args.command],
+            None,
+            DEFAULT_OUTPUT_CAP,
+        )
+        .await
     }
 }

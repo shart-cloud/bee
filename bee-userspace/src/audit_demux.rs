@@ -39,20 +39,30 @@ impl AuditDemux {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task_subs = subs.clone();
         let handle = tokio::spawn(dispatch_loop(stream, task_subs, shutdown_rx));
-        AuditDemux { subs, handle: Some(handle), shutdown: Some(shutdown_tx) }
+        AuditDemux {
+            subs,
+            handle: Some(handle),
+            shutdown: Some(shutdown_tx),
+        }
     }
 
     /// Subscribe to events for a `cgroup_id`. Call **before** starting the episode so no early
     /// events are missed. A second subscribe for the same cgroup replaces the first.
     pub fn subscribe(&self, cgroup_id: u64) -> AuditSubscription {
         let (tx, rx) = mpsc::unbounded_channel();
-        self.subs.write().expect("demux subs lock poisoned").insert(cgroup_id, tx);
+        self.subs
+            .write()
+            .expect("demux subs lock poisoned")
+            .insert(cgroup_id, tx);
         AuditSubscription { rx }
     }
 
     /// Stop routing events for `cgroup_id` (drops the sender; later events are discarded).
     pub fn unsubscribe(&self, cgroup_id: u64) {
-        self.subs.write().expect("demux subs lock poisoned").remove(&cgroup_id);
+        self.subs
+            .write()
+            .expect("demux subs lock poisoned")
+            .remove(&cgroup_id);
     }
 
     /// Shut the demux task down cleanly and wait for it to finish.
@@ -137,7 +147,12 @@ mod tests {
 
         dispatch_batch(
             &subs,
-            vec![event(1, "/a"), event(2, "/b"), event(1, "/c"), event(2, "/d")],
+            vec![
+                event(1, "/a"),
+                event(2, "/b"),
+                event(1, "/c"),
+                event(2, "/d"),
+            ],
         );
 
         // Subscriber 1 sees only its own events, in order.
@@ -158,7 +173,10 @@ mod tests {
 
         // Events for cgroup 99 have no subscriber: silently dropped, no panic, subscriber 1 sees
         // only its own event.
-        dispatch_batch(&subs, vec![event(99, "/x"), event(1, "/y"), event(99, "/z")]);
+        dispatch_batch(
+            &subs,
+            vec![event(99, "/x"), event(1, "/y"), event(99, "/z")],
+        );
 
         assert_eq!(rx1.try_recv().unwrap().target, "/y");
         assert!(rx1.try_recv().is_err());

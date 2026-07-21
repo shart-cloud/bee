@@ -12,7 +12,10 @@ use bee_harness::provider::rig_model::RigModel;
 use bee_harness::{Conversation, Model};
 
 fn probe_convo() -> Conversation {
-    Conversation::new("You are a terse assistant.", "Reply with the single word: pong")
+    Conversation::new(
+        "You are a terse assistant.",
+        "Reply with the single word: pong",
+    )
 }
 
 #[tokio::test]
@@ -39,7 +42,10 @@ async fn ollama_openai_compat_smoke() {
         script: Vec::new(),
     };
     let model = RigModel::from_config(&cfg, "").expect("build openai-compat model");
-    let turn = model.complete(&probe_convo(), &[]).await.expect("ollama completion");
+    let turn = model
+        .complete(&probe_convo(), &[])
+        .await
+        .expect("ollama completion");
     assert!(
         turn.text.is_some() || !turn.tool_calls.is_empty(),
         "expected some assistant content from ollama"
@@ -67,7 +73,13 @@ async fn anthropic_smoke() {
         script: Vec::new(),
     };
     let model = RigModel::from_config(&cfg, &key).expect("build anthropic model");
-    let turn = model.complete(&probe_convo(), &[]).await.expect("anthropic completion");
-    assert!(turn.text.is_some(), "expected assistant text from anthropic");
+    let turn = model
+        .complete(&probe_convo(), &[])
+        .await
+        .expect("anthropic completion");
+    assert!(
+        turn.text.is_some(),
+        "expected assistant text from anthropic"
+    );
     eprintln!("[ok] anthropic replied: {:?}", turn.text);
 }

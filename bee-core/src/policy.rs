@@ -66,9 +66,9 @@ impl Access {
     /// Deny is the most restrictive and is `<=` everything.
     pub fn is_subset_of(self, other: Access) -> bool {
         match (self, other) {
-            (Access::Deny, _) => true,               // adding a deny always narrows
+            (Access::Deny, _) => true, // adding a deny always narrows
             (Access::Read, Access::Read) => true,
-            (Access::Read, Access::Write) => true,   // read ⊆ write
+            (Access::Read, Access::Write) => true, // read ⊆ write
             (Access::Write, Access::Write) => true,
             _ => false,
         }
