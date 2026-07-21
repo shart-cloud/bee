@@ -21,6 +21,7 @@ fn scenario(turn_limit: u32) -> Scenario {
         tools: vec!["bash".into()],
         mode: Default::default(),
         workdir: Default::default(),
+        mcp: Default::default(),
     }
 }
 

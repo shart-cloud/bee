@@ -275,6 +275,7 @@ mod tests {
             tools: Vec::new(),
             mode: Default::default(),
             workdir: Default::default(),
+            mcp: Default::default(),
         }
     }
 

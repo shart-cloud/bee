@@ -24,6 +24,7 @@ fn scenario() -> Scenario {
         tools: vec!["bash".into()],
         mode: Default::default(),
         workdir: Default::default(),
+        mcp: Default::default(),
     }
 }
 

@@ -26,6 +26,7 @@ fn ctf_scenario(turn_limit: u32) -> Scenario {
         tools: vec!["bash".into(), "submit_flag".into(), "give_up".into()],
         mode: ScoringMode::Ctf,
         workdir: WorkdirSetup::default(),
+        mcp: Default::default(),
     }
 }
 

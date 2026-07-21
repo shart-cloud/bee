@@ -440,9 +440,23 @@ pub async fn run_episode(
     provider_key_env: Option<&str>,
     progress: Option<ProgressSink>,
 ) -> EpisodeTranscript {
+    // Fail closed (Constitution I): a scenario that asks for MCP but a binary built without the
+    // `mcp` feature cannot provide it — refuse with a clear diagnostic rather than silently ignore.
+    #[cfg(not(feature = "mcp"))]
+    if scenario.mcp.enabled {
+        return infra_error(
+            scenario,
+            model,
+            "scenario enables [mcp] but bee-harness was built without --features mcp".to_string(),
+        );
+    }
+
     let flag = scenario.workdir.flag.as_ref().map(|f| f.value.as_str());
     let registry = tools::registry_for(&scenario.tools, flag);
-    let strip_env = sandbox::key_vars(provider_key_env);
+    // Strip the provider key vars plus any configured MCP `token_env` names from every tool child
+    // (FR-018/FR-041), so an MCP Bearer token never leaks into a sandboxed stdio server's env.
+    let mut strip_env = sandbox::key_vars(provider_key_env);
+    strip_env.extend(scenario.mcp.token_env_names());
     let opts = LoopOptions {
         progress,
         metrics: Recorder::new("episode", format!("episode:{}:{}", scenario.id, std::process::id())),

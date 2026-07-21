@@ -1,0 +1,204 @@
+//! MCP policy: the `[mcp]` table — the master switch, domain allowlist/denylist, and the server
+//! list. Pure declarative data (Constitution IV, always compiled). Domain *matching* and resolution
+//! land in the remote slice (US9/T025); this module carries the types and their parsing.
+
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+
+use super::config::McpServerConfig;
+
+/// A single allow/deny domain rule. Parses from a bare string in TOML:
+/// * `"example.com"`   → [`DomainPattern::Exact`]
+/// * `"*.example.com"` → [`DomainPattern::Wildcard`] (matches subdomains, **not** the bare apex)
+///
+/// A leading bare `*` (or `*foo` without the dot) is rejected at parse time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum DomainPattern {
+    Exact(String),
+    Wildcard(String),
+}
+
+/// Lowercase + strip a trailing dot so matching is case- and FQDN-dot-insensitive.
+fn normalize(host: &str) -> String {
+    host.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+impl TryFrom<String> for DomainPattern {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        let t = s.trim();
+        if t.is_empty() {
+            return Err("empty domain pattern".into());
+        }
+        if let Some(suffix) = t.strip_prefix("*.") {
+            if suffix.is_empty() || suffix.contains('*') {
+                return Err(format!("invalid wildcard domain pattern: {s:?}"));
+            }
+            return Ok(DomainPattern::Wildcard(normalize(suffix)));
+        }
+        if t.contains('*') {
+            return Err(format!(
+                "invalid domain pattern {s:?}: a wildcard must be written as `*.suffix`"
+            ));
+        }
+        Ok(DomainPattern::Exact(normalize(t)))
+    }
+}
+
+impl std::fmt::Display for DomainPattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DomainPattern::Exact(h) => write!(f, "{h}"),
+            DomainPattern::Wildcard(s) => write!(f, "*.{s}"),
+        }
+    }
+}
+
+impl From<DomainPattern> for String {
+    fn from(p: DomainPattern) -> String {
+        p.to_string()
+    }
+}
+
+/// The `[mcp]` table. Every field defaults (fail-closed): an absent/partial `[mcp]` is disabled with
+/// no remote reachability (research R10/R11).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct McpPolicy {
+    /// Master switch. `false`/absent ⇒ no MCP servers, no MCP tools (SC-027).
+    pub enabled: bool,
+    /// Remote allowlist. Empty ⇒ no remote server may connect (deny-by-default).
+    pub allowed_domains: Vec<DomainPattern>,
+    /// Always-denied domains; take precedence over `allowed_domains`.
+    pub denied_domains: Vec<DomainPattern>,
+    /// Cap on simultaneously-connected servers.
+    pub max_servers: u32,
+    /// Per-MCP-tool-call timeout, seconds (FR-038).
+    pub tool_timeout_secs: u64,
+    /// Whether the agent may connect to servers not listed in `servers`. Fail-closed default (FR-040).
+    pub allow_dynamic_connect: bool,
+    /// The `[[mcp.servers]]` array.
+    pub servers: Vec<McpServerConfig>,
+}
+
+impl Default for McpPolicy {
+    fn default() -> Self {
+        McpPolicy {
+            enabled: false,
+            allowed_domains: Vec::new(),
+            denied_domains: Vec::new(),
+            max_servers: 5,
+            tool_timeout_secs: 30,
+            allow_dynamic_connect: false,
+            servers: Vec::new(),
+        }
+    }
+}
+
+impl McpPolicy {
+    /// The per-tool-call timeout as a `Duration`.
+    pub fn tool_timeout(&self) -> Duration {
+        Duration::from_secs(self.tool_timeout_secs)
+    }
+
+    /// The names of every configured `token_env` — added to the sandbox credential strip-list so MCP
+    /// tokens never leak into a stdio server child's environment (FR-041, T012).
+    pub fn token_env_names(&self) -> Vec<String> {
+        self.servers
+            .iter()
+            .filter_map(|s| s.token_env.clone())
+            .filter(|n| !n.is_empty())
+            .collect()
+    }
+
+    /// Semantic validation (called from `Scenario::validate`). Only enforced when `enabled`.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.max_servers < 1 {
+            return Err("mcp.max_servers must be >= 1".into());
+        }
+        if self.tool_timeout_secs < 1 {
+            return Err("mcp.tool_timeout_secs must be >= 1".into());
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for s in &self.servers {
+            s.validate()?;
+            if !seen.insert(&s.name) {
+                return Err(format!("duplicate mcp server name: {}", s.name));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(s: &str) -> Result<DomainPattern, String> {
+        DomainPattern::try_from(s.to_string())
+    }
+
+    #[test]
+    fn parses_exact_and_wildcard() {
+        assert_eq!(parse("Example.com").unwrap(), DomainPattern::Exact("example.com".into()));
+        assert_eq!(
+            parse("*.Company.com").unwrap(),
+            DomainPattern::Wildcard("company.com".into())
+        );
+        // trailing dot normalized away
+        assert_eq!(parse("example.com.").unwrap(), DomainPattern::Exact("example.com".into()));
+    }
+
+    #[test]
+    fn rejects_bare_and_malformed_wildcards() {
+        assert!(parse("*").is_err());
+        assert!(parse("*com").is_err());
+        assert!(parse("*.a*b.com").is_err());
+        assert!(parse("").is_err());
+    }
+
+    #[test]
+    fn roundtrips_through_string() {
+        for s in ["example.com", "*.company.com"] {
+            let p = parse(s).unwrap();
+            assert_eq!(String::from(p.clone()), s);
+        }
+    }
+
+    #[test]
+    fn default_is_disabled_and_fail_closed() {
+        let p = McpPolicy::default();
+        assert!(!p.enabled);
+        assert_eq!(p.max_servers, 5);
+        assert_eq!(p.tool_timeout_secs, 30);
+        assert!(!p.allow_dynamic_connect);
+        assert!(p.validate().is_ok()); // disabled → no checks
+    }
+
+    #[test]
+    fn rejects_duplicate_server_names() {
+        let srv = McpServerConfig {
+            name: "fs".into(),
+            transport: super::super::config::McpTransport::Stdio,
+            command: Some("srv".into()),
+            args: vec![],
+            env: Default::default(),
+            url: None,
+            token_env: None,
+            allowed_tools: None,
+            denied_tools: None,
+        };
+        let p = McpPolicy {
+            enabled: true,
+            servers: vec![srv.clone(), srv],
+            ..Default::default()
+        };
+        assert!(p.validate().is_err());
+    }
+}

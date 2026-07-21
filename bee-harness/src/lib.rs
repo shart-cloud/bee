@@ -21,6 +21,7 @@ pub mod config;
 #[cfg(feature = "concurrent")]
 pub mod concurrent;
 pub mod episode;
+pub mod mcp;
 pub mod metrics;
 pub mod provider;
 pub mod render_api;
@@ -37,6 +38,7 @@ pub use batch::{run_batch, BatchConfig, BatchError, BatchResult};
 pub use concurrent::run_concurrent;
 pub use config::{ProviderConfig, ProviderType};
 pub use episode::{run_episode, run_loop, LoopOptions, ProgressSink};
+pub use mcp::{McpPolicy, McpServerConfig, McpTransport};
 pub use metrics::{CallRecord, Recorder};
 pub use provider::{
     model_from_config, Conversation, Message, Model, ModelError, ToolCall, ToolSchema, Turn,
