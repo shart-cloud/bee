@@ -382,6 +382,91 @@ EOF
     emit skill-grant-deny FAIL "refused grant did not stay denied ($(tail -1 "$WORK/sk-deny.log" 2>/dev/null))"
   fi
   rm -rf /home/ubuntu/skwork /home/ubuntu/skgrant
+
+  # -------------------------------------------------------------- 007-dynamic-grants: live reload
+  # Reactive escalation A/B: the agent writes a path the base scope denies. With a ceiling that
+  # permits it, the DenialEscalationHook grants write, `reload_scope` widens the LIVE eBPF maps, and
+  # the SAME call is auto-retried and succeeds. With a ceiling that does NOT cover it, the grant is
+  # refused and the write stays kernel-denied. Same op, only the ceiling differs — proving the live
+  # reload changes what the kernel enforces mid-episode.
+  mkdir -p /home/ubuntu/dynwork /home/ubuntu/dyngrant
+  cat >"$WORK/dyn-base.policy.toml" <<'EOF'
+[policy]
+name = "dyn-base"
+mode = "enforce"
+[policy.filesystem]
+"/home/ubuntu/dynwork" = "write"
+EOF
+  cat >"$WORK/dyn-ceiling.policy.toml" <<'EOF'
+[policy]
+name = "dyn-ceiling"
+mode = "enforce"
+[policy.filesystem]
+"/home/ubuntu/dynwork" = "write"
+"/home/ubuntu/dyngrant" = "write"
+EOF
+  cat >"$WORK/dyn.prov.toml" <<'EOF'
+[provider]
+provider = "mock"
+[[provider.script]]
+tool = "write_file"
+args = { path = "/home/ubuntu/dyngrant/out.txt", content = "written after reload\n" }
+[[provider.script]]
+text = "Done."
+EOF
+
+  # reload-widen-allow — ceiling permits dyngrant ⇒ denial → escalate → reload → retry writes data.
+  rm -f /home/ubuntu/dyngrant/out.txt
+  cat >"$WORK/dyn-allow.scn.toml" <<EOF
+[scenario]
+id            = "reload-widen-allow"
+policy_path   = "$WORK/dyn-base.policy.toml"
+ceiling_policy_path = "$WORK/dyn-ceiling.policy.toml"
+system_prompt = "You are a sandboxed agent."
+task          = "Write the output."
+turn_limit    = 4
+timeout_secs  = 30
+tools         = ["write_file"]
+EOF
+  sudo "$EPISODE" --scenario "$WORK/dyn-allow.scn.toml" --provider "$WORK/dyn.prov.toml" \
+    --out "$WORK/dyn-allow.json" >"$WORK/dyn-allow.log" 2>&1
+  t="$WORK/dyn-allow.json"
+  # A denial must appear (the first attempt) AND the data must ultimately land (the retry).
+  if [ -f "$t" ] \
+     && grep -q '"op": "file_open"' "$t" \
+     && grep -q '"decision": "denied"' "$t" \
+     && grep -q '"status": "completed"' "$t" \
+     && [ "$(cat /home/ubuntu/dyngrant/out.txt 2>/dev/null)" = "written after reload" ]; then
+    emit reload-widen-allow PASS "denial → escalate → live reload → retry wrote data"
+  else
+    emit reload-widen-allow FAIL "reactive reload did not permit the retried write ($(tail -1 "$WORK/dyn-allow.log" 2>/dev/null))"
+  fi
+
+  # reload-beyond-ceiling — ceiling omits dyngrant ⇒ escalation refused ⇒ write stays denied.
+  rm -f /home/ubuntu/dyngrant/out.txt
+  cat >"$WORK/dyn-deny.scn.toml" <<EOF
+[scenario]
+id            = "reload-beyond-ceiling"
+policy_path   = "$WORK/dyn-base.policy.toml"
+ceiling_policy_path = "$WORK/dyn-base.policy.toml"
+system_prompt = "You are a sandboxed agent."
+task          = "Write the output."
+turn_limit    = 4
+timeout_secs  = 30
+tools         = ["write_file"]
+EOF
+  sudo "$EPISODE" --scenario "$WORK/dyn-deny.scn.toml" --provider "$WORK/dyn.prov.toml" \
+    --out "$WORK/dyn-deny.json" >"$WORK/dyn-deny.log" 2>&1
+  t="$WORK/dyn-deny.json"
+  if [ -f "$t" ] \
+     && grep -q '"decision": "denied"' "$t" \
+     && grep -q '"status": "completed"' "$t" \
+     && [ "$(cat /home/ubuntu/dyngrant/out.txt 2>/dev/null)" != "written after reload" ]; then
+    emit reload-beyond-ceiling PASS "beyond-ceiling escalation refused; write stayed kernel-denied"
+  else
+    emit reload-beyond-ceiling FAIL "refused escalation did not stay denied ($(tail -1 "$WORK/dyn-deny.log" 2>/dev/null))"
+  fi
+  rm -rf /home/ubuntu/dynwork /home/ubuntu/dyngrant
 else
   emit episode-file-deny FAIL "bee-episode not shipped to $EPISODE"
 fi

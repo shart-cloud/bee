@@ -31,25 +31,42 @@ pub struct GrantRequest<'a> {
     pub filesystem: &'a BTreeMap<String, String>,
 }
 
-/// Decides whether a within-ceiling capability request is approved. Implemented for any
-/// `Fn(&GrantRequest) -> bool`, so a REPL can pass a closure that prompts the user.
-pub trait ConsentSink {
-    /// `true` to grant, `false` to refuse. When in doubt, refuse.
-    fn confirm(&self, request: &GrantRequest<'_>) -> bool;
+/// The outcome of a consent request. A timeout at the call site maps to [`Decision::Denied`]
+/// (fail-closed, Constitution I).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Granted,
+    Denied,
 }
 
-impl<F: Fn(&GrantRequest<'_>) -> bool> ConsentSink for F {
-    fn confirm(&self, request: &GrantRequest<'_>) -> bool {
-        self(request)
+/// Decides whether a within-ceiling capability request is approved. Async so a sink may poll an
+/// out-of-band approver (prompt, queue, webhook); implemented for any `Fn(&GrantRequest) -> bool`
+/// so a synchronous closure (a REPL prompt, a test) still works (007-dynamic-grants, contract
+/// `consent.md`).
+#[async_trait::async_trait]
+pub trait ConsentSink: Send + Sync {
+    /// [`Decision::Granted`] to grant, [`Decision::Denied`] to refuse. When in doubt, refuse.
+    async fn confirm(&self, request: &GrantRequest<'_>) -> Decision;
+}
+
+#[async_trait::async_trait]
+impl<F: Fn(&GrantRequest<'_>) -> bool + Send + Sync> ConsentSink for F {
+    async fn confirm(&self, request: &GrantRequest<'_>) -> Decision {
+        if self(request) {
+            Decision::Granted
+        } else {
+            Decision::Denied
+        }
     }
 }
 
 /// The non-interactive default: refuse every grant. Keeps automated runs deny-by-default.
 pub struct DenyAll;
 
+#[async_trait::async_trait]
 impl ConsentSink for DenyAll {
-    fn confirm(&self, _request: &GrantRequest<'_>) -> bool {
-        false
+    async fn confirm(&self, _request: &GrantRequest<'_>) -> Decision {
+        Decision::Denied
     }
 }
 
@@ -58,9 +75,10 @@ impl ConsentSink for DenyAll {
 /// has already proven ⊆ ceiling; with no distinct ceiling, base = ceiling and nothing reaches here.
 pub struct AllowWithinCeiling;
 
+#[async_trait::async_trait]
 impl ConsentSink for AllowWithinCeiling {
-    fn confirm(&self, _request: &GrantRequest<'_>) -> bool {
-        true
+    async fn confirm(&self, _request: &GrantRequest<'_>) -> Decision {
+        Decision::Granted
     }
 }
 
@@ -85,7 +103,7 @@ impl GrantOutcome {
 }
 
 /// Parse an authored access word into a [`bee_core::Access`].
-fn parse_access(word: &str) -> Result<Access, String> {
+pub(crate) fn parse_access(word: &str) -> Result<Access, String> {
     match word.trim().to_ascii_lowercase().as_str() {
         "read" => Ok(Access::Read),
         "write" => Ok(Access::Write),
@@ -115,7 +133,7 @@ fn more_permissive(a: Access, b: Access) -> Access {
 /// Resolve every skill's capability request against `base` and `ceiling`, gating within-ceiling
 /// requests through `consent`. Skills without a `requires` block are instructions-only and skipped.
 /// The returned [`GrantOutcome::policy`] is `base` widened by exactly the approved deltas.
-pub fn resolve_grants(
+pub async fn resolve_grants(
     skills: &[&Skill],
     base: &Policy,
     ceiling: &Policy,
@@ -154,7 +172,7 @@ pub fn resolve_grants(
             tools: &req.tools,
             filesystem: &req.filesystem,
         };
-        if !consent.confirm(&request) {
+        if consent.confirm(&request).await == Decision::Denied {
             refused.push((skill.name.clone(), "denied by operator".to_string()));
             continue;
         }
@@ -236,19 +254,19 @@ mod tests {
         p
     }
 
-    #[test]
-    fn instructions_only_skill_is_a_noop() {
+    #[tokio::test]
+    async fn instructions_only_skill_is_a_noop() {
         let s = skill("plain", None);
         let base = policy("base", &[]);
-        let out = resolve_grants(&[&s], &base, &base, &DenyAll);
+        let out = resolve_grants(&[&s], &base, &base, &DenyAll).await;
         assert!(out.is_noop());
         assert!(out.granted.is_empty());
         assert!(out.refused.is_empty());
         assert_eq!(out.policy.filesystem, base.filesystem);
     }
 
-    #[test]
-    fn within_ceiling_grant_is_approved_with_consent() {
+    #[tokio::test]
+    async fn within_ceiling_grant_is_approved_with_consent() {
         let s = skill(
             "writer",
             Some(requires(&["bash"], &[("/tmp/work", "write")])),
@@ -256,22 +274,22 @@ mod tests {
         let base = policy("base", &[]);
         // Ceiling permits write under /tmp.
         let ceiling = policy("ceiling", &[("/tmp", Access::Write)]);
-        let out = resolve_grants(&[&s], &base, &ceiling, &|_: &GrantRequest<'_>| true);
+        let out = resolve_grants(&[&s], &base, &ceiling, &|_: &GrantRequest<'_>| true).await;
         assert_eq!(out.granted, vec!["writer".to_string()]);
         assert_eq!(out.tools, vec!["bash".to_string()]);
         assert_eq!(out.policy.filesystem.get("/tmp/work"), Some(&Access::Write));
         assert!(out.refused.is_empty());
     }
 
-    #[test]
-    fn within_ceiling_grant_is_refused_without_consent() {
+    #[tokio::test]
+    async fn within_ceiling_grant_is_refused_without_consent() {
         let s = skill(
             "writer",
             Some(requires(&["bash"], &[("/tmp/work", "write")])),
         );
         let base = policy("base", &[]);
         let ceiling = policy("ceiling", &[("/tmp", Access::Write)]);
-        let out = resolve_grants(&[&s], &base, &ceiling, &DenyAll);
+        let out = resolve_grants(&[&s], &base, &ceiling, &DenyAll).await;
         assert!(out.granted.is_empty());
         assert!(out.tools.is_empty());
         // Policy is untouched — the base has no /tmp/work grant.
@@ -280,8 +298,8 @@ mod tests {
         assert!(out.refused[0].1.contains("denied by operator"));
     }
 
-    #[test]
-    fn beyond_ceiling_grant_is_refused_without_prompting() {
+    #[tokio::test]
+    async fn beyond_ceiling_grant_is_refused_without_prompting() {
         use std::sync::atomic::{AtomicBool, Ordering};
         static PROMPTED: AtomicBool = AtomicBool::new(false);
         let s = skill("greedy", Some(requires(&[], &[("/etc", "write")])));
@@ -292,7 +310,7 @@ mod tests {
             PROMPTED.store(true, Ordering::SeqCst);
             true
         };
-        let out = resolve_grants(&[&s], &base, &ceiling, &consent);
+        let out = resolve_grants(&[&s], &base, &ceiling, &consent).await;
         assert!(out.granted.is_empty());
         assert!(out.policy.filesystem.get("/etc").is_none());
         assert!(out.refused[0].1.contains("exceeds capability ceiling"));
@@ -300,41 +318,41 @@ mod tests {
         assert!(!PROMPTED.load(Ordering::SeqCst));
     }
 
-    #[test]
-    fn malformed_access_word_is_refused() {
+    #[tokio::test]
+    async fn malformed_access_word_is_refused() {
         let s = skill("typo", Some(requires(&[], &[("/tmp/x", "wrtie")])));
         let base = policy("base", &[("/tmp", Access::Write)]);
-        let out = resolve_grants(&[&s], &base, &base, &|_: &GrantRequest<'_>| true);
+        let out = resolve_grants(&[&s], &base, &base, &|_: &GrantRequest<'_>| true).await;
         assert!(out.granted.is_empty());
         assert!(out.refused[0].1.contains("invalid access"));
     }
 
-    #[test]
-    fn no_ceiling_means_no_widening_even_with_consent() {
+    #[tokio::test]
+    async fn no_ceiling_means_no_widening_even_with_consent() {
         // base == ceiling and base grants nothing ⇒ any fs request exceeds the ceiling.
         let s = skill("writer", Some(requires(&[], &[("/tmp/work", "write")])));
         let base = policy("base", &[]);
-        let out = resolve_grants(&[&s], &base, &base, &|_: &GrantRequest<'_>| true);
+        let out = resolve_grants(&[&s], &base, &base, &|_: &GrantRequest<'_>| true).await;
         assert!(out.granted.is_empty());
         assert!(out.refused[0].1.contains("exceeds capability ceiling"));
     }
 
-    #[test]
-    fn tool_only_grant_needs_no_ceiling_room() {
+    #[tokio::test]
+    async fn tool_only_grant_needs_no_ceiling_room() {
         // A skill wanting only a tool (no fs delta) is within any ceiling; consent alone gates it.
         let s = skill("tooler", Some(requires(&["bash"], &[])));
         let base = policy("base", &[]);
-        let out = resolve_grants(&[&s], &base, &base, &|_: &GrantRequest<'_>| true);
+        let out = resolve_grants(&[&s], &base, &base, &|_: &GrantRequest<'_>| true).await;
         assert_eq!(out.granted, vec!["tooler".to_string()]);
         assert_eq!(out.tools, vec!["bash".to_string()]);
     }
 
-    #[test]
-    fn tools_from_multiple_skills_are_deduped() {
+    #[tokio::test]
+    async fn tools_from_multiple_skills_are_deduped() {
         let a = skill("a", Some(requires(&["bash", "read_file"], &[])));
         let b = skill("b", Some(requires(&["bash"], &[])));
         let base = policy("base", &[]);
-        let out = resolve_grants(&[&a, &b], &base, &base, &|_: &GrantRequest<'_>| true);
+        let out = resolve_grants(&[&a, &b], &base, &base, &|_: &GrantRequest<'_>| true).await;
         assert_eq!(out.tools, vec!["bash".to_string(), "read_file".to_string()]);
         assert_eq!(out.granted.len(), 2);
     }

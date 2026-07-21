@@ -33,8 +33,8 @@ pub struct HostSandbox {
 #[cfg(feature = "enforce")]
 pub struct EnforcedSandbox {
     // The engine owns the loaded eBPF object; it MUST stay alive for the episode or the LSM
-    // programs detach and the scope's map rules stop being enforced. Held, never read.
-    #[allow(dead_code)]
+    // programs detach and the scope's map rules stop being enforced. Read mutably by `reload`
+    // (007-dynamic-grants) to re-populate the scope's maps on a grant/narrow.
     engine: bee_userspace::Engine,
     pub scope: bee_userspace::Scope,
     pub reader: bee_userspace::events::AuditReader,
@@ -58,6 +58,45 @@ pub enum Sandbox {
     Enforced(Box<EnforcedSandbox>),
     #[cfg(feature = "concurrent")]
     Concurrent(Box<ConcurrentSandbox>),
+}
+
+impl Sandbox {
+    /// Recompile `policy` and re-populate the live scope's rule maps (007-dynamic-grants). Host is a
+    /// no-op (no kernel scope). A concurrent sandbox cannot reload through here — the runner owns the
+    /// engine — so it returns an error (fail-closed: escalation refuses rather than under-enforce).
+    #[cfg_attr(not(feature = "enforce"), allow(unused_variables))]
+    pub fn reload(&mut self, policy: &bee_core::Policy) -> Result<(), String> {
+        match self {
+            Sandbox::Host(_) => Ok(()),
+            #[cfg(feature = "enforce")]
+            Sandbox::Enforced(e) => e.reload(policy),
+            #[cfg(feature = "concurrent")]
+            Sandbox::Concurrent(_) => Err(
+                "reload unsupported on a concurrent sandbox (engine owned by the runner)".to_string(),
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "enforce")]
+impl EnforcedSandbox {
+    /// Compile `policy` and hand the fresh plan to `Engine::reload_scope`, updating the scope's
+    /// tracked `NET_ALLOW` keys. On any error the prior enforced maps are left in place.
+    fn reload(&mut self, policy: &bee_core::Policy) -> Result<(), String> {
+        use bee_userspace::{EnforcementPlan, ScopeMode, SystemResolver};
+        let resolver = SystemResolver::current();
+        let compiled = policy
+            .compile(&resolver)
+            .map_err(|e| format!("reload compile: {e}"))?;
+        let plan = EnforcementPlan::prepare(&compiled, ScopeMode::Enforce)
+            .map_err(|e| format!("reload plan: {e}"))?;
+        let new_keys = self
+            .engine
+            .reload_scope(self.scope.cgroup_id, &plan, &self.scope.net_keys)
+            .map_err(|e| format!("reload scope: {e}"))?;
+        self.scope.net_keys = new_keys;
+        Ok(())
+    }
 }
 
 /// Build the credential strip-list: the default provider key vars plus any configured key var name.

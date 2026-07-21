@@ -126,7 +126,9 @@ impl Engine {
                 .map_err(|e| ScopeError::Map(e.to_string()))?;
         }
 
-        // Populate the network egress allowlist.
+        // Populate the network egress allowlist, tracking the installed keys on the Scope so a later
+        // narrowing reload (007-dynamic-grants) can remove the ones that get dropped.
+        let mut net_keys: Vec<bee_common::layout::NetKey> = Vec::new();
         if !plan.net_rules.is_empty() {
             use bee_common::layout::NetKey;
             let map = self
@@ -140,6 +142,7 @@ impl Engine {
                 key.cgroup_id = cgroup_id;
                 net.insert(key, 1u8, 0)
                     .map_err(|e| ScopeError::Map(e.to_string()))?;
+                net_keys.push(key);
             }
         }
 
@@ -166,7 +169,109 @@ impl Engine {
                 .map_err(|e| ScopeError::Map(e.to_string()))?;
         }
 
-        Ok(Scope { path, cgroup_id })
+        Ok(Scope {
+            path,
+            cgroup_id,
+            net_keys,
+        })
+    }
+
+    /// Re-populate an already-created scope's rule maps from `plan` (007-dynamic-grants), supporting
+    /// both widening (added rules) and narrowing (removed rules). The LSM programs stay attached;
+    /// only map contents change. `prev_net_keys` is the scope's currently-installed `NET_ALLOW` key
+    /// set; the method inserts additions and removes deletions and returns the new key set.
+    ///
+    /// Caller preconditions: no sandboxed child is executing in this scope (a turn boundary), and
+    /// `plan` was compiled from a policy already validated `⊆ ceiling`. See
+    /// `specs/007-dynamic-grants/contracts/reload-api.md`.
+    #[cfg(feature = "enforce")]
+    pub fn reload_scope(
+        &mut self,
+        cgroup_id: u64,
+        plan: &EnforcementPlan,
+        prev_net_keys: &[bee_common::layout::NetKey],
+    ) -> Result<Vec<bee_common::layout::NetKey>, ScopeError> {
+        use bee_common::layout::{DenyList, NetKey, ScopeMeta};
+
+        // SCOPES meta — overwrite (mode/flags may change, e.g. the write-default-deny latch).
+        {
+            let map = self
+                .ebpf
+                .map_mut("SCOPES")
+                .ok_or_else(|| ScopeError::Map("SCOPES map missing".into()))?;
+            let mut scopes: aya::maps::HashMap<_, u64, ScopeMeta> =
+                aya::maps::HashMap::try_from(map).map_err(|e| ScopeError::Map(e.to_string()))?;
+            scopes
+                .insert(cgroup_id, plan.meta, 0)
+                .map_err(|e| ScopeError::Map(e.to_string()))?;
+        }
+
+        // FS_DENY — single value per cgroup: overwrite when present, remove when the policy has none.
+        {
+            let map = self
+                .ebpf
+                .map_mut("FS_DENY")
+                .ok_or_else(|| ScopeError::Map("FS_DENY map missing".into()))?;
+            let mut deny: aya::maps::HashMap<_, u64, DenyList> =
+                aya::maps::HashMap::try_from(map).map_err(|e| ScopeError::Map(e.to_string()))?;
+            if plan.has_fs_rules {
+                deny.insert(cgroup_id, plan.fs_rules, 0)
+                    .map_err(|e| ScopeError::Map(e.to_string()))?;
+            } else {
+                // Ignore a missing-key error — narrowing to no fs rules is idempotent.
+                let _ = deny.remove(&cgroup_id);
+            }
+        }
+
+        // EXEC_ALLOW — same single-value overwrite/remove.
+        {
+            let map = self
+                .ebpf
+                .map_mut("EXEC_ALLOW")
+                .ok_or_else(|| ScopeError::Map("EXEC_ALLOW map missing".into()))?;
+            let mut execs: aya::maps::HashMap<_, u64, DenyList> =
+                aya::maps::HashMap::try_from(map).map_err(|e| ScopeError::Map(e.to_string()))?;
+            if plan.has_exec_rules {
+                execs
+                    .insert(cgroup_id, plan.exec_rules, 0)
+                    .map_err(|e| ScopeError::Map(e.to_string()))?;
+            } else {
+                let _ = execs.remove(&cgroup_id);
+            }
+        }
+
+        // NET_ALLOW — per-rule keys: diff the new set against `prev_net_keys`, insert additions,
+        // remove deletions, and return the resulting installed set.
+        let new_keys: Vec<NetKey> = plan
+            .net_rules
+            .iter()
+            .map(|t| {
+                let mut k = *t;
+                k.cgroup_id = cgroup_id;
+                k
+            })
+            .collect();
+        {
+            let map = self
+                .ebpf
+                .map_mut("NET_ALLOW")
+                .ok_or_else(|| ScopeError::Map("NET_ALLOW map missing".into()))?;
+            let mut net: aya::maps::HashMap<_, NetKey, u8> =
+                aya::maps::HashMap::try_from(map).map_err(|e| ScopeError::Map(e.to_string()))?;
+            for key in &new_keys {
+                if !prev_net_keys.contains(key) {
+                    net.insert(*key, 1u8, 0)
+                        .map_err(|e| ScopeError::Map(e.to_string()))?;
+                }
+            }
+            for key in prev_net_keys {
+                if !new_keys.contains(key) {
+                    let _ = net.remove(key);
+                }
+            }
+        }
+
+        Ok(new_keys)
     }
 
     /// Take ownership of the audit ring buffer as a synchronous reader (call once). (enforce feature)
@@ -204,6 +309,9 @@ impl Engine {
 pub struct Scope {
     pub path: std::path::PathBuf,
     pub cgroup_id: u64,
+    /// The `NET_ALLOW` keys currently installed for this scope, so a narrowing reload
+    /// (007-dynamic-grants) can remove the ones that get dropped. Updated by `reload_scope`.
+    pub net_keys: Vec<bee_common::layout::NetKey>,
 }
 
 #[cfg(feature = "enforce")]

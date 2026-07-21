@@ -20,7 +20,7 @@ use serde::Deserialize;
 pub mod grant;
 
 pub use grant::{
-    resolve_grants, AllowWithinCeiling, ConsentSink, DenyAll, GrantOutcome, GrantRequest,
+    resolve_grants, AllowWithinCeiling, ConsentSink, Decision, DenyAll, GrantOutcome, GrantRequest,
 };
 
 /// Where a skill was discovered. Earlier roots win a name clash, so `Project` shadows `User`.

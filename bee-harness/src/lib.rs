@@ -21,6 +21,8 @@ pub mod batch;
 pub mod concurrent;
 pub mod config;
 pub mod episode;
+pub mod grants;
+pub mod hooks;
 pub mod mcp;
 pub mod metrics;
 pub mod provider;

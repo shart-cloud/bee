@@ -155,7 +155,7 @@ async fn main() -> ExitCode {
     // policy is `--policy`, the ceiling `--ceiling-policy` (or base). Each within-ceiling request is
     // approved interactively; beyond-ceiling requests are refused. Granted tools are registered and
     // the widened policy flows into the scope. Instructions-only skills never prompt.
-    let resolved_policy = resolve_repl_grants(&args, &skills, &mut registry);
+    let resolved_policy = resolve_repl_grants(&args, &skills, &mut registry).await;
 
     // Register the model-facing `skill` tool; `/skill` reads the same registry regardless.
     if skills.model_facing().next().is_some() {
@@ -320,7 +320,7 @@ fn build_sandbox(
 /// base policy is `--policy`; the ceiling is `--ceiling-policy` (or base). Registers granted tools
 /// into `registry` and returns the widened policy (base ∪ approved deltas ∪ readable skill dirs) to
 /// compile, or `None` when there is no parseable base policy (host mode without `--policy`).
-fn resolve_repl_grants(
+async fn resolve_repl_grants(
     args: &Args,
     skills: &bee_harness::SkillRegistry,
     registry: &mut bee_harness::ToolRegistry,
@@ -345,7 +345,7 @@ fn resolve_repl_grants(
 
     let skill_refs: Vec<&bee_harness::skills::Skill> = skills.iter().collect();
     let mut outcome =
-        bee_harness::skills::resolve_grants(&skill_refs, &base, &ceiling, &PromptConsent);
+        bee_harness::skills::resolve_grants(&skill_refs, &base, &ceiling, &PromptConsent).await;
     for name in &outcome.granted {
         println!("bee-repl: skill '{name}' capabilities granted");
     }
@@ -373,8 +373,13 @@ fn resolve_repl_grants(
 /// skill at startup, before the readline loop begins.
 struct PromptConsent;
 
+#[async_trait::async_trait]
 impl bee_harness::skills::ConsentSink for PromptConsent {
-    fn confirm(&self, request: &bee_harness::skills::GrantRequest<'_>) -> bool {
+    async fn confirm(
+        &self,
+        request: &bee_harness::skills::GrantRequest<'_>,
+    ) -> bee_harness::skills::Decision {
+        use bee_harness::skills::Decision;
         use std::io::Write;
         eprintln!("\nskill '{}' requests extra capabilities:", request.skill);
         if !request.tools.is_empty() {
@@ -386,9 +391,12 @@ impl bee_harness::skills::ConsentSink for PromptConsent {
         eprint!("grant these (within the ceiling)? [y/N] ");
         let _ = std::io::stderr().flush();
         let mut line = String::new();
-        match std::io::stdin().read_line(&mut line) {
-            Ok(_) => matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes"),
-            Err(_) => false,
+        let granted = std::io::stdin().read_line(&mut line).is_ok()
+            && matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+        if granted {
+            Decision::Granted
+        } else {
+            Decision::Denied
         }
     }
 }
