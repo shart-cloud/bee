@@ -33,24 +33,58 @@ The child's environment is: **stripped base**  +  the server's `[[mcp.servers]].
 - `token_env` is **not** used for stdio servers (it is a remote-transport auth mechanism). If present
   on a stdio server config, it is ignored with a warning.
 
-## 3. Transport wiring (Option A — preferred)
+## 3. Transport wiring — rmcp 2.x (corrected per research R1–R4)
+
+> The `rmcp` API and version were corrected during Phase 0. Use **`rmcp = "2.2"`**,
+> `default-features = false`, features `["client", "transport-child-process"]`. The spec's
+> `SandboxedChildTransport` custom struct is **not** needed — rmcp accepts a pre-built
+> `tokio::process::Command`.
+
+### 3.1 Primary path — `TokioChildProcess::new` with a sandbox-built command
 
 ```
-SandboxedChildTransport::spawn(sandbox, config):
-    std_cmd = sandbox.tool_command(config.command, config.args)   // cgroup + strip + harden
-    for (k, v) in config.env: std_cmd.env(k, v)
-    cmd = tokio::process::Command::from(std_cmd)
-    cmd.stdin(piped).stdout(piped).stderr(null).kill_on_drop(true)
-    child = cmd.spawn()
-    // hand child.stdin / child.stdout to rmcp's transport layer
-    rmcp::ServiceExt::serve(transport)   // performs MCP `initialize`
+connect_stdio(sandbox, config):
+    std_cmd = sandbox.tool_command(config.command, &config.args)?   // cgroup-join pre_exec + strip + harden
+    for (k, v) in &config.env: std_cmd.env(k, v)                    // additive; never re-adds a secret silently
+    tok_cmd = tokio::process::Command::from(std_cmd)                // preserves pre_exec
+    child_transport = TokioChildProcess::new(tok_cmd)?              // rmcp; pipes stdio, spawns
+    running = ().serve(child_transport).await?                      // MCP `initialize`; RunningService<RoleClient, ()>
 ```
 
-- `stderr` is `null` (or captured to the transcript diagnostics channel — never to stdout, which is
-  the MCP framing channel).
-- `kill_on_drop(true)` guarantees the child dies with the bridge.
-- Fallback (Option B) — rmcp's `ConfigureCommandExt` pre-spawn hook — is only acceptable if it can
-  install bee's `pre_exec` cgroup-join closure. If it cannot, Option A is mandatory.
+- `().serve(...)` uses the default `ClientHandler for ()`. When `tools/list_changed` (FR-043) is
+  implemented, `()` is replaced by a struct impl'ing `rmcp::ClientHandler` whose
+  `on_tool_list_changed` refreshes the cached schemas.
+- `TokioChildProcess::new` returns `Result` (it spawns) — propagate with `?`.
+- The `RunningService` owns the child + background task; dropping it kills the child (kill-on-drop),
+  satisfying teardown and FR-042.
+
+### 3.2 The cgroup-join gate (R3 spike — MUST run before this path ships)
+
+`TokioChildProcess` wraps the command in `process-wrap`'s `CommandWrap`, which **may install its own
+`pre_exec`** for process-group management. If that overrides or precedes bee's cgroup-join closure,
+the server would run **outside** the scope — a silent Constitution III violation. Before shipping §3.1,
+a spike MUST prove, under `--features enforce`, that the spawned child's cgroup **equals the scope
+cgroup** — e.g. read `/proc/<child_pid>/cgroup`, or assert a deliberately-denied I/O by the child
+produces a `file_open` denial filtered to `scope.cgroup_id`. Fail-closed: if it cannot be proven,
+§3.1 MUST NOT be used under enforce — use §3.3.
+
+### 3.3 Fallback path — raw pipes (if the §3.2 spike fails)
+
+bee spawns the child itself and hands rmcp only the byte streams, so `process-wrap` never touches the
+spawn and bee's `pre_exec` is the only one installed:
+
+```
+std_cmd = sandbox.tool_command(config.command, &config.args)?
+tok_cmd = tokio::process::Command::from(std_cmd)
+tok_cmd.stdin(piped).stdout(piped).stderr(null).kill_on_drop(true)
+child = tok_cmd.spawn()?                                   // bee owns the Child (kill-on-drop)
+transport = (child.stdout.take(), child.stdin.take())      // (AsyncRead, AsyncWrite) pair
+running = ().serve(transport).await?
+```
+
+- `stderr` is `null` (never stdout — that is the JSON-RPC framing channel).
+- bee retains the `tokio::process::Child` for explicit kill on teardown/crash.
+- Requires the rmcp feature providing the async-read/write pair transport; confirm during the spike.
 
 ## 4. Startup timeout (NFR-005)
 
