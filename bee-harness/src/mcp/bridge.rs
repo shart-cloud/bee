@@ -7,16 +7,22 @@
 //! (FR-042). The per-transport `connect` bodies land in US8 (stdio, T018) and US9 (remote, T026).
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use rmcp::service::{Peer, RoleClient, RunningService};
+use rmcp::ServiceExt;
 
 use crate::provider::ToolSchema;
 use crate::sandbox::Sandbox;
 use crate::tools::ToolRegistry;
 
-use super::config::McpServerConfig;
+use super::config::{McpServerConfig, McpTransport};
 use super::policy::McpPolicy;
-use super::proxy::McpToolProxy;
+use super::proxy::{tool_schema, McpToolProxy};
+use super::transport::spawn_stdio;
+
+/// Stdio spawn + `initialize` handshake budget (NFR-005).
+const STDIO_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Lifecycle state of a configured MCP server.
 #[derive(Debug, Clone)]
@@ -88,22 +94,22 @@ impl McpBridge {
     /// and simply contributes no tools (Constitution I, fail-closed capability absence). The
     /// per-transport connection bodies are filled in US8 (stdio) and US9 (remote); today every
     /// declared server is recorded as `Failed("transport not yet implemented")`.
-    pub async fn connect(policy: McpPolicy, _sandbox: &Sandbox) -> Self {
+    pub async fn connect(policy: McpPolicy, sandbox: &Sandbox) -> Self {
         let mut servers = BTreeMap::new();
         if policy.enabled {
             let max = policy.max_servers as usize;
             for cfg in policy.servers.iter().take(max) {
-                servers.insert(
-                    cfg.name.clone(),
-                    ConnectedServer {
+                let server = match cfg.transport {
+                    McpTransport::Stdio => connect_stdio(cfg, sandbox).await,
+                    // Remote domain-gated transports land in US9 (T026).
+                    McpTransport::Sse | McpTransport::StreamableHttp => ConnectedServer {
                         config: cfg.clone(),
                         tools: Vec::new(),
-                        status: ServerStatus::Failed(
-                            "transport not yet implemented (US8/US9)".into(),
-                        ),
+                        status: ServerStatus::Failed("remote transport lands in US9".into()),
                         handle: None,
                     },
-                );
+                };
+                servers.insert(cfg.name.clone(), server);
             }
         }
         McpBridge { policy, servers }
@@ -144,6 +150,53 @@ impl McpBridge {
     /// Tear down: drop every server handle, killing stdio children. Consumes the bridge.
     pub fn teardown(self) {
         // Dropping `self.servers` drops each `RunningService`, whose kill-on-drop reaps the child.
+    }
+}
+
+/// Connect one stdio MCP server: spawn it sandboxed, run the `initialize` handshake under the
+/// startup budget, fetch + filter its tools, and cache their namespaced schemas. Never panics — any
+/// failure yields a [`ServerStatus::Failed`] server with no tools (fail-closed, Constitution I).
+async fn connect_stdio(cfg: &McpServerConfig, sandbox: &Sandbox) -> ConnectedServer {
+    let failed = |why: String| ConnectedServer {
+        config: cfg.clone(),
+        tools: Vec::new(),
+        status: ServerStatus::Failed(why),
+        handle: None,
+    };
+
+    let transport = match spawn_stdio(sandbox, cfg) {
+        Ok(t) => t,
+        Err(e) => return failed(e),
+    };
+
+    // `()` is the no-op client handler; `on_tool_list_changed` support lands in T031.
+    let running = match tokio::time::timeout(STDIO_STARTUP_TIMEOUT, ().serve(transport)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return failed(format!("initialize failed: {e}")),
+        Err(_) => return failed(format!(
+            "initialize timed out (>{}s)",
+            STDIO_STARTUP_TIMEOUT.as_secs()
+        )),
+    };
+
+    let tools = match running.list_all_tools().await {
+        Ok(t) => t,
+        Err(e) => return failed(format!("list_tools failed: {e}")),
+    };
+
+    // Apply allowed_tools/denied_tools (FR-039) and namespace the surviving schemas (FR-036).
+    let filtered: Vec<(String, ToolSchema)> = tools
+        .iter()
+        .filter(|t| cfg.tool_allowed(&t.name))
+        .map(|t| (t.name.to_string(), tool_schema(&cfg.name, t)))
+        .collect();
+
+    let peer = running.peer().clone();
+    ConnectedServer {
+        config: cfg.clone(),
+        tools: filtered,
+        status: ServerStatus::Connected,
+        handle: Some(ServerHandle { service: running, peer }),
     }
 }
 

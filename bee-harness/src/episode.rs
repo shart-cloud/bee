@@ -452,6 +452,10 @@ pub async fn run_episode(
     }
 
     let flag = scenario.workdir.flag.as_ref().map(|f| f.value.as_str());
+    // `mut` only when MCP may register proxies into it; keep it immutable otherwise (SC-027).
+    #[cfg(feature = "mcp")]
+    let mut registry = tools::registry_for(&scenario.tools, flag);
+    #[cfg(not(feature = "mcp"))]
     let registry = tools::registry_for(&scenario.tools, flag);
     // Strip the provider key vars plus any configured MCP `token_env` names from every tool child
     // (FR-018/FR-041), so an MCP Bearer token never leaks into a sandboxed stdio server's env.
@@ -475,7 +479,20 @@ pub async fn run_episode(
     #[cfg(not(feature = "enforce"))]
     let mut sandbox = Sandbox::host(strip_env);
 
+    // Connect MCP servers (if any) once the sandbox exists, and register their tools alongside the
+    // built-ins. The bridge owns the stdio children for the episode; teardown kills them (FR-034/42).
+    #[cfg(feature = "mcp")]
+    let bridge = {
+        let b = crate::mcp::McpBridge::connect(scenario.mcp.clone(), &sandbox).await;
+        b.register_into(&mut registry);
+        b
+    };
+
     let mut transcript = run_loop(model, scenario, &registry, &mut sandbox, &opts).await;
+
+    // Tear the MCP children down (they live in the scope cgroup) before the scope itself.
+    #[cfg(feature = "mcp")]
+    bridge.teardown();
     sandbox.teardown();
 
     // CTF episodes carry a score derived from the audit trail (US3).
