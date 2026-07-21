@@ -39,6 +39,7 @@ async fn ollama_openai_compat_smoke() {
         api_key_env: "OPENAI_API_KEY".to_string(),
         max_tokens: Some(64),
         temperature: None,
+        prompt_caching: true,
         script: Vec::new(),
     };
     let model = RigModel::from_config(&cfg, "").expect("build openai-compat model");
@@ -70,6 +71,7 @@ async fn anthropic_smoke() {
         api_key_env: "ANTHROPIC_API_KEY".to_string(),
         max_tokens: Some(64),
         temperature: None,
+        prompt_caching: true,
         script: Vec::new(),
     };
     let model = RigModel::from_config(&cfg, &key).expect("build anthropic model");

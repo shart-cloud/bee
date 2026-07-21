@@ -484,13 +484,50 @@ pub async fn run_episode(
         return infra_error(scenario, model, format!("workdir setup failed: {e}"));
     }
 
+    // Discover skills from the scenario's explicit roots (006-skills). Malformed skills warn via the
+    // progress sink but never abort the episode (Constitution I). The Arc is held until after the
+    // loop so the `skill` tool's registry outlives it.
+    let skills = std::sync::Arc::new(crate::skills::SkillRegistry::discover(&scenario.skills));
+    for w in skills.warnings() {
+        emit(
+            &opts,
+            format!("skill warning: {}: {}", w.path.display(), w.reason),
+        );
+    }
+
+    // Resolve skill capability grants BEFORE the scope compiles (006-skills, step 3). Non-interactive:
+    // the ceiling policy file is the operator's reviewable pre-authorization, so within-ceiling
+    // requests widen the compiled policy and anything beyond is refused unpromptably. Register any
+    // granted tools (Layer 1); the widened policy (Layer 2) flows into the scope below.
+    let skill_refs: Vec<&crate::skills::Skill> = skills.iter().collect();
+    let grants = resolve_episode_grants(scenario, &skill_refs);
+    for name in &grants.granted {
+        emit(
+            &opts,
+            format!("skill grant: '{name}' capabilities granted (within ceiling)"),
+        );
+    }
+    for (name, reason) in &grants.refused {
+        emit(&opts, format!("skill grant: '{name}' refused — {reason}"));
+    }
+    for tool in &grants.tools {
+        tools::register_named(&mut registry, tool, flag);
+    }
+
     #[cfg(feature = "enforce")]
-    let mut sandbox = match build_enforced_sandbox(scenario, strip_env) {
+    let mut sandbox = match build_enforced_sandbox(scenario, grants.policy, strip_env) {
         Ok(s) => s,
         Err(detail) => return infra_error(scenario, model, detail),
     };
     #[cfg(not(feature = "enforce"))]
     let mut sandbox = Sandbox::host(strip_env);
+
+    // Register the model-facing `skill` tool alongside the built-ins.
+    if skills.model_facing().next().is_some() {
+        registry.insert(Box::new(crate::tools::skill::SkillTool::new(
+            skills.clone(),
+        )));
+    }
 
     // Connect MCP servers (if any) once the sandbox exists, register their tools alongside the
     // built-ins, and install the per-turn refresh hook (FR-043). The bridge (Arc so the hook can
@@ -529,14 +566,73 @@ pub async fn run_episode(
     transcript
 }
 
-/// Bring up a real bee scope from the scenario policy and wrap it as an [`Sandbox::Enforced`].
+/// A minimal empty policy, used only as the never-read `GrantOutcome::policy` on the host no-op path
+/// (no parseable base policy ⇒ no grants).
+fn empty_policy() -> bee_core::Policy {
+    bee_core::Policy {
+        name: "none".to_string(),
+        description: None,
+        mode: bee_core::Mode::default(),
+        filesystem: std::collections::BTreeMap::new(),
+        exec: Default::default(),
+        network: Default::default(),
+        exfiltration: Default::default(),
+    }
+}
+
+/// Resolve skill capability grants for an episode (006-skills, step 3). Non-interactive: the ceiling
+/// policy file *is* the operator's reviewable pre-authorization, so within-ceiling requests widen the
+/// compiled policy and beyond-ceiling ones are refused unpromptably. Also folds each discovered
+/// skill's directory into the policy as readable, so the model can read bundled resources
+/// (`references/…`) through the scope. A `policy_path` that can't be parsed (e.g. host-mode
+/// `/dev/null`) yields a no-op outcome — instructions-only, no tool grants.
+fn resolve_episode_grants(
+    scenario: &Scenario,
+    skills: &[&crate::skills::Skill],
+) -> crate::skills::GrantOutcome {
+    use bee_core::{Access, Policy};
+
+    let base = match Policy::from_path(&scenario.policy_path) {
+        Ok(p) => p,
+        Err(_) => {
+            return crate::skills::GrantOutcome {
+                policy: empty_policy(),
+                tools: Vec::new(),
+                granted: Vec::new(),
+                refused: Vec::new(),
+            }
+        }
+    };
+    let ceiling = match &scenario.ceiling_policy_path {
+        Some(p) => Policy::from_path(p).unwrap_or_else(|_| base.clone()),
+        None => base.clone(),
+    };
+    let mut outcome =
+        crate::skills::resolve_grants(skills, &base, &ceiling, &crate::skills::AllowWithinCeiling);
+    // Layer 2 readable-scope: declaring a skills root authorizes reading it, so each skill dir
+    // becomes readable in-scope for the model to pull bundled resources via read_file.
+    for s in skills {
+        if let Some(dir) = s.dir.to_str() {
+            outcome
+                .policy
+                .filesystem
+                .entry(dir.to_string())
+                .or_insert(Access::Read);
+        }
+    }
+    outcome
+}
+
+/// Bring up a real bee scope from the resolved policy and wrap it as an [`Sandbox::Enforced`]. The
+/// policy is already widened by any approved skill grants and skill-dir reads (006-skills).
 #[cfg(feature = "enforce")]
-fn build_enforced_sandbox(scenario: &Scenario, strip_env: Vec<String>) -> Result<Sandbox, String> {
-    use bee_core::Policy;
+fn build_enforced_sandbox(
+    scenario: &Scenario,
+    policy: bee_core::Policy,
+    strip_env: Vec<String>,
+) -> Result<Sandbox, String> {
     use bee_userspace::{EnforcementPlan, Engine, ScopeMode, SystemResolver};
 
-    let policy = Policy::from_path(&scenario.policy_path)
-        .map_err(|e| format!("policy {}: {e}", scenario.policy_path.display()))?;
     let resolver = SystemResolver::current();
     let compiled = policy
         .compile(&resolver)
@@ -616,6 +712,8 @@ mod mcp_cgroup_spike {
             mode: Default::default(),
             workdir: Default::default(),
             mcp: Default::default(),
+            skills: Vec::new(),
+            ceiling_policy_path: None,
         };
         (scn, dir)
     }
@@ -626,7 +724,9 @@ mod mcp_cgroup_spike {
     #[ignore = "VM + root only: --features enforce,mcp on a BPF-LSM kernel"]
     async fn child_joins_scope_cgroup() {
         let (scenario, tmp) = spike_scenario();
-        let sandbox = build_enforced_sandbox(&scenario, sandbox::key_vars(None))
+        let policy =
+            bee_core::Policy::from_path(&scenario.policy_path).expect("parse spike policy");
+        let sandbox = build_enforced_sandbox(&scenario, policy, sandbox::key_vars(None))
             .expect("build enforced sandbox (need root + BPF-LSM)");
 
         let scope_cgid = match &sandbox {

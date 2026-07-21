@@ -1,6 +1,6 @@
 //! The built-in bee mascot (003-visual-render, Slice 2, FR-032): a 16×16 sprite and a 3-frame
 //! wing-flap animation, built once via [`std::sync::OnceLock`] from a bitmap + palette (deterministic;
-//! no clock/random). Available to the REPL startup banner (opt-in `--bee` / `BEE_MASCOT=1`) and to
+//! no clock/random). Available to the REPL startup banner (on by default; `--no-bee` / `BEE_MASCOT=0`) and to
 //! the Rhai API as `bee_sprite()` / `bee_animation()`.
 
 use std::sync::OnceLock;

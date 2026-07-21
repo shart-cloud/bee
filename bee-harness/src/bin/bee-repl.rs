@@ -25,11 +25,20 @@ struct Args {
     /// Bee policy for the scope. Omit to run tools as hardened host processes with no kernel scope.
     #[arg(long)]
     policy: Option<PathBuf>,
+    /// Capability ceiling for skill grants (006-skills). A skill's `requires` block may widen
+    /// `--policy` only up to this ceiling (attenuation-bounded); you approve each within-ceiling
+    /// request at startup. Omit ⇒ `--policy` is the ceiling ⇒ skills grant nothing.
+    #[arg(long)]
+    ceiling_policy: Option<PathBuf>,
     /// Override the session system prompt.
     #[arg(long)]
     system: Option<String>,
-    /// Comma-separated tools the agent gets.
-    #[arg(long, default_value = "bash,read_file,write_file,list_directory")]
+    /// Comma-separated tools the agent gets. `render` is included by default so the agent can draw
+    /// charts/tables/sprites in the terminal (drop it from the list to disable visuals).
+    #[arg(
+        long,
+        default_value = "bash,read_file,write_file,list_directory,render"
+    )]
     tools: String,
     /// Max model calls per user message (safety cap against a runaway agent).
     #[arg(long, default_value_t = 25)]
@@ -37,9 +46,10 @@ struct Args {
     /// Write the session transcript to this path on exit.
     #[arg(long)]
     save: Option<PathBuf>,
-    /// Play the bee mascot animation at startup (also enabled by `BEE_MASCOT=1`).
+    /// Suppress the bee mascot animation at startup (on by default; also suppressible with
+    /// `BEE_MASCOT=0`).
     #[arg(long)]
-    bee: bool,
+    no_bee: bool,
     /// Color theme (built-in name or a custom one from config). Overrides `BEE_THEME` and the config
     /// file. Built-ins: honeycomb (default), catppuccin-{mocha,latte,frappe,macchiato}, dracula, nord.
     #[arg(long)]
@@ -126,13 +136,42 @@ async fn main() -> ExitCode {
         strip_env.extend(p.token_env_names());
     }
 
-    let (mut sbox, policy_label) = match build_sandbox(args.policy.as_ref(), strip_env) {
-        Ok(pair) => pair,
-        Err(detail) => {
-            eprintln!("bee-repl: {detail}");
-            return ExitCode::from(70);
-        }
+    // Discover skills (006-skills): project `.claude/skills` then user `~/.claude/skills`. Malformed
+    // skills warn but never abort.
+    let skills = {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let roots = bee_harness::SkillRegistry::default_roots(&cwd);
+        std::sync::Arc::new(bee_harness::SkillRegistry::discover(&roots))
     };
+    for w in skills.warnings() {
+        eprintln!(
+            "bee-repl: skill warning: {}: {}",
+            w.path.display(),
+            w.reason
+        );
+    }
+
+    // Resolve skill capability grants BEFORE the scope compiles (006-skills, step 3). The base
+    // policy is `--policy`, the ceiling `--ceiling-policy` (or base). Each within-ceiling request is
+    // approved interactively; beyond-ceiling requests are refused. Granted tools are registered and
+    // the widened policy flows into the scope. Instructions-only skills never prompt.
+    let resolved_policy = resolve_repl_grants(&args, &skills, &mut registry);
+
+    // Register the model-facing `skill` tool; `/skill` reads the same registry regardless.
+    if skills.model_facing().next().is_some() {
+        registry.insert(Box::new(bee_harness::tools::skill::SkillTool::new(
+            skills.clone(),
+        )));
+    }
+
+    let (mut sbox, policy_label) =
+        match build_sandbox(resolved_policy, args.policy.as_deref(), strip_env) {
+            Ok(pair) => pair,
+            Err(detail) => {
+                eprintln!("bee-repl: {detail}");
+                return ExitCode::from(70);
+            }
+        };
 
     // Connect MCP servers (if configured), register their tools alongside the built-ins, and build
     // the per-turn refresh hook (FR-043). The bridge (Arc so the hook can hold a clone) owns the
@@ -164,11 +203,12 @@ async fn main() -> ExitCode {
             .unwrap_or_else(|| ReplConfig::default().system_prompt),
         agent_turn_budget: args.budget.max(1),
         policy_label: policy_label.clone(),
-        mascot: args.bee || std::env::var_os("BEE_MASCOT").is_some_and(|v| v == "1"),
+        mascot: !args.no_bee && std::env::var_os("BEE_MASCOT").is_none_or(|v| v != "0"),
         #[cfg(feature = "mcp")]
         mcp_summary,
         #[cfg(feature = "mcp")]
         refresh_tools: mcp_refresh,
+        skills: skills.clone(),
         ..ReplConfig::default()
     };
 
@@ -178,6 +218,13 @@ async fn main() -> ExitCode {
     println!("  policy: {policy_label}");
     println!("  tools:  {}", tools.join(", "));
     println!("  theme:  {}", bee_harness::viz::theme::active_theme().name);
+    if !skills.is_empty() {
+        println!(
+            "  skills: {} ({} agent-loadable)",
+            skills.len(),
+            skills.model_facing().count()
+        );
+    }
     #[cfg(feature = "mcp")]
     if let Some(s) = &config.mcp_summary {
         println!("  {}", s.lines().next().unwrap_or("mcp: configured"));
@@ -216,23 +263,21 @@ async fn main() -> ExitCode {
 /// sandbox with no scope. Returns the sandbox plus a human-readable label for the banner.
 #[cfg(feature = "enforce")]
 fn build_sandbox(
-    policy: Option<&PathBuf>,
+    policy: Option<bee_core::Policy>,
+    label_hint: Option<&std::path::Path>,
     strip_env: Vec<String>,
 ) -> Result<(Sandbox, String), String> {
-    use bee_core::Policy;
     use bee_userspace::{EnforcementPlan, Engine, ScopeMode, SystemResolver};
 
-    let Some(policy_path) = policy else {
+    let Some(policy) = policy else {
         return Ok((
             Sandbox::host(strip_env),
             "none — host mode (no kernel scope)".to_string(),
         ));
     };
 
-    let compiled = Policy::from_path(policy_path)
-        .map_err(|e| format!("policy {}: {e}", policy_path.display()))?;
     let resolver = SystemResolver::current();
-    let compiled = compiled
+    let compiled = policy
         .compile(&resolver)
         .map_err(|e| format!("policy compile: {e}"))?;
     let plan = EnforcementPlan::prepare(&compiled, ScopeMode::Enforce)
@@ -246,18 +291,22 @@ fn build_sandbox(
     let reader = engine
         .take_audit_reader(&scope_id)
         .map_err(|e| format!("audit reader: {e}"))?;
-    let label = format!("{} (enforced)", policy_path.display());
+    let label = match label_hint {
+        Some(p) => format!("{} (enforced)", p.display()),
+        None => "policy (enforced)".to_string(),
+    };
     Ok((Sandbox::enforced(engine, scope, reader, strip_env), label))
 }
 
-/// Host build: there is no kernel enforcement available, so `--policy` (if given) is noted but not
-/// applied. The tools still run hardened + credential-stripped.
+/// Host build: there is no kernel enforcement available, so the resolved policy (if any) is noted but
+/// not applied. The tools still run hardened + credential-stripped.
 #[cfg(not(feature = "enforce"))]
 fn build_sandbox(
-    policy: Option<&PathBuf>,
+    _policy: Option<bee_core::Policy>,
+    label_hint: Option<&std::path::Path>,
     strip_env: Vec<String>,
 ) -> Result<(Sandbox, String), String> {
-    let label = match policy {
+    let label = match label_hint {
         Some(p) => format!(
             "{} — IGNORED (host build; rebuild with --features enforce to enforce it)",
             p.display()
@@ -265,4 +314,81 @@ fn build_sandbox(
         None => "none — host mode (no kernel scope)".to_string(),
     };
     Ok((Sandbox::host(strip_env), label))
+}
+
+/// Resolve skill capability grants for the REPL (006-skills, step 3), prompting interactively. The
+/// base policy is `--policy`; the ceiling is `--ceiling-policy` (or base). Registers granted tools
+/// into `registry` and returns the widened policy (base ∪ approved deltas ∪ readable skill dirs) to
+/// compile, or `None` when there is no parseable base policy (host mode without `--policy`).
+fn resolve_repl_grants(
+    args: &Args,
+    skills: &bee_harness::SkillRegistry,
+    registry: &mut bee_harness::ToolRegistry,
+) -> Option<bee_core::Policy> {
+    let base = match args.policy.as_ref() {
+        Some(p) => match bee_core::Policy::from_path(p) {
+            Ok(pol) => pol,
+            Err(e) => {
+                eprintln!("bee-repl: policy parse warning ({e}); skill grants disabled");
+                return None;
+            }
+        },
+        None => return None, // no scope policy ⇒ nothing to widen (host mode)
+    };
+    let ceiling = match args.ceiling_policy.as_ref() {
+        Some(p) => bee_core::Policy::from_path(p).unwrap_or_else(|e| {
+            eprintln!("bee-repl: ceiling parse warning ({e}); using base as ceiling");
+            base.clone()
+        }),
+        None => base.clone(),
+    };
+
+    let skill_refs: Vec<&bee_harness::skills::Skill> = skills.iter().collect();
+    let mut outcome =
+        bee_harness::skills::resolve_grants(&skill_refs, &base, &ceiling, &PromptConsent);
+    for name in &outcome.granted {
+        println!("bee-repl: skill '{name}' capabilities granted");
+    }
+    for (name, reason) in &outcome.refused {
+        eprintln!("bee-repl: skill '{name}' refused — {reason}");
+    }
+    for tool in &outcome.tools {
+        bee_harness::tools::register_named(registry, tool, None);
+    }
+    // Readable-scope: each discovered skill dir becomes readable so bundled resources resolve.
+    for s in &skill_refs {
+        if let Some(dir) = s.dir.to_str() {
+            outcome
+                .policy
+                .filesystem
+                .entry(dir.to_string())
+                .or_insert(bee_core::Access::Read);
+        }
+    }
+    Some(outcome.policy)
+}
+
+/// Interactive skill-grant consent (006-skills): prompt on stderr, read a y/N line from stdin. Any
+/// non-`y` answer (including EOF) refuses — deny-by-default. Runs once per capability-requesting
+/// skill at startup, before the readline loop begins.
+struct PromptConsent;
+
+impl bee_harness::skills::ConsentSink for PromptConsent {
+    fn confirm(&self, request: &bee_harness::skills::GrantRequest<'_>) -> bool {
+        use std::io::Write;
+        eprintln!("\nskill '{}' requests extra capabilities:", request.skill);
+        if !request.tools.is_empty() {
+            eprintln!("  tools: {}", request.tools.join(", "));
+        }
+        for (path, access) in request.filesystem {
+            eprintln!("  filesystem: {path} = {access}");
+        }
+        eprint!("grant these (within the ceiling)? [y/N] ");
+        let _ = std::io::stderr().flush();
+        let mut line = String::new();
+        match std::io::stdin().read_line(&mut line) {
+            Ok(_) => matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes"),
+            Err(_) => false,
+        }
+    }
 }

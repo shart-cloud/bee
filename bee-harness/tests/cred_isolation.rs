@@ -21,6 +21,8 @@ fn scenario() -> Scenario {
         mode: Default::default(),
         workdir: Default::default(),
         mcp: Default::default(),
+        skills: Vec::new(),
+        ceiling_policy_path: None,
     }
 }
 

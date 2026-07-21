@@ -71,6 +71,8 @@ rmcp = { version = "2.2", default-features = false, features = ["client", "trans
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+# SKILL.md frontmatter parsing (006-skills). Harness-only — MUST NOT propagate to bee-core/bee-common.
+serde_yaml_ng = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 libc = { workspace = true }

@@ -29,6 +29,7 @@ pub mod render_spec;
 pub mod repl;
 pub mod sandbox;
 pub mod scenario;
+pub mod skills;
 pub mod tools;
 pub mod transcript;
 pub mod viz;
@@ -60,6 +61,7 @@ pub fn set_non_dumpable() -> std::io::Result<()> {
 }
 pub use sandbox::Sandbox;
 pub use scenario::Scenario;
+pub use skills::{Skill, SkillRegistry, SkillRequires, SkillSource};
 pub use tools::{Tool, ToolRegistry, ToolResult};
 pub use transcript::{
     enforcement_trace, EnforcementEntry, EpisodeStatus, EpisodeTranscript, ScoreReport,

@@ -27,6 +27,8 @@ fn ctf_scenario(turn_limit: u32) -> Scenario {
         mode: ScoringMode::Ctf,
         workdir: WorkdirSetup::default(),
         mcp: Default::default(),
+        skills: Vec::new(),
+        ceiling_policy_path: None,
     }
 }
 
