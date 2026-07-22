@@ -59,8 +59,11 @@ pub async fn run(
     let steering: SteeringQueue = Arc::new(Mutex::new(VecDeque::new()));
     let recorder = Recorder::new("tui", format!("tui:{}", std::process::id()));
 
-    // Enter the alternate screen + raw mode; the panic hook (installed here) restores first.
+    // Enter the alternate screen + raw mode; the panic hook (installed here) restores first. The
+    // guard then covers the abnormal exits — an early `?` return or a panic unwinding through the
+    // loop restore the terminal on drop (contracts/modes-and-cli.md; T010).
     let mut terminal = term::init();
+    let mut restore_guard = term::RestoreGuard::terminal();
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let mut app = App::new(cols, rows);
 
@@ -117,8 +120,10 @@ pub async fn run(
         }
     }
 
-    // Belt-and-suspenders: the Drop/panic hooks also restore, but leave nothing to chance.
+    // Normal exit (quit / Ctrl-C / Ctrl-D / closed input): restore explicitly, then disarm the guard
+    // so its Drop doesn't restore a second time (contracts/modes-and-cli.md: normal-quit row).
     term::restore();
+    restore_guard.disarm();
     Ok(())
 }
 

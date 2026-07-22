@@ -56,7 +56,7 @@ tests in each story before/with implementation.
 ### Tests for User Story 1
 
 - [X] T009 [P] [US1] Reducer tests (realized as in-crate unit tests in `bee-harness/src/tui/app.rs` — pure, run under `--features tui`): submit, scroll (PgUp/PgDn, `gg`/`G`), focus cycle, quit, resize→`layout_mode` (write to fail first).
-- [ ] T010 [P] [US1] Terminal-restore matrix test in `bee-harness/tests/tui_restore.rs`: quit / interrupt / suspend-resume / panic all leave the terminal restored (SC-001, contracts/modes-and-cli.md).
+- [X] T010 [P] [US1] Terminal-restore matrix test in `bee-harness/tests/tui_restore.rs`: quit / interrupt / suspend-resume / panic all leave the terminal restored (SC-001, contracts/modes-and-cli.md). Verifies the *guarantee* without a tty (CI has none): a `term::RestoreGuard` (RAII, injectable restore action) covers the early-`?`-return and panic-unwind rows via a restore counter; the reducer decides the quit (`q`) and interrupt (Ctrl-C) rows. Suspend/resume is a reducer no-op today — the test pins that honestly; full SIGTSTP restore is US3/T035.
 
 ### Implementation for User Story 1
 

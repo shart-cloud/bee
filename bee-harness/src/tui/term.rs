@@ -28,6 +28,46 @@ pub fn restore() {
     ratatui::restore();
 }
 
+/// RAII guard for the terminal-restore contract (008-grid-tui, T010; contracts/modes-and-cli.md).
+///
+/// Holding one guarantees the terminal is restored on **every** way out of [`run`](super::run) that
+/// isn't a clean explicit restore: an early `?` return, or a panic unwinding through the loop. On
+/// the normal quit path we call [`restore`] explicitly and then [`disarm`](Self::disarm) so the
+/// guard's `Drop` doesn't restore a second time. The action is injectable so the restore-matrix
+/// tests can observe the guarantee deterministically, with no real terminal (which CI lacks).
+pub struct RestoreGuard {
+    action: Option<Box<dyn FnMut()>>,
+}
+
+impl RestoreGuard {
+    /// A guard that runs the real terminal [`restore`] on drop.
+    pub fn terminal() -> Self {
+        Self::with(restore)
+    }
+
+    /// A guard that runs `action` on drop instead of the real restore — the seam the matrix test
+    /// uses to count restores without touching a terminal.
+    pub fn with(action: impl FnMut() + 'static) -> Self {
+        RestoreGuard {
+            action: Some(Box::new(action)),
+        }
+    }
+
+    /// Disarm the guard so its `Drop` is a no-op. Call after an explicit [`restore`] on the normal
+    /// exit path to avoid restoring twice.
+    pub fn disarm(&mut self) {
+        self.action = None;
+    }
+}
+
+impl Drop for RestoreGuard {
+    fn drop(&mut self) {
+        if let Some(mut action) = self.action.take() {
+            action();
+        }
+    }
+}
+
 /// Copy `text` to the system clipboard via **OSC 52** (008-grid-tui, US3 T035). Works over SSH/tmux
 /// where the *local* emulator interprets the escape (with tmux `set-clipboard on`). Best-effort.
 pub fn osc52_copy(text: &str) -> io::Result<()> {
