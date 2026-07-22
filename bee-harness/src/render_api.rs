@@ -897,6 +897,9 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
                 id: panel_id,
                 spec,
                 ttl_ms: None,
+                // Agent-attached effects arrive with US4 (`widget.effect(e)`); until then every
+                // panel uses the default transition, which is what `None` means here.
+                effect: None,
             });
             Ok(())
         },
@@ -917,6 +920,7 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
                 spec,
                 // Clamp to a day so a typo can't pin a panel effectively forever.
                 ttl_ms: Some((ttl_ms as u64).min(24 * 60 * 60 * 1000)),
+                effect: None,
             });
             Ok(())
         },

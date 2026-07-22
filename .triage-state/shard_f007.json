@@ -1,0 +1,18 @@
+{
+  "id": "f007",
+  "verdict": "true_positive",
+  "vote_breakdown": {
+    "true_positive": 2,
+    "false_positive": 1,
+    "cannot_verify": 0
+  },
+  "confidence": 9,
+  "exclusion_rule": 8,
+  "refute_reasons": [
+    "implausible_trigger"
+  ],
+  "first_links": [
+    "bee-harness/src/episode.rs:577"
+  ],
+  "rationale": "materialize_workdir performs unanchored host writes before sandbox construction (bee-harness/src/episode.rs:518-538,577-619). Although scenario paths are trusted config, an untrusted repository can pre-place a symlink beneath a trusted relative target, so the winning votes found a reachable host-write escape."
+}

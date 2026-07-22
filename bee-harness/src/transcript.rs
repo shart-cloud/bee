@@ -134,6 +134,7 @@ impl EpisodeTranscript {
                         id: id.clone(),
                         spec: spec.clone(),
                         ttl_ms: None,
+                        effect: None,
                     });
                 }
                 out.extend(call.result.panel_ops.iter().cloned());

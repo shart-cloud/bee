@@ -1,0 +1,17 @@
+{
+  "id": "f014",
+  "verdict": "true_positive",
+  "vote_breakdown": {
+    "true_positive": 3,
+    "false_positive": 0,
+    "cannot_verify": 0
+  },
+  "confidence": 9.7,
+  "exclusion_rule": null,
+  "refute_reasons": [],
+  "first_links": [
+    "bee-harness/src/sandbox.rs:178",
+    "bee-harness/src/sandbox.rs:168"
+  ],
+  "rationale": "Model-controlled tool execution reaches hardened_command in the enforced sandbox (bee-harness/src/tools/bash.rs:43-52; bee-harness/src/sandbox.rs:164-190). Its pre-exec hardening disables dumps but never drops UID/GID/capabilities or sets no_new_privs (bee-userspace/src/spawn.rs:92-97; bee-hardening/src/lib.rs:29-32), so a privileged loader spawns privileged tools."
+}

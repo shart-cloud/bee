@@ -39,8 +39,16 @@ mcp = ["dep:rmcp"]
 # Full-screen TUI front-end (008-grid-tui, M3–M4). Default-off so the plain build stays headless and
 # free of a terminal backend (Constitution V / SC-005): turns on ratatui's crossterm backend and pulls
 # the optional terminal deps below. Without it, `viz::buffer_render` keeps using the headless Buffer
-# and `bee-repl` runs the inline REPL only.
-tui = ["dep:crossterm", "dep:color-eyre", "dep:textwrap", "ratatui/crossterm", "tokio/sync"]
+# and `bee-repl` runs the inline REPL only. 009 adds tachyonfx here too, so the effects pipeline is
+# compiled only in full-screen builds.
+tui = [
+    "dep:crossterm",
+    "dep:color-eyre",
+    "dep:textwrap",
+    "dep:tachyonfx",
+    "ratatui/crossterm",
+    "tokio/sync",
+]
 
 [dependencies]
 bee-core = { workspace = true }
@@ -52,9 +60,10 @@ async-trait = { workspace = true }
 async-stream = "0.3"
 futures-util = "0.3"
 clap = { workspace = true }
-# Pinned to 17: rustyline 18 added a `unicode-width =0.2.2` dependency that conflicts with ratatui
-# 0.29's `unicode-width =0.2.0` pin. rustyline 17 has no unicode-width dep and the same
-# DefaultEditor/ExternalPrinter API this crate uses (003-visual-render).
+# Pinned to 17: rustyline 18 added a `unicode-width =0.2.2` dependency that conflicted with ratatui
+# 0.29's `unicode-width =0.2.0` pin. ratatui-core 0.1 relaxed that to `>=0.2.0`, so the conflict is
+# gone and 18 would now resolve — but unpinning is deliberately out of scope for 009 (research R1).
+# rustyline 17 has the same DefaultEditor/ExternalPrinter API this crate uses (003-visual-render).
 rustyline = "17"
 
 # Visual rendering (003-visual-render, bee-harness only — MUST NOT propagate to bee-core/bee-common,
@@ -62,15 +71,25 @@ rustyline = "17"
 # NO `unchecked` (that would disable the resource limits, FR-020). `ratatui` with no default features
 # gives headless Buffer/widgets/layout without crossterm or any terminal backend (research D2/D3).
 rhai = { version = "1", default-features = false, features = ["only_i64", "sync"] }
-ratatui = { version = "0.29", default-features = false }
+ratatui = { version = "0.30", default-features = false }
 
 # Full-screen TUI backend (008-grid-tui). All optional + gated by the `tui` feature above so the
-# default build stays headless (research D1/D10). crossterm 0.28 matches ratatui 0.29's pin;
-# `event-stream` gives the async input stream. color-eyre installs the panic hook that restores the
-# terminal; textwrap wraps chat to the pane width.
-crossterm = { version = "0.28", features = ["event-stream"], optional = true }
+# default build stays headless (research D1/D10). crossterm 0.29 matches what ratatui 0.30's backend
+# links: `ratatui-crossterm` defaults to `crossterm_0_29` and its cfg_if always prefers the newest
+# enabled version, so `ratatui/crossterm_0_28` cannot hold the version — it only adds a *second*
+# crossterm, leaving two instances driving the same tty (009 research R2/D1). Matching at 0.29 keeps
+# exactly one. `event-stream` gives the async input stream. color-eyre installs the panic hook that
+# restores the terminal; textwrap wraps chat to the pane width.
+crossterm = { version = "0.29", features = ["event-stream"], optional = true }
 color-eyre = { version = "0.6", optional = true }
 textwrap = { version = "0.16", optional = true }
+
+# Terminal effects (009-tachyonfx-effects, bee-harness only — MUST NOT propagate to
+# bee-core/bee-common, SC-009). Optional + `tui`-gated so the headless build never compiles it.
+# `default-features = false` drops the `dsl` parser (and its `anpa` dep): bee builds effects from
+# `EffectSpec` data in Rust, never from tachyonfx's DSL strings. No I/O, no FFI, no `rand` — it
+# carries its own seeded `SimpleRng`, which is what makes the effect snapshots deterministic.
+tachyonfx = { version = "0.25", default-features = false, optional = true }
 
 # MCP client SDK (004-mcp-client, bee-harness only — MUST NOT propagate to bee-core/bee-common,
 # NFR-004/SC-026). Optional + gated by the `mcp` feature above. rmcp is v2.x (the spec's "1" is a

@@ -70,11 +70,13 @@ fn summarize(outcome: &crate::render_api::RenderOutcome) -> String {
                 id,
                 spec,
                 ttl_ms: None,
+                ..
             } => format!("rendered {} to panel {id:?}", spec.summary_noun()),
             PanelOp::Upsert {
                 id,
                 spec,
                 ttl_ms: Some(ms),
+                ..
             } => format!(
                 "rendered {} to panel {id:?} (expires in {ms}ms)",
                 spec.summary_noun()

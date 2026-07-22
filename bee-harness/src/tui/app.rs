@@ -614,6 +614,7 @@ mod tests {
                     id: id.into(),
                     spec: text_spec("x"),
                     ttl_ms: None,
+                    effect: None,
                 })),
             );
         }

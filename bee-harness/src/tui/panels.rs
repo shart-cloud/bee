@@ -43,7 +43,12 @@ impl PanelRegistry {
     /// the clock.
     pub fn apply_at(&mut self, op: PanelOp, now: Instant) {
         match op {
-            PanelOp::Upsert { id, spec, ttl_ms } => {
+            // `effect` is consumed by the effects pipeline (009), not by the registry — the
+            // registry's job is content and lifetime. Transitions are chosen from the create-vs-
+            // replace distinction `upsert_with_expiry` already knows about.
+            PanelOp::Upsert {
+                id, spec, ttl_ms, ..
+            } => {
                 let expires_at = ttl_ms.map(|ms| now + Duration::from_millis(ms));
                 self.upsert_with_expiry(id, spec, expires_at);
             }
@@ -196,6 +201,7 @@ mod tests {
                 id: "flash".into(),
                 spec: text("brief"),
                 ttl_ms: Some(100),
+                effect: None,
             },
             now,
         );
@@ -204,6 +210,7 @@ mod tests {
                 id: "keep".into(),
                 spec: text("forever"),
                 ttl_ms: None,
+                effect: None,
             },
             now,
         );
@@ -229,6 +236,7 @@ mod tests {
                 id: "m".into(),
                 spec: text("v1"),
                 ttl_ms: Some(10),
+                effect: None,
             },
             now,
         );
@@ -237,6 +245,7 @@ mod tests {
                 id: "m".into(),
                 spec: text("v2"),
                 ttl_ms: None,
+                effect: None,
             },
             now,
         );

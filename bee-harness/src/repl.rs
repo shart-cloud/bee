@@ -555,7 +555,11 @@ pub async fn run_exchange(
                 match &result.render_target {
                     // Legacy results routed panels via `render_target`; honor them for back-compat.
                     crate::render_spec::RenderTarget::Panel { id } => output.panel_update(id, spec),
-                    crate::render_spec::RenderTarget::Inline => output.render_widget(spec),
+                    // The inline REPL has no full-screen surface to take over, so a takeover
+                    // request degrades to an inline widget here (009 spec, Edge Cases). The
+                    // full-screen front-end is where `Overlay` means something.
+                    crate::render_spec::RenderTarget::Inline
+                    | crate::render_spec::RenderTarget::Overlay => output.render_widget(spec),
                 }
             }
             // Then each panel-lifecycle effect, in order (008-grid-tui, US2).

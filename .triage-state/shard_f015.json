@@ -1,0 +1,19 @@
+{
+  "id": "f015",
+  "verdict": "true_positive",
+  "vote_breakdown": {
+    "true_positive": 2,
+    "false_positive": 1,
+    "cannot_verify": 0
+  },
+  "confidence": 9.5,
+  "exclusion_rule": 13,
+  "refute_reasons": [
+    "not_actionable"
+  ],
+  "first_links": [
+    "bee-ebpf/src/main.rs:134",
+    "bee-ebpf/src/main.rs:185"
+  ],
+  "rationale": "Denied operations emit audit records into a bounded 256-KiB ring, but reservation failure silently drops the record without a loss marker (bee-ebpf/src/main.rs:88-90,382-415). Synchronous episodes drain after attacker-controlled tool completion (bee-harness/src/episode.rs:323-338), so a denial flood can make transcripts silently incomplete."
+}
