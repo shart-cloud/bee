@@ -904,6 +904,20 @@ pub async fn run_repl(
     };
     let output = TerminalOutput::new(Box::new(printer));
 
+    // Publish the drawable width so the render tool can reject widgets this terminal can't show
+    // (008-grid-tui). Height is unbounded here — the inline REPL scrolls — and off a tty (piped
+    // output) nothing is known, so the viewport stays unconstrained and no fit check fires.
+    {
+        let (cols, is_tty) = crate::viz::terminal_dims();
+        crate::viz::viewport::set(crate::viz::viewport::Viewport {
+            cols,
+            inline_cols: cols,
+            full_screen: false,
+            constrained: is_tty,
+            ..crate::viz::viewport::Viewport::unconstrained()
+        });
+    }
+
     // Bee mascot (on by default; `--no-bee` / `BEE_MASCOT=0` to suppress): a static sprite banner in
     // the resting pose. (It was a fire-and-forget wing-flap, but the animation's deferred row-reclaim
     // fought the info line + prompt printed immediately below it, leaving two stray black antenna rows

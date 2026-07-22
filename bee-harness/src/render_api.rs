@@ -91,6 +91,90 @@ impl RenderContext {
     }
 }
 
+/// The hard floor below which the full-screen front-end renders nothing but "terminal too small"
+/// (contracts/modes-and-cli.md). Mirrors `tui::app::LayoutMode`'s floor.
+const HARD_FLOOR: (u16, u16) = (40, 10);
+
+/// Fail the script when the active surface cannot display `spec` (008-grid-tui).
+///
+/// The render tool has no screen of its own, so without this a script could commit a 10-column grid
+/// into a 48-column panel — or anything at all into a 30×8 terminal — and the model would be told
+/// "Rendered …" while nothing legible appeared. Every message names the concrete next action so the
+/// agent can adapt rather than repeat itself.
+///
+/// Skipped entirely when the viewport is unconstrained (headless episodes, batch runs, tests), so a
+/// non-interactive run never fails a render.
+fn check_fits(spec: &RenderSpec, panel_id: Option<&str>) -> Result<(), Box<EvalAltResult>> {
+    let vp = crate::viz::viewport::get();
+    if !vp.constrained {
+        return Ok(());
+    }
+
+    // 1. Nothing is displayable below the hard floor. Full-screen only: the inline REPL scrolls, so
+    // its height is never a constraint — only width can make output unreadable there.
+    if vp.full_screen && (vp.cols < HARD_FLOOR.0 || vp.rows < HARD_FLOOR.1) {
+        return Err(format!(
+            "render: the terminal is too small to display anything ({}×{}; {}×{} minimum). \
+             Ask the operator to enlarge the terminal before rendering.",
+            vp.cols, vp.rows, HARD_FLOOR.0, HARD_FLOOR.1
+        )
+        .into());
+    }
+
+    let need = crate::viz::buffer_render::min_width(spec);
+
+    match panel_id {
+        // 2. An inline render must fit the chat pane.
+        None => {
+            if vp.inline_cols > 0 && need > vp.inline_cols {
+                return Err(format!(
+                    "render: this widget needs at least {need} columns but the chat pane is only {}. \
+                     Simplify it (fewer grid columns / table columns) or split it across turns.",
+                    vp.inline_cols
+                )
+                .into());
+            }
+        }
+        Some(id) => {
+            // In the inline REPL a panel render falls back into the chat flow, so the panel column's
+            // limits don't apply — check it against the inline width instead.
+            if !vp.full_screen {
+                if vp.inline_cols > 0 && need > vp.inline_cols {
+                    return Err(format!(
+                        "render_to: this widget needs at least {need} columns but the surface is \
+                         only {}. Simplify it or render fewer columns.",
+                        vp.inline_cols
+                    )
+                    .into());
+                }
+                return Ok(());
+            }
+            // 3. A *new* panel needs a free slot; updating an existing one always fits.
+            if !vp.has_panel(id) && vp.panel_slots_free == 0 {
+                return Err(format!(
+                    "render_to: the panel column is full ({} live, no room for {id:?}). \
+                     Call remove_panel(id) or clear_panels() to reclaim space, or reuse one of these \
+                     ids: {}.",
+                    vp.live_panels.len(),
+                    vp.live_panels.join(", ")
+                )
+                .into());
+            }
+            // 4. And it must fit the column's width.
+            if vp.panel_cols > 0 && need > vp.panel_cols {
+                return Err(format!(
+                    "render_to: this widget needs at least {need} columns but a panel is only {} \
+                     wide. Use fewer grid/table columns, or render() it inline where there is more \
+                     room ({} columns).",
+                    vp.panel_cols, vp.inline_cols
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Validate a panel id (contracts/rhai-panel-api.md): 1–32 chars of `[a-z0-9_-]`. A bad id is a
 /// fail-closed script error, matching the drawing API's error style.
 fn validate_panel_id(id: &str) -> Result<(), Box<EvalAltResult>> {
@@ -796,6 +880,7 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
         move |widget: Dynamic| -> Result<(), Box<EvalAltResult>> {
             let spec = dynamic_to_spec(widget)?;
             validate(&spec)?;
+            check_fits(&spec, None)?;
             inline_ctx.commit_inline(spec);
             Ok(())
         },
@@ -807,6 +892,7 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
             validate_panel_id(&panel_id)?;
             let spec = dynamic_to_spec(widget)?;
             validate(&spec)?;
+            check_fits(&spec, Some(&panel_id))?;
             to_ctx.push_op(PanelOp::Upsert {
                 id: panel_id,
                 spec,
@@ -825,6 +911,7 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
             if ttl_ms <= 0 {
                 return Err("render_to_ttl: ttl_ms must be > 0".into());
             }
+            check_fits(&spec, Some(&panel_id))?;
             ttl_ctx.push_op(PanelOp::Upsert {
                 id: panel_id,
                 spec,
@@ -853,12 +940,21 @@ mod tests {
     use super::*;
 
     /// Build an engine wired to a fresh context and run `script`, returning what it produced.
-    fn run(script: &str) -> Result<RenderOutcome, String> {
+    /// Does **not** touch the viewport lock — callers below hold it.
+    fn run_inner(script: &str) -> Result<RenderOutcome, String> {
         let ctx = RenderContext::default();
         let mut engine = Engine::new();
         register(&mut engine, ctx.clone());
         engine.run(script).map_err(|e| e.to_string())?;
         Ok(ctx.take())
+    }
+
+    /// Run `script` against an **unconstrained** viewport (the headless default), serialized so a
+    /// concurrent fit-guard test can't leak its viewport into this one.
+    fn run(script: &str) -> Result<RenderOutcome, String> {
+        let _g = VP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::viz::viewport::reset();
+        run_inner(script)
     }
 
     #[test]
@@ -929,6 +1025,120 @@ mod tests {
         assert!(matches!(out.panel_ops[0], PanelOp::Clear));
         assert!(matches!(out.panel_ops[1], PanelOp::Upsert { .. }));
         assert!(matches!(out.panel_ops[2], PanelOp::Remove { .. }));
+    }
+
+    // --- Fit guard: fail the script when the surface can't display the widget -------------------
+    //
+    // These publish process-global viewport state, so they share one mutex and reset afterwards.
+    use crate::viz::viewport::{self, Viewport};
+    static VP_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Run `script` with `vp` published, always restoring the unconstrained default.
+    fn run_with_viewport(vp: Viewport, script: &str) -> Result<RenderOutcome, String> {
+        let _g = VP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        viewport::set(vp);
+        let out = run_inner(script);
+        viewport::reset();
+        out
+    }
+
+    /// A roomy full-screen viewport: 120×40, 70-col chat, 48-col panels, slots to spare.
+    fn roomy() -> Viewport {
+        Viewport {
+            cols: 120,
+            rows: 40,
+            inline_cols: 70,
+            panel_cols: 48,
+            panel_rows: 1,
+            panel_slots_free: 5,
+            live_panels: vec!["existing".into()],
+            full_screen: true,
+            constrained: true,
+        }
+    }
+
+    #[test]
+    fn headless_never_fails_a_render() {
+        // The default (unconstrained) viewport must not reject anything — episodes and batch runs
+        // have no screen at all.
+        let _g = VP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        viewport::reset();
+        assert!(run_inner(r#"render(grid(2, 12));"#).is_ok());
+    }
+
+    #[test]
+    fn a_terminal_below_the_hard_floor_fails_every_render() {
+        let vp = Viewport {
+            cols: 30,
+            rows: 8,
+            ..roomy()
+        };
+        let err = run_with_viewport(vp, r#"render(text("hi"));"#).unwrap_err();
+        assert!(err.contains("too small"), "got: {err}");
+        assert!(err.contains("40×10"), "message names the minimum: {err}");
+    }
+
+    #[test]
+    fn a_widget_wider_than_the_chat_pane_fails_inline() {
+        // A 12-column grid needs ≥96 columns; the chat pane is 70.
+        let err = run_with_viewport(roomy(), r#"render(grid(1, 12));"#).unwrap_err();
+        assert!(err.contains("at least"), "got: {err}");
+        assert!(err.contains("70"), "message names the actual width: {err}");
+    }
+
+    #[test]
+    fn a_widget_wider_than_a_panel_fails_and_suggests_inline() {
+        // 8 columns ≥ 64 > the 48-col panel, but still fits the 70-col chat pane.
+        let err = run_with_viewport(roomy(), r#"render_to("m", grid(1, 8));"#).unwrap_err();
+        assert!(err.contains("panel is only 48"), "got: {err}");
+        assert!(
+            err.contains("inline"),
+            "should point at the roomier surface: {err}"
+        );
+    }
+
+    #[test]
+    fn a_new_panel_fails_when_the_column_is_full_but_an_update_still_works() {
+        let full = Viewport {
+            panel_slots_free: 0,
+            ..roomy()
+        };
+        let err =
+            run_with_viewport(full.clone(), r#"render_to("brand-new", text("x"));"#).unwrap_err();
+        assert!(err.contains("panel column is full"), "got: {err}");
+        assert!(
+            err.contains("remove_panel") && err.contains("clear_panels"),
+            "message names the escape hatch: {err}"
+        );
+        assert!(err.contains("existing"), "and lists reusable ids: {err}");
+
+        // Updating a panel that already exists needs no free slot.
+        assert!(run_with_viewport(full, r#"render_to("existing", text("x"));"#).is_ok());
+    }
+
+    #[test]
+    fn ttl_renders_are_fit_checked_too() {
+        let full = Viewport {
+            panel_slots_free: 0,
+            ..roomy()
+        };
+        assert!(run_with_viewport(full, r#"render_to_ttl("new", text("x"), 500);"#).is_err());
+    }
+
+    #[test]
+    fn the_inline_repl_only_constrains_width_not_height() {
+        // Height is unbounded there (it scrolls), so a short terminal must not fail a render.
+        let inline = Viewport {
+            cols: 50,
+            rows: 0,
+            inline_cols: 50,
+            full_screen: false,
+            constrained: true,
+            ..Viewport::unconstrained()
+        };
+        assert!(run_with_viewport(inline.clone(), r#"render(text("hi"));"#).is_ok());
+        // A panel render falls back inline there, so it's checked against the inline width.
+        assert!(run_with_viewport(inline, r#"render_to("m", grid(1, 12));"#).is_err());
     }
 
     #[test]

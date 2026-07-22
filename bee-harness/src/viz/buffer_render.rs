@@ -109,6 +109,52 @@ pub fn spec_height(spec: &RenderSpec, width: u16) -> u16 {
     h.max(1)
 }
 
+/// The narrowest terminal width at which `spec` is still *legible* (008-grid-tui). Used to fail a
+/// render early when the surface can't show it, instead of drawing an unreadable smear.
+///
+/// Deliberately forgiving — it answers "is this hopeless?", not "is this pretty?" — so a legitimate
+/// render is never rejected. Grids dominate: N columns each need a few cells of content plus gaps.
+pub fn min_width(spec: &RenderSpec) -> u16 {
+    /// Narrowest column that can still show something in a grid cell.
+    const MIN_CELL_COLS: u16 = 8;
+    /// Narrowest column of a table.
+    const MIN_TABLE_COL: u16 = 6;
+    /// Floor for everything that wraps or scales freely (text, gauges, charts…).
+    const MIN_ANY: u16 = 8;
+
+    match spec {
+        RenderSpec::Grid {
+            cols, gap, cells, ..
+        } => {
+            let cols = (*cols).max(1);
+            let gaps = gap.unwrap_or(0).saturating_mul(cols.saturating_sub(1));
+            // Each track must fit the widest thing placed in it, floored at MIN_CELL_COLS.
+            let per_cell = cells
+                .iter()
+                .map(|c| min_width(&c.content).div_ceil(c.col_span.max(1)))
+                .max()
+                .unwrap_or(MIN_CELL_COLS)
+                .max(MIN_CELL_COLS);
+            cols.saturating_mul(per_cell).saturating_add(gaps)
+        }
+        RenderSpec::Table { headers, .. } => {
+            (headers.len() as u16).max(1).saturating_mul(MIN_TABLE_COL)
+        }
+        RenderSpec::Layout {
+            direction,
+            children,
+        } => match direction {
+            // Side-by-side children each need their own width; stacked ones share it.
+            Direction::Horizontal => children.iter().map(min_width).sum::<u16>().max(MIN_ANY),
+            Direction::Vertical => children.iter().map(min_width).max().unwrap_or(MIN_ANY),
+        },
+        // A sprite is one terminal column per pixel column (half-block packs rows, not columns).
+        RenderSpec::Sprite { spec } => spec.width.max(1),
+        RenderSpec::Animation { spec } => spec.frames.first().map(|f| f.width).unwrap_or(1).max(1),
+        _ => MIN_ANY,
+    }
+}
+
 /// Render a [`RenderSpec`] to inline ANSI lines. `max_width`/`max_height` bound the surface (each is
 /// itself clamped to [`MAX_WIDTH`]/[`MAX_HEIGHT`]).
 pub fn render_to_ansi(spec: &RenderSpec, max_width: u16, max_height: u16) -> Vec<String> {

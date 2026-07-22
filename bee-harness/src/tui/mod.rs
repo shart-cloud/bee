@@ -87,6 +87,8 @@ pub async fn run(
     // The Elm loop: draw, then wait for the next thing that changes the model.
     while !app.should_quit {
         app.panels.prune(std::time::Instant::now());
+        // Publish the drawable regions so the render tool can reject widgets this screen can't show.
+        crate::viz::viewport::set(view::viewport_for(&app));
         terminal.draw(|f| view::view(&app, f))?;
 
         // A submitted line starts a model turn; drive it to completion while still pumping the UI.
@@ -180,6 +182,7 @@ async fn run_turn(
 
     loop {
         app.panels.prune(std::time::Instant::now());
+        crate::viz::viewport::set(view::viewport_for(app));
         terminal.draw(|f| view::view(app, f))?;
         // A mid-turn quit (Ctrl-C / q from chat focus) drops `exchange`, cancelling the call.
         if app.should_quit {

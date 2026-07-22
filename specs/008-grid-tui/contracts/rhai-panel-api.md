@@ -24,6 +24,25 @@ clear_panels();                            // close every panel
   panel output coexist in one script (the tool returns a text summary to the model, never pixels).
 - `remove_panel` on an absent id is a no-op, not an error. `ttl_ms` must be > 0 and is clamped to 24h.
 
+## Fit checks (fail-closed on an undisplayable surface)
+
+The render tool has no screen of its own, so the front-end publishes its real drawable regions
+(`viz::viewport`) on startup and every resize. A commit that the surface cannot display is a **script
+error**, so the model gets an actionable signal instead of a cheerful "Rendered …" over invisible
+output:
+
+| Condition | Result |
+|---|---|
+| terminal below the hard floor (40×10), full-screen only | every render fails — "ask the operator to enlarge the terminal" |
+| widget's minimum width > chat pane | `render` fails, naming the needed vs available columns |
+| widget's minimum width > panel interior | `render_to` fails, suggesting `render()` inline where there is more room |
+| new panel id when the column has no free slot | `render_to` fails, naming `remove_panel`/`clear_panels` and the reusable live ids |
+
+Updating an **existing** panel never needs a free slot. The inline REPL constrains **width only** (it
+scrolls, so height is unbounded), and a panel render there falls back into the chat flow. When the
+viewport is *unconstrained* — headless episodes, batch runs, tests, piped output — **no fit check
+fires at all**, so non-interactive runs are unaffected.
+
 ## Tool-layer surface
 
 The `render` tool result carries the target so the front-end can route it:

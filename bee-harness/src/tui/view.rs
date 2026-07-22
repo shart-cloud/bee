@@ -244,6 +244,44 @@ fn chat_items(app: &App, width: u16) -> Vec<Item<'_>> {
 /// Smallest useful panel: top border + one content row + bottom border.
 const MIN_PANEL_ROWS: u16 = 3;
 
+/// The drawable regions this layout offers, published for the render tool's fit checks
+/// (008-grid-tui). Derived with the *same* constants `view` lays out with, so the tool can never
+/// accept a widget this renderer would then have to mangle.
+pub fn viewport_for(app: &App) -> crate::viz::viewport::Viewport {
+    let (cols, rows) = app.size;
+    // Mirror `view`: header(1) + input(3) + footer(1) are chrome; the rest is the body.
+    let body_rows = rows.saturating_sub(5);
+    let two_pane = app.layout_mode == LayoutMode::TwoPane && !app.panels.is_empty();
+
+    let (inline_cols, panel_w) = if two_pane {
+        let pw = (cols / 3).clamp(30, 50).min(cols.saturating_sub(20));
+        (cols.saturating_sub(pw), pw)
+    } else if app.layout_mode == LayoutMode::TwoPane {
+        // No panels yet, but a column *would* be carved out as soon as one appears.
+        let pw = (cols / 3).clamp(30, 50).min(cols.saturating_sub(20));
+        (cols, pw)
+    } else {
+        (cols, 0)
+    };
+
+    // How many more MIN_PANEL_ROWS-sized panels the column can seat.
+    let used: u16 = (app.panels.len() as u16).saturating_mul(MIN_PANEL_ROWS);
+    let panel_slots_free = body_rows.saturating_sub(used) / MIN_PANEL_ROWS.max(1);
+
+    crate::viz::viewport::Viewport {
+        cols,
+        rows,
+        inline_cols,
+        // Interior width/height of a panel, net of its border.
+        panel_cols: panel_w.saturating_sub(2),
+        panel_rows: MIN_PANEL_ROWS.saturating_sub(2).max(1),
+        panel_slots_free,
+        live_panels: app.panels.iter().map(|(id, _)| id.to_string()).collect(),
+        full_screen: true,
+        constrained: true,
+    }
+}
+
 fn render_panels(app: &App, frame: &mut Frame<'_>, area: Rect) {
     if app.panels.is_empty() || area.height == 0 {
         return;
