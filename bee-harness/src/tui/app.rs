@@ -39,11 +39,13 @@ pub enum LayoutMode {
 }
 
 impl LayoutMode {
-    /// The tier for a `(cols, rows)` size. Hard floor 40×10 (contracts/modes-and-cli.md).
+    /// The tier for a `(cols, rows)` size (contracts/modes-and-cli.md responsive table): hard floor
+    /// 40×10; a side-by-side panel column needs ≥ 120 cols **and** ≥ 24 rows — a wide-but-short
+    /// terminal has no vertical room for panels beside chat, so it stays single-pane.
     pub fn from_size(cols: u16, rows: u16) -> Self {
         if cols < 40 || rows < 10 {
             LayoutMode::TooSmall
-        } else if cols >= 120 {
+        } else if cols >= 120 && rows >= 24 {
             LayoutMode::TwoPane
         } else {
             LayoutMode::SinglePane
@@ -66,11 +68,19 @@ pub struct App {
     /// Whether new content keeps the view pinned to the bottom.
     pub follow_tail: bool,
     pub help_open: bool,
+    /// Panel overlay toggle for single-pane layouts (`p`) — US3 T036. Ignored in `TwoPane`, where
+    /// panels already have their own column.
+    pub panels_visible: bool,
     pub should_quit: bool,
     /// One-key `gg` state: a `g` was pressed and we're waiting for the second.
     pub pending_g: bool,
     /// A submitted line the event loop must send to the model (drained via [`App::take_outbox`]).
     pub outbox: Option<String>,
+    /// Text the user asked to yank (`y`); the event loop copies it via OSC 52 (US3 T035). Surfaced
+    /// as data so the reducer stays pure — same pattern as [`App::outbox`].
+    pub yank: Option<String>,
+    /// A `Ctrl-Z` suspend request; the event loop performs the SIGTSTP dance (US3 T035).
+    pub suspend_requested: bool,
 }
 
 impl App {
@@ -87,15 +97,43 @@ impl App {
             scroll: 0,
             follow_tail: true,
             help_open: false,
+            panels_visible: false,
             should_quit: false,
             pending_g: false,
             outbox: None,
+            yank: None,
+            suspend_requested: false,
         }
     }
 
     /// Take the pending outgoing user message, if any (the loop sends it to the model).
     pub fn take_outbox(&mut self) -> Option<String> {
         self.outbox.take()
+    }
+
+    /// Take the pending yank text, if any (the loop copies it via OSC 52).
+    pub fn take_yank(&mut self) -> Option<String> {
+        self.yank.take()
+    }
+
+    /// Take the pending suspend request (the loop performs the SIGTSTP dance).
+    pub fn take_suspend(&mut self) -> bool {
+        std::mem::take(&mut self.suspend_requested)
+    }
+
+    /// Whether the panel overlay should be drawn over chat: single-pane layouts only, toggled on,
+    /// and only when there is something to show (US3 T036).
+    pub fn overlay_open(&self) -> bool {
+        self.panels_visible && self.layout_mode == LayoutMode::SinglePane && !self.panels.is_empty()
+    }
+
+    /// The text of the newest message that carries prose — what `y` yanks. Widgets have no text
+    /// form worth putting on a clipboard, so they are skipped.
+    fn newest_text(&self) -> Option<String> {
+        self.chat.iter().rev().find_map(|m| match &m.body {
+            super::chat::Body::Text(t) if !t.trim().is_empty() => Some(t.clone()),
+            _ => None,
+        })
     }
 
     fn cycle_focus(&mut self) {
@@ -170,10 +208,27 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         }
         return;
     }
-    // Ctrl-C is a clean quit in any focus (the terminal's SIGINT meaning — reserved, FR-017).
-    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        app.should_quit = true;
-        return;
+    // Reserved keys keep their terminal meaning in every focus (FR-017, contracts/keybindings.md).
+    // Raw mode delivers them as key events rather than signals, so we re-create the semantics.
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            // SIGINT → clean quit (the loop restores on the way out).
+            KeyCode::Char('c') => {
+                app.should_quit = true;
+                return;
+            }
+            // SIGTSTP → suspend; the loop leaves the alt-screen, re-raises, and redraws on resume.
+            KeyCode::Char('z') => {
+                app.suspend_requested = true;
+                return;
+            }
+            // EOF quits, but only outside the input line (where it would eat a keystroke).
+            KeyCode::Char('d') if app.focus != Focus::Input => {
+                app.should_quit = true;
+                return;
+            }
+            _ => {}
+        }
     }
     if key.code == KeyCode::Tab {
         app.cycle_focus();
@@ -213,6 +268,13 @@ fn handle_chat_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('?') => app.help_open = true,
+        // Toggle the panel overlay (single-pane layouts, US3 T036). Bound in chat focus so `p` stays
+        // an ordinary character while typing — the contract's "any" context, minus the input line.
+        KeyCode::Char('p') => app.panels_visible = !app.panels_visible,
+        // Yank the newest prose message to the system clipboard via OSC 52 (FR-016, US3 T035).
+        KeyCode::Char('y') => app.yank = app.newest_text(),
+        // Esc closes the overlay first, before falling through to anything else.
+        KeyCode::Esc if app.panels_visible => app.panels_visible = false,
         KeyCode::Char('i') | KeyCode::Enter => app.focus = Focus::Input,
         KeyCode::Char('g') => {
             if was_g_pending {
@@ -399,6 +461,89 @@ mod tests {
         update(&mut a, Message::char('G'));
         assert_eq!(a.scroll, 0);
         assert!(a.follow_tail);
+    }
+
+    // --- US3 (T035/T036): overlay toggle, yank, and reserved keys -------------------------------
+
+    #[test]
+    fn p_toggles_the_panel_overlay_from_chat_but_types_in_input() {
+        let mut a = app();
+        // In input focus 'p' is just text.
+        update(&mut a, Message::char('p'));
+        assert_eq!(a.input.text(), "p");
+        assert!(!a.panels_visible);
+
+        a.input.clear();
+        update(&mut a, Message::key(KeyCode::Tab)); // chat focus
+        update(&mut a, Message::char('p'));
+        assert!(a.panels_visible, "p opens the overlay");
+        update(&mut a, Message::char('p'));
+        assert!(!a.panels_visible, "p closes it again");
+    }
+
+    #[test]
+    fn esc_closes_the_overlay() {
+        let mut a = app();
+        update(&mut a, Message::key(KeyCode::Tab));
+        update(&mut a, Message::char('p'));
+        update(&mut a, Message::key(KeyCode::Esc));
+        assert!(!a.panels_visible);
+    }
+
+    #[test]
+    fn overlay_open_requires_single_pane_and_content() {
+        let mut a = App::new(80, 24); // SinglePane
+        a.panels_visible = true;
+        assert!(!a.overlay_open(), "nothing to show with no panels");
+        a.panels.upsert("m", text_spec("x"));
+        assert!(a.overlay_open());
+
+        let mut wide = App::new(140, 40); // TwoPane — panels have their own column
+        wide.panels_visible = true;
+        wide.panels.upsert("m", text_spec("x"));
+        assert!(!wide.overlay_open());
+    }
+
+    #[test]
+    fn y_yanks_the_newest_prose_message() {
+        let mut a = app();
+        a.chat.push(ChatMessage::text(Role::User, "first"));
+        a.chat.push(ChatMessage::text(Role::Assistant, "second"));
+        update(&mut a, Message::key(KeyCode::Tab)); // chat focus
+        update(&mut a, Message::char('y'));
+        assert_eq!(a.take_yank().as_deref(), Some("second"));
+        assert!(a.take_yank().is_none(), "taking drains it");
+    }
+
+    #[test]
+    fn y_skips_widgets_which_have_no_text_form() {
+        let mut a = app();
+        a.chat.push(ChatMessage::text(Role::Assistant, "prose"));
+        a.chat.push(ChatMessage::widget(text_spec("a widget")));
+        update(&mut a, Message::key(KeyCode::Tab));
+        update(&mut a, Message::char('y'));
+        assert_eq!(a.take_yank().as_deref(), Some("prose"));
+    }
+
+    #[test]
+    fn ctrl_z_requests_suspend_without_quitting() {
+        let mut a = app();
+        update(&mut a, Message::char_mods('z', KeyModifiers::CONTROL));
+        assert!(!a.should_quit, "suspend is not a quit");
+        assert!(a.take_suspend(), "the loop is told to suspend");
+        assert!(!a.take_suspend(), "taking drains it");
+    }
+
+    #[test]
+    fn ctrl_d_quits_outside_the_input_line_only() {
+        // In input focus Ctrl-D must not end the session mid-typing.
+        let mut a = app();
+        update(&mut a, Message::char_mods('d', KeyModifiers::CONTROL));
+        assert!(!a.should_quit);
+
+        update(&mut a, Message::key(KeyCode::Tab)); // chat focus
+        update(&mut a, Message::char_mods('d', KeyModifiers::CONTROL));
+        assert!(a.should_quit);
     }
 
     #[test]

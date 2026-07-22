@@ -238,11 +238,33 @@ async fn main() -> ExitCode {
     }
     println!();
 
-    // --tui opts into the full-screen front-end; --no-tui forces the inline REPL (they conflict, so
-    // at most one is set). The default is the inline REPL — auto-selecting the TUI on a capable
-    // terminal is US3 (T033). The TUI front-end produces no transcript yet, so `session` is `None`
-    // in that path and `--save` is a no-op there.
-    let use_tui = args.tui && !args.no_tui;
+    // Choose the front-end (008-grid-tui, US3 T033; contracts/modes-and-cli.md). `--tui` is a
+    // request: piping, TERM=dumb, or a terminal below the hard floor all fall back to the inline
+    // REPL with a one-line note, so `--tui` never silently does nothing. The TUI front-end produces
+    // no transcript yet, so `session` is `None` in that path and `--save` is a no-op there.
+    let use_tui = {
+        #[cfg(feature = "tui")]
+        {
+            use std::io::IsTerminal;
+            let (cols, is_tty) = bee_harness::viz::terminal_dims();
+            let rows = terminal_rows().unwrap_or(24);
+            let choice = bee_harness::tui::frontend::choose(
+                args.tui,
+                args.no_tui,
+                is_tty && std::io::stdout().is_terminal(),
+                std::env::var("TERM").ok().as_deref(),
+                (cols, rows),
+            );
+            if let Some(note) = &choice.note {
+                eprintln!("bee-repl: {note}");
+            }
+            choice.frontend == bee_harness::tui::frontend::Frontend::FullScreen
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            args.tui && !args.no_tui
+        }
+    };
     let session: Option<bee_harness::repl::ReplSession> = {
         #[cfg(feature = "tui")]
         {
@@ -290,6 +312,31 @@ async fn main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+/// The terminal's row count via `TIOCGWINSZ` — the companion to `viz::terminal_dims`, which only
+/// reports columns (008-grid-tui, US3 T033: the hard-floor check needs both). `None` off a tty.
+#[cfg(feature = "tui")]
+fn terminal_rows() -> Option<u16> {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        return None;
+    }
+    if let Some(rows) = std::env::var("LINES")
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok())
+        .filter(|r| *r > 0)
+    {
+        return Some(rows);
+    }
+    // SAFETY: `winsize` is POD; `ioctl(TIOCGWINSZ)` only writes into it and returns 0 on success.
+    unsafe {
+        let mut ws: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_row > 0 {
+            return Some(ws.ws_row);
+        }
+    }
+    None
 }
 
 /// Build the sandbox for the session. With `--features enforce` and a policy, this is a real

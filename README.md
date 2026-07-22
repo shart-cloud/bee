@@ -47,6 +47,23 @@ Try the CLI (works without a special kernel):
                             --parent policies/parent.toml             # attenuation check
 ```
 
+### Full-screen TUI (optional)
+
+`bee-repl` runs the classic inline REPL by default. Build with the `tui` feature and pass `--tui` for
+a full-screen chat surface with model-owned live panels (008-grid-tui):
+
+```bash
+cargo build --release -p bee-harness --features tui --bin bee-repl
+./target/release/bee-repl --provider <provider.toml> --tui        # --no-tui forces inline
+```
+
+The agent can address a rendered widget to a named side panel with `render_to("metrics", widget)`
+(and `render_to_ttl` / `remove_panel` / `clear_panels` to manage them); an untargeted `render(widget)`
+still flows inline. `--tui` degrades honestly — piped output, `TERM=dumb`, or a terminal below 40×10
+fall back to the inline REPL with a one-line note. Keys: `Tab` focus, `p` panel overlay on narrow
+terminals, `y` yank, `?` help, `q` quit. The feature is **off by default**, so the standard build
+pulls in no terminal backend.
+
 ## Kernel requirements (for enforcement)
 
 The `enforce` feature and the `bee-ebpf` crate require:

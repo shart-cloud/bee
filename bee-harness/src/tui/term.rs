@@ -28,6 +28,21 @@ pub fn restore() {
     ratatui::restore();
 }
 
+/// Suspend the process the way `Ctrl-Z` does on a normal terminal (008-grid-tui, US3 T035).
+///
+/// Raw mode swallows the real SIGTSTP, so the front-end recreates it: leave the alt-screen and
+/// restore cooked mode **first** (so the user lands in a usable shell), re-raise `SIGTSTP` to
+/// actually stop, and — once `fg` delivers `SIGCONT` and `raise` returns — re-enter the alt-screen.
+/// The caller must force a full redraw afterwards, since the screen was handed back to the shell.
+pub fn suspend_and_resume() -> Tui {
+    restore();
+    // SAFETY: `raise` only signals the calling process; SIGTSTP stops us until SIGCONT resumes.
+    unsafe {
+        libc::raise(libc::SIGTSTP);
+    }
+    init()
+}
+
 /// RAII guard for the terminal-restore contract (008-grid-tui, T010; contracts/modes-and-cli.md).
 ///
 /// Holding one guarantees the terminal is restored on **every** way out of [`run`](super::run) that

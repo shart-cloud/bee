@@ -71,8 +71,21 @@ output and the Rhai `dots()` widget. Name left-aligned, colored dots, `N/M pass`
 - **`vsplit`** — vertical stack; widgets top→bottom, separated by a blank line.
 - **`hsplit`** — horizontal columns; widgets side by side, columns separated by `│` (`glyph::VLINE`).
 
-Map to ratatui `Layout` with `Direction::Vertical`/`Horizontal`. **Max nesting depth 3**, enforced by
-the `render_api` `LayoutBuilder` (not only Rhai's expression-depth limit).
+Map to ratatui `Layout` with `Direction::Vertical`/`Horizontal`. **Max nesting depth 4**, enforced by
+the `render_api` `LayoutBuilder` (not only Rhai's expression-depth limit). It was 3 before the
+`grid-tui` M1 milestone; a `Grid` counts as one level, so 4 keeps a grid-of-splits legal.
+
+### Render targets (008-grid-tui)
+
+A committed widget goes to one of two places, selected by the drawing call rather than the widget:
+
+- `render(widget)` — **inline**, into the conversation flow (the historical behavior).
+- `render_to(id, widget)` — a **named, persistent panel** beside the chat, replaced in place on
+  re-render. `render_to_ttl` adds an expiry; `remove_panel`/`clear_panels` reclaim the space.
+
+The panel surface, its id rules, and the fail-closed fit checks are specified in
+[008-grid-tui/contracts/rhai-panel-api.md](../../008-grid-tui/contracts/rhai-panel-api.md). Nothing
+about the widget vocabulary or the caps below changes with the target.
 
 ## Rendering caps
 

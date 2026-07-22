@@ -203,12 +203,17 @@ from presentation.
 
 | Milestone | Scope | Rewrite? | Ships |
 |---|---|---|---|
-| **M0** | Mascot bug fix (static inline mascot) | none | today |
-| **M1** | `RenderSpec::Grid` + Rhai `grid()` + `render_into` + caps + sprite-in-cell + tests + example | **pure extension** | grids as inline blocks — "model generates N×M grid" works now |
-| **M2** | Extract `SessionEngine` (event-driven core) from `run_repl` | internal refactor | no visible change; unblocks M3 |
-| **M3** | `bee-tui` alt-screen front-end: chat pane + input + footer, streaming, scroll, panic/resize/suspend, plain fallback | **new driver** | full-screen chat; grids inline-in-chat |
-| **M4** | Model-owned **live panels**: named panels, `render_to`/update semantics, transcript panel events | builds on M3 | the full "take over a region" vision |
-| **M5** | Polish: OSC 52 yank, mouse, command palette, layout config, responsive breakpoints, mascot in header, theme-coordinated grid borders | — | production feel |
+| ✅ **M0** | Mascot bug fix (static inline mascot) | none | today |
+| ✅ **M1** | `RenderSpec::Grid` + Rhai `grid()` + `render_into` + caps + sprite-in-cell + tests + example | **pure extension** | grids as inline blocks — "model generates N×M grid" works now |
+| ✅ **M2** | Extract `SessionEngine` (event-driven core) from `run_repl` | internal refactor | no visible change; unblocks M3 |
+| ✅ **M3** | `bee-tui` alt-screen front-end: chat pane + input + footer, streaming, scroll, panic/resize/suspend, plain fallback | **new driver** | full-screen chat; grids inline-in-chat |
+| ✅ **M4** | Model-owned **live panels**: named panels, `render_to`/update semantics, transcript panel events | builds on M3 | the full "take over a region" vision |
+| ◐ **M5** | Polish: OSC 52 yank, mouse, command palette, layout config, responsive breakpoints, mascot in header, theme-coordinated grid borders | — | production feel |
+
+**Status (008-grid-tui branch):** M0–M4 are landed — the full-screen front-end (`--tui`), model-owned
+live panels with lifecycle (`render_to` / `render_to_ttl` / `remove_panel` / `clear_panels`), rich
+inline rendering, transcript replay, and honest fallback. M5 is partly done (OSC 52 yank, responsive
+breakpoints, panel overlay); mouse, command palette, and layout config remain.
 
 M1 delivers the visible headline feature with zero risk to the current REPL. M3 is the big one and is
 cleanly gated behind a flag.

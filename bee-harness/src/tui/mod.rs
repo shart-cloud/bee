@@ -9,6 +9,7 @@
 
 pub mod app;
 pub mod chat;
+pub mod frontend;
 pub mod input;
 pub mod message;
 pub mod panels;
@@ -127,6 +128,9 @@ pub async fn run(
                 if let Some(msg) = message_from_event(ev) {
                     update(&mut app, msg);
                 }
+                if drain_intents(&mut app, &mut terminal) {
+                    terminal.clear()?; // returned from suspend — repaint the whole screen
+                }
             }
             // A read error or the stream ending both mean input is gone — exit cleanly.
             Some(Err(_)) | None => break,
@@ -138,6 +142,21 @@ pub async fn run(
     term::restore();
     restore_guard.disarm();
     Ok(())
+}
+
+/// Act on the side-effect intents the (pure) reducer surfaced: copy a yanked message via OSC 52, and
+/// perform the `Ctrl-Z` suspend/resume dance (US3 T035). Returns `true` if the terminal was handed
+/// back to the shell and re-acquired, so the caller can force a full redraw.
+fn drain_intents(app: &mut App, terminal: &mut Tui) -> bool {
+    if let Some(text) = app.take_yank() {
+        // Best-effort: an emulator that ignores OSC 52 simply doesn't copy; never fail the session.
+        let _ = term::osc52_copy(&text);
+    }
+    if app.take_suspend() {
+        *terminal = term::suspend_and_resume();
+        return true;
+    }
+    false
 }
 
 /// Drive one user→model exchange to completion while keeping the UI live (008-grid-tui, T018).
@@ -204,6 +223,9 @@ async fn run_turn(
                 Some(Ok(ev)) => {
                     if let Some(msg) = message_from_event(ev) {
                         update(app, msg);
+                    }
+                    if drain_intents(app, terminal) {
+                        terminal.clear()?;
                     }
                 }
                 Some(Err(_)) | None => app.should_quit = true,

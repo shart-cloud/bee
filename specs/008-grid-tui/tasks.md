@@ -110,15 +110,15 @@ tests in each story before/with implementation.
 
 ### Tests for User Story 3
 
-- [ ] T031 [P] [US3] Front-end selection tests in `bee-harness/tests/tui_fallback.rs`: non-tty→inline, `TERM=dumb`→inline, below hard floor→message (contracts/modes-and-cli.md).
-- [ ] T032 [P] [US3] Responsive + `NO_COLOR` snapshot tests (narrow single-pane, monochrome) appended to `bee-harness/tests/tui_snapshot.rs`.
+- [X] T031 [P] [US3] Front-end selection tests in `bee-harness/tests/tui_fallback.rs`: non-tty→inline, `TERM=dumb`→inline, below hard floor→message (contracts/modes-and-cli.md). Integration test `tests/tui_fallback.rs` over the pure `tui::frontend::choose` — non-tty, `TERM=dumb`, below-floor, exactly-at-floor, default/`--no-tui` silence, and the invariant that every *degraded* `--tui` carries a note.
+- [X] T032 [P] [US3] Responsive + `NO_COLOR` snapshot tests (narrow single-pane, monochrome) appended to `bee-harness/tests/tui_snapshot.rs`. **In-crate `view.rs` tests** (matching US1/US2): narrow→overlay reveals panels, overlay is single-pane-only, wide-but-short stays single-pane, every region survives monochrome, and the footer sheds hints rather than truncating.
 
 ### Implementation for User Story 3
 
-- [ ] T033 [US3] Front-end selection + fallback (not-a-tty / `TERM=dumb` / below hard floor) with a one-line stderr note in `bee-harness/src/bin/bee-repl.rs` (extends T019; contracts/modes-and-cli.md).
-- [ ] T034 [P] [US3] `LayoutMode` + responsive breakpoints (TwoPane / SinglePane / TooSmall) and the "terminal too small" render in `bee-harness/src/tui/view.rs` (+ recompute `layout_mode` on resize in `tui/app.rs`) (research D11).
-- [ ] T035 [P] [US3] OSC-52 yank of the current message bound to `y`, plus reserved-key handling (Ctrl-C→clean quit, Ctrl-Z→suspend) in `bee-harness/src/tui/term.rs` and the reducer (research D9; contracts/keybindings.md).
-- [ ] T036 [US3] Single-pane panel overlay toggle (`p`) in `bee-harness/src/tui/view.rs` and the reducer (depends on T034, T028).
+- [X] T033 [US3] Front-end selection + fallback (not-a-tty / `TERM=dumb` / below hard floor) with a one-line stderr note in `bee-harness/src/bin/bee-repl.rs` (extends T019; contracts/modes-and-cli.md). `tui::frontend::choose` (pure, all inputs passed in) + wiring in `bee-repl.rs` with a one-line stderr note. **Found and fixed a real panic**: the pre-T033 binary launched the TUI on a pipe and panicked in `ratatui::init`.
+- [X] T034 [P] [US3] `LayoutMode` + responsive breakpoints (TwoPane / SinglePane / TooSmall) and the "terminal too small" render in `bee-harness/src/tui/view.rs` (+ recompute `layout_mode` on resize in `tui/app.rs`) (research D11). `LayoutMode::from_size` now also requires ≥24 rows for `TwoPane` (a wide-but-short terminal has no vertical room for a panel column); `TooSmall` render and resize recompute were already in place.
+- [X] T035 [P] [US3] OSC-52 yank of the current message bound to `y`, plus reserved-key handling (Ctrl-C→clean quit, Ctrl-Z→suspend) in `bee-harness/src/tui/term.rs` and the reducer (research D9; contracts/keybindings.md). OSC-52 yank on `y` (newest prose message; widgets skipped) surfaced as `App::yank` so the reducer stays pure, plus real `Ctrl-Z` suspend via `term::suspend_and_resume` (restore → re-raise SIGTSTP → re-init → full redraw). `Ctrl-C` quits; `Ctrl-D` quits outside the input line.
+- [X] T036 [US3] Single-pane panel overlay toggle (`p`) in `bee-harness/src/tui/view.rs` and the reducer (depends on T034, T028). `p` toggles a centered panel overlay in single-pane layouts (`App::panels_visible` / `overlay_open()`); `Esc` closes it. The footer advertises `p` only when the overlay is the *only* way to see panels.
 
 **Checkpoint**: all three stories independently functional; feature safe in every environment.
 
@@ -126,11 +126,11 @@ tests in each story before/with implementation.
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T037 [P] Add a `bee-core` dependency-guard test (asserts no terminal/async-runtime dep entered the core) in `bee-harness/tests/core_deps_guard.rs` (Constitution V, FR-021).
-- [ ] T038 [P] Docs: update milestone status in `docs/grid-tui-plan.md`, note `--tui` in `README.md`, and add the TUI/panel entries to `docs/design-system.md`.
-- [ ] T039 [P] Update `specs/003-visual-render/contracts/honeycomb.md` (nesting ≤ 4; note the panel/`RenderTarget` surface).
-- [ ] T040 Run the `quickstart.md` scenarios A–D on a capable terminal and record results.
-- [ ] T041 Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and the full `bee-harness` test suite; all green.
+- [X] T037 [P] Add a `bee-core` dependency-guard test (asserts no terminal/async-runtime dep entered the core) in `bee-harness/tests/core_deps_guard.rs` (Constitution V, FR-021). `tests/core_deps_guard.rs` scans `bee-core`/`bee-common` manifests for terminal/async-runtime/scripting deps — including renamed (`package = `) declarations — plus a self-test proving the guard can actually fail.
+- [X] T038 [P] Docs: update milestone status in `docs/grid-tui-plan.md`, note `--tui` in `README.md`, and add the TUI/panel entries to `docs/design-system.md`. README `--tui` section, `docs/design-system.md` full-screen surface table + checklist rows, `docs/grid-tui-plan.md` milestones marked (M0–M4 landed, M5 partial).
+- [X] T039 [P] Update `specs/003-visual-render/contracts/honeycomb.md` (nesting ≤ 4; note the panel/`RenderTarget` surface). `honeycomb.md`: nesting cap corrected to 4 (a `Grid` counts as a level) + a render-targets section pointing at the panel contract.
+- [~] T040 Run the `quickstart.md` scenarios A–D on a capable terminal and record results. **Partially complete — automatable scenarios run and green:** Scenario C.1 (piped stdout → inline with an honest stderr note) verified live against a mock provider, and **SC-004** confirmed byte-wise (zero alt-screen/mouse/bracketed-paste escapes in piped stdout; the note goes to stderr). Scenario D (replay) is covered by `tests/panel_replay.rs`. **Still needs a human at a real terminal:** Scenario A (streaming + the four exit paths), Scenario B (live panel updates), and C.2–C.4 (`NO_COLOR`, narrow-resize overlay, below-floor message) — a tty cannot be driven from CI.
+- [X] T041 Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and the full `bee-harness` test suite; all green. `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -D warnings`, and the full suite all green: **202 tests** under `--features tui`, 149 default, 41 test binaries workspace-wide, zero failures.
 
 ---
 

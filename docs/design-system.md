@@ -120,6 +120,25 @@ Render widgets — charts, gauges, tables, dot grids, sprites, grids — are aut
 (`viz::render_api`) and validated into a pure-serde `RenderSpec`. The full component pipeline and the
 grid system live in [the grid TUI plan](./grid-tui-plan.md).
 
+### Full-screen surface (008-grid-tui)
+
+`bee-repl --tui` (build with `--features tui`) adds a full-screen front-end over the same
+conversation core the inline REPL uses, so both stay in lock-step.
+
+| Element | Form | Used for |
+|---|---|---|
+| **Regions** | header · chat · input · footer, fixed positions | the frame never reflows between turns |
+| **Panel** | bordered block titled with its id, right-hand column | model-owned live output (`render_to`) |
+| **Panel overlay** | centered popup over chat, toggled with `p` | panels on single-pane (< 120 col) layouts |
+| **Help overlay** | `?` — full key reference | discoverability ladder (footer → `?`) |
+| **Overflow note** | `+N more — remove_panel()/clear_panels()` | honest report when panels exceed the column |
+| **Too-small** | `terminal too small (min 40×10)` | below the hard floor; nothing else is drawn |
+
+Panel rules that shape the design: a panel is **replaced in place** by id (never duplicated), panels
+are sized to their **content** rather than split evenly, and a widget that cannot be displayed fails
+the script with an actionable message instead of drawing a smear. Inline widgets render through the
+same truecolor buffer path as panels — never an ASCII placeholder.
+
 New chrome should compose these before introducing anything new. If a state needs a color, it needs
 a role; if it needs a mark, it needs a glyph from the vocabulary.
 
@@ -133,3 +152,5 @@ a role; if it needs a mark, it needs a glyph from the vocabulary.
 - [ ] A new theme would be a `viz::themes` entry, not a render-site change.
 - [ ] Sprites verified in monochrome silhouette before judging the color.
 - [ ] Fixed column order; chrome doesn't reflow between frames.
+- [ ] Full-screen work restores the terminal on **every** exit path (quit / Ctrl-C / Ctrl-Z / panic).
+- [ ] Anything drawn in a panel is also reachable on a narrow terminal (the `p` overlay).

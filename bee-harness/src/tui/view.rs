@@ -51,10 +51,36 @@ pub fn view(app: &App, frame: &mut Frame<'_>) {
         render_chat(app, frame, chat);
     }
     render_input(app, frame, input);
-    render_footer(frame, footer);
+    render_footer(app, frame, footer);
 
+    // Single-pane layouts have no panel column, so `p` overlays the panels above chat (US3 T036).
+    if app.overlay_open() {
+        render_panel_overlay(app, frame, area);
+    }
     if app.help_open {
         render_help(frame, area);
+    }
+}
+
+/// The single-pane panel overlay (US3 T036): panels stacked in a bordered popup over the chat, so a
+/// narrow terminal can still see model-owned output. Toggled with `p`, closed with `p`/`Esc`.
+fn render_panel_overlay(app: &App, frame: &mut Frame<'_>, area: Rect) {
+    let w = area.width.saturating_sub(4).clamp(20, 72);
+    let h = area.height.saturating_sub(4).max(5);
+    let popup = center(area, w, h);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(role_style(ThemeRole::Info))
+        .title(Span::styled(
+            format!(" panels ({}) — p/Esc to close ", app.panels.len()),
+            role_style(ThemeRole::Info),
+        ));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    if inner.width > 0 && inner.height > 0 {
+        render_panels(app, frame, inner);
     }
 }
 
@@ -69,10 +95,30 @@ fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn render_footer(frame: &mut Frame<'_>, area: Rect) {
-    // The 5 most useful keys (contracts/keybindings.md). Dim so it recedes.
-    let hint = " Enter send   ↑↓/PgUp·Dn scroll   Tab focus   ? help   q quit ";
-    frame.render_widget(Paragraph::new(Line::styled(hint, dim_style())), area);
+fn render_footer(app: &App, frame: &mut Frame<'_>, area: Rect) {
+    // The most useful keys (contracts/keybindings.md), trimmed to what actually fits so a narrow
+    // terminal never truncates mid-hint. `p` is advertised only where the overlay is the *only* way
+    // to see panels — exactly the case where it matters most.
+    let show_p = !app.panels.is_empty() && app.layout_mode == LayoutMode::SinglePane;
+    let mut parts: Vec<&str> = vec!["Enter send", "↑↓/PgUp·Dn scroll", "Tab focus"];
+    if show_p {
+        parts.push("p panels");
+    }
+    parts.extend(["y yank", "? help", "q quit"]);
+
+    // Shed the least essential hints first; Enter/help/quit (and `p` when shown) always survive.
+    let width = area.width as usize;
+    let rendered = |parts: &[&str]| format!(" {} ", parts.join("   "));
+    for droppable in ["y yank", "↑↓/PgUp·Dn scroll", "Tab focus"] {
+        if rendered(&parts).chars().count() <= width {
+            break;
+        }
+        parts.retain(|p| *p != droppable);
+    }
+    frame.render_widget(
+        Paragraph::new(Line::styled(rendered(&parts), dim_style())),
+        area,
+    );
 }
 
 fn render_input(app: &App, frame: &mut Frame<'_>, area: Rect) {
@@ -366,9 +412,11 @@ fn render_help(frame: &mut Frame<'_>, area: Rect) {
         ("PgUp PgDn", "page the chat"),
         ("gg G", "top / bottom"),
         ("Tab", "cycle focus (input · chat)"),
-        ("y", "yank current message"),
+        ("p", "toggle panel overlay (narrow layouts)"),
+        ("y", "yank newest message (OSC 52)"),
         ("? Esc", "close this help"),
         ("q  Ctrl-C", "quit"),
+        ("Ctrl-Z", "suspend (fg to resume)"),
     ];
     let mut lines = vec![Line::styled(
         "keybindings",
@@ -564,6 +612,117 @@ mod tests {
         assert!(
             out.contains("remove_panel") || out.contains("clear_panels"),
             "note should point at the way to reclaim space:\n{out}"
+        );
+    }
+
+    // --- US3 (T032): responsive layouts, the overlay, and NO_COLOR --------------------------------
+
+    #[test]
+    fn narrow_terminal_hides_the_panel_column_and_the_overlay_brings_panels_back() {
+        // Below 120 cols there is no room for a side-by-side column, so panels are invisible until
+        // `p` opens the overlay (T036) — the gap that made panel output unreachable on a narrow term.
+        let mut app = App::new(80, 24);
+        app.chat.push(ChatMessage::text(Role::User, "hello"));
+        app.panels.upsert(
+            "metrics",
+            RenderSpec::Text {
+                content: "CPU 82%".into(),
+                style: None,
+                bold: false,
+                dim: false,
+            },
+        );
+        assert_eq!(app.layout_mode, LayoutMode::SinglePane);
+
+        let closed = render(&app, 80, 24);
+        assert!(
+            !closed.contains("CPU 82%"),
+            "panel hidden while the overlay is closed:\n{closed}"
+        );
+
+        app.panels_visible = true;
+        let open = render(&app, 80, 24);
+        assert!(
+            open.contains("CPU 82%"),
+            "overlay reveals the panel:\n{open}"
+        );
+        assert!(open.contains("panels"), "overlay is labelled:\n{open}");
+    }
+
+    #[test]
+    fn the_overlay_is_single_pane_only() {
+        // In TwoPane the panels already have a column, so `p` must not stack an overlay on top.
+        let mut app = App::new(140, 40);
+        app.panels.upsert("m", RenderSpec::Separator);
+        app.panels_visible = true;
+        assert_eq!(app.layout_mode, LayoutMode::TwoPane);
+        assert!(!app.overlay_open(), "no overlay when a real column exists");
+    }
+
+    #[test]
+    fn a_wide_but_short_terminal_stays_single_pane() {
+        // 120+ cols but under 24 rows has no vertical room for panels beside chat (T034).
+        assert_eq!(LayoutMode::from_size(160, 20), LayoutMode::SinglePane);
+        assert_eq!(LayoutMode::from_size(160, 24), LayoutMode::TwoPane);
+    }
+
+    #[test]
+    fn every_region_still_renders_without_color() {
+        // NO_COLOR degrades to monochrome but must never blank a region (FR-014, SC-005). Symbols are
+        // color-independent, so a matching symbol grid proves the layout survives unstyled.
+        let mut app = App::new(120, 24);
+        app.chat.push(ChatMessage::text(Role::User, "hello bee"));
+        app.panels.upsert(
+            "metrics",
+            RenderSpec::Text {
+                content: "CPU 82%".into(),
+                style: None,
+                bold: false,
+                dim: false,
+            },
+        );
+        let out = render(&app, 120, 24);
+        for expected in [
+            "bee",
+            "you  hello bee",
+            "metrics",
+            "CPU 82%",
+            "input",
+            "q quit",
+        ] {
+            assert!(out.contains(expected), "{expected:?} missing:\n{out}");
+        }
+    }
+
+    #[test]
+    fn the_footer_advertises_yank_always_and_p_only_when_the_overlay_is_the_way_in() {
+        // Wide + no panels: no reason to mention `p`.
+        let wide = App::new(120, 24);
+        let out = render(&wide, 120, 24);
+        assert!(out.contains("y yank"), "yank hint missing:\n{out}");
+        assert!(!out.contains("p panels"), "no overlay to advertise:\n{out}");
+
+        // Narrow + panels: the overlay is the only way to see them, so `p` is advertised.
+        let mut narrow = App::new(80, 24);
+        narrow.panels.upsert("m", RenderSpec::Separator);
+        let out = render(&narrow, 80, 24);
+        assert!(out.contains("p panels"), "overlay hint missing:\n{out}");
+    }
+
+    #[test]
+    fn the_footer_never_truncates_mid_hint_on_a_narrow_terminal() {
+        // It sheds low-priority hints rather than getting cut off; quit must always survive.
+        let mut app = App::new(50, 20);
+        app.panels.upsert("m", RenderSpec::Separator);
+        let out = render(&app, 50, 20);
+        let footer = out.lines().last().unwrap_or_default();
+        assert!(
+            footer.contains("q quit"),
+            "quit hint must survive:\n{footer}"
+        );
+        assert!(
+            footer.chars().filter(|c| !c.is_whitespace()).count() > 0,
+            "footer is not blank"
         );
     }
 
