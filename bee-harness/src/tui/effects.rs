@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Offset, Position, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Color;
 use tachyonfx::{blit_buffer_region, fx, Effect, EffectManager, Motion, SimpleRng};
 
 use crate::config::{VisualConfig, VisualLevel};
@@ -297,6 +297,107 @@ fn blit(src: Buffer, area: Rect, ms: u32) -> Effect {
     })
 }
 
+// --- Harness chrome (US5) ---------------------------------------------------------------------
+//
+// bee's own UI moves with the same vocabulary it gives the agent, but through a separate door: every
+// preset below resolves with `Origin::Chrome` and registers **unkeyed**, so no agent panel name can
+// address, cancel, or replace one (FR-028). The agent picks its own effects; it does not get to pick
+// bee's. The motion switch still silences all of it — that axis is the operator's, not the agent's.
+
+/// The header's session-start fade (FR-026).
+pub const CHROME_HEADER_MS: u32 = 300;
+/// The footer's session-start slide.
+pub const CHROME_FOOTER_MS: u32 = 300;
+/// A tool-call line acknowledging its result, and the pass/fail flash at the end of an episode.
+pub const CHROME_PULSE_MS: u32 = 500;
+/// The mascot materializing at startup.
+pub const CHROME_MASCOT_MS: u32 = 600;
+
+/// Which piece of bee's own UI a chrome effect belongs to (FR-026).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Chrome {
+    /// The header fades up from the background at session start.
+    Header,
+    /// The footer slides up into place beneath it.
+    Footer,
+    /// A tool-call line flashes `accent` when its result lands, so the eye finds the pair.
+    ToolResult,
+    /// An episode finished: `success` or `error`, depending.
+    EpisodePass,
+    EpisodeFail,
+    /// The mascot materializes out of block glyphs.
+    Mascot,
+}
+
+impl Chrome {
+    /// The effect this preset plays. Chrome speaks the same twelve-verb vocabulary the agent does —
+    /// there is no second, privileged effect language.
+    fn spec(self) -> EffectSpec {
+        match self {
+            Chrome::Header => EffectSpec::FadeIn {
+                ms: CHROME_HEADER_MS,
+            },
+            Chrome::Footer => EffectSpec::SlideIn {
+                direction: EffectDirection::Bottom,
+                ms: CHROME_FOOTER_MS,
+            },
+            Chrome::ToolResult => EffectSpec::Pulse {
+                color: "accent".into(),
+                ms: CHROME_PULSE_MS,
+            },
+            Chrome::EpisodePass => EffectSpec::Pulse {
+                color: "success".into(),
+                ms: CHROME_PULSE_MS,
+            },
+            Chrome::EpisodeFail => EffectSpec::Pulse {
+                color: "error".into(),
+                ms: CHROME_PULSE_MS,
+            },
+            // Block glyphs resolving into the bee, rather than the old pop-in (US5 §2).
+            Chrome::Mascot => EffectSpec::EvolveIn {
+                ms: CHROME_MASCOT_MS,
+            },
+        }
+    }
+}
+
+/// Play a chrome preset over `area` (FR-026, FR-028).
+///
+/// Unkeyed on purpose: `EffectManager::unique` cancels by key, so a keyed chrome effect would be
+/// cancellable by any agent panel that happened to share the name. With no key there is nothing for
+/// the agent to name.
+///
+/// Returns whether anything was registered — `false` under the motion switch, which is the one axis
+/// that reaches chrome (FR-006b). `visual_level` does not: it governs the agent, and this is bee's
+/// own UI (FR-006d).
+pub fn chrome(effects: &mut Effects, which: Chrome, area: Rect, visual: VisualConfig) -> bool {
+    let ctx = ResolveCtx::chrome(visual, area);
+    apply(effects, None, &which.spec(), &ctx)
+}
+
+/// The panel column arriving: it slides in from the right edge when the first panel is created
+/// (FR-026).
+///
+/// Motion along the axis that actually changed — the chat pane giving up width — so the movement
+/// says what happened rather than merely marking that something did.
+///
+/// tasks.md called for tachyonfx's `stretch` here. That one belongs to the small family (with
+/// `resize_area`) that must be applied *before* widgets render, because it resizes the area they
+/// draw into; this pipeline applies effects after rendering (FR-001), where `stretch` collapses the
+/// drawn column and never gives it back. `slide_in` is the post-render effect with the same reading.
+pub fn column_appear(effects: &mut Effects, area: Rect, visual: VisualConfig) -> bool {
+    let ctx = ResolveCtx::chrome(visual, area);
+    apply(
+        effects,
+        None,
+        &EffectSpec::SlideIn {
+            direction: EffectDirection::Right,
+            ms: CHROME_FOOTER_MS,
+        },
+        &ctx,
+    )
+}
+
 fn motion(d: EffectDirection) -> Motion {
     match d {
         EffectDirection::Left => Motion::LeftToRight,
@@ -395,11 +496,6 @@ pub fn apply(
     }
 }
 
-/// A style helper for effects that need one (`stretch`, `expand`).
-pub fn effect_style() -> Style {
-    Style::default()
-}
-
 /// A fixed-step clock for testing effects without a terminal or a real one (T015).
 ///
 /// Real frames redraw the widget *and then* apply effects, so a harness that only advanced the
@@ -467,7 +563,7 @@ impl Timeline {
 mod tests {
     use super::*;
     use crate::config::VisualConfig;
-    use ratatui::style::Modifier;
+    use ratatui::style::{Modifier, Style};
 
     fn area() -> Rect {
         Rect::new(0, 0, 20, 5)
@@ -1012,6 +1108,180 @@ mod tests {
             "chrome text effects still move"
         );
         assert_eq!(colors(&shots[1]), colors(&base), "and still move no color");
+    }
+
+    // --- US5 (T063/T064): bee's own chrome ------------------------------------------------------
+
+    fn all_chrome() -> Vec<Chrome> {
+        vec![
+            Chrome::Header,
+            Chrome::Footer,
+            Chrome::ToolResult,
+            Chrome::EpisodePass,
+            Chrome::EpisodeFail,
+            Chrome::Mascot,
+        ]
+    }
+
+    #[test]
+    fn every_chrome_preset_plays_in_an_ordinary_session() {
+        let mut e = Effects::new();
+        for cue in all_chrome() {
+            assert!(
+                chrome(&mut e, cue, area(), on()),
+                "{cue:?} did not register"
+            );
+        }
+        assert!(column_appear(&mut e, area(), on()));
+    }
+
+    #[test]
+    fn chrome_is_unkeyed_so_no_agent_panel_can_cancel_it() {
+        // FR-028. Cancellation works by key; chrome has none, so there is nothing for the agent to
+        // name. Even a panel called after every reserved-sounding word cannot touch it.
+        let mut e = Effects::new();
+        assert!(chrome(&mut e, Chrome::Header, area(), on()));
+        let mut buf = Buffer::empty(area());
+        e.process(Duration::from_millis(16), &mut buf, area());
+        assert!(e.is_running());
+
+        for name in ["header", "footer", "chrome", "mascot", "takeover", ""] {
+            e.cancel(name);
+        }
+        e.process(Duration::from_millis(16), &mut buf, area());
+        assert!(
+            e.is_running(),
+            "an agent cancelled bee's own chrome by naming a panel"
+        );
+    }
+
+    #[test]
+    fn an_agent_effect_on_any_key_cannot_replace_a_chrome_effect() {
+        // The other half of FR-028: `unique(key, fx)` replaces same-keyed effects, and chrome has no
+        // key to collide with — so registering agent effects leaves it running, not replaced.
+        let mut e = Effects::new();
+        chrome(&mut e, Chrome::Footer, area(), on());
+        let c = ctx(on(), true, Origin::Agent);
+        for key in ["a", "b", "c"] {
+            apply(&mut e, Some(key), &panel_enter_spec(), &c);
+        }
+        let mut buf = Buffer::empty(area());
+        // Drain past the agent effects' 300ms but not past the footer's slide.
+        for _ in 0..12 {
+            e.process(Duration::from_millis(16), &mut buf, area());
+        }
+        assert!(
+            e.is_running(),
+            "chrome outlives the agent effects around it"
+        );
+    }
+
+    #[test]
+    fn chrome_still_plays_at_visual_level_none() {
+        // FR-006d / US5 §3: the level governs the agent. An operator who gives the agent no screen
+        // has not asked bee to stop moving its own UI.
+        let level_none = VisualConfig {
+            level: VisualLevel::None,
+            ..VisualConfig::default()
+        };
+        let mut e = Effects::new();
+        for cue in all_chrome() {
+            assert!(
+                chrome(&mut e, cue, area(), level_none),
+                "{cue:?} was stripped by a level that governs the agent"
+            );
+        }
+        assert!(column_appear(&mut e, area(), level_none));
+    }
+
+    #[test]
+    fn no_chrome_plays_when_motion_is_off_and_the_loop_never_ticks() {
+        // US5 §4/§5 and FR-006b: the motion switch is the one axis that *does* reach chrome, and
+        // nothing registering is what keeps the 60fps state unreachable.
+        let mut e = Effects::new();
+        for cue in all_chrome() {
+            assert!(
+                !chrome(&mut e, cue, area(), motionless()),
+                "{cue:?} survived the kill switch"
+            );
+        }
+        assert!(!column_appear(&mut e, area(), motionless()));
+        assert!(!e.is_running());
+    }
+
+    #[test]
+    fn the_header_fade_starts_at_the_theme_color_and_lands_on_the_real_header() {
+        // US5 §1: background-colored cells at t=0, the header's own colors by 300ms.
+        let mut e = Effects::new();
+        assert!(chrome(&mut e, Chrome::Header, area(), on()));
+        let shots = Timeline::frames(area()).run(
+            &mut e,
+            &[
+                Duration::ZERO,
+                Duration::from_millis(CHROME_HEADER_MS as u64),
+            ],
+            draw_base,
+        );
+        let mut finished = Buffer::empty(area());
+        draw_base(&mut finished);
+        let fade_from = role_color(Role::Info);
+        assert!(colors(&shots[0]).iter().all(|(fg, _)| *fg == fade_from));
+        assert_eq!(colors(&shots[1]), colors(&finished));
+    }
+
+    #[test]
+    fn the_mascot_materializes_out_of_block_glyphs() {
+        // US5 §2: an `evolve_into`, not the old pop-in — so midway the cells hold substituted
+        // glyphs rather than the final sprite.
+        let mut e = Effects::new();
+        assert!(chrome(&mut e, Chrome::Mascot, area(), on()));
+        let shots = Timeline::frames(area()).run(
+            &mut e,
+            &[
+                Duration::from_millis(CHROME_MASCOT_MS as u64 / 2),
+                Duration::from_millis(CHROME_MASCOT_MS as u64),
+            ],
+            draw_base,
+        );
+        let mut finished = Buffer::empty(area());
+        draw_base(&mut finished);
+        assert_ne!(
+            symbols(&shots[0]),
+            symbols(&finished),
+            "midway it is still evolving"
+        );
+        assert_eq!(symbols(&shots[1]), symbols(&finished), "and arrives whole");
+    }
+
+    #[test]
+    fn the_verdict_pulses_use_the_success_and_error_roles() {
+        // FR-026: pass and fail are different colors because they mean different things.
+        assert!(matches!(
+            Chrome::EpisodePass.spec(),
+            EffectSpec::Pulse { ref color, .. } if color == "success"
+        ));
+        assert!(matches!(
+            Chrome::EpisodeFail.spec(),
+            EffectSpec::Pulse { ref color, .. } if color == "error"
+        ));
+        assert!(matches!(
+            Chrome::ToolResult.spec(),
+            EffectSpec::Pulse { ref color, .. } if color == "accent"
+        ));
+    }
+
+    #[test]
+    fn chrome_speaks_the_same_vocabulary_the_agent_does() {
+        // There is no second, privileged effect language: every preset is one of the twelve.
+        for cue in all_chrome() {
+            let spec = cue.spec();
+            assert!(
+                all_specs()
+                    .iter()
+                    .any(|s| std::mem::discriminant(s) == std::mem::discriminant(&spec)),
+                "{cue:?} used an effect outside the twelve"
+            );
+        }
     }
 
     #[test]

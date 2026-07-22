@@ -73,6 +73,9 @@ pub async fn run(
     let mut restore_guard = term::RestoreGuard::terminal();
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let mut app = App::new(cols, rows).with_visual(config.visual);
+    // bee's own opening: the header fades up and the footer slides in behind it (US5 §1, FR-026).
+    app.chrome_cues
+        .extend([effects::Chrome::Header, effects::Chrome::Footer]);
 
     // Greeting, mirroring the inline REPL's info banner — plus the resting-pose mascot when enabled,
     // which also exercises the sprite→Buffer rasterizer (T008) on the full-screen path.
@@ -80,6 +83,9 @@ pub async fn run(
         app.chat.push(ChatMessage::widget(RenderSpec::Sprite {
             spec: crate::viz::bee::sprite(),
         }));
+        // It evolves out of block glyphs rather than popping in (US5 §2). Gated on the existing
+        // `BEE_MASCOT` opt-in, because a session that asked for no mascot gets no mascot animation.
+        app.chrome_cues.push(effects::Chrome::Mascot);
     }
     app.chat.push(ChatMessage::text(
         Role::System,

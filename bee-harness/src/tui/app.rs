@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::chat::{ChatMessage, Role};
-use super::effects::Effects;
+use super::effects::{Chrome, Effects};
 use super::input::InputState;
 use super::message::Message;
 use super::overlay::Overlay;
@@ -104,6 +104,13 @@ pub struct App {
     /// Redraws caused by a periodic tick rather than by an event (009 SC-003). Event-driven draws
     /// are not counted — the claim under test is that an idle session wakes up zero times.
     pub periodic_redraws: u64,
+    /// Chrome cues owed to the next frame (009 US5). Surfaced as data for the same reason
+    /// [`App::outbox`] is: the reducer stays pure, and a cue can only be *played* by the renderer,
+    /// which is the only thing that knows where the header and footer landed.
+    pub chrome_cues: Vec<Chrome>,
+    /// Whether the panel column is currently on screen, so its arrival animates once rather than on
+    /// every frame it happens to be visible (009 US5).
+    pub column_shown: bool,
 }
 
 impl App {
@@ -132,6 +139,11 @@ impl App {
             overlay: None,
             last_frame: None,
             periodic_redraws: 0,
+            // Empty: a fresh `App` is a model, not a session. The session-start cues are queued by
+            // `tui::run`, which is what actually *starts* — so rendering a constructed `App` (as
+            // every 008 test does) shows settled chrome rather than the first frame of a fade.
+            chrome_cues: Vec::new(),
+            column_shown: false,
         }
     }
 
@@ -436,6 +448,17 @@ fn handle_session(app: &mut App, ev: SessionEvent) {
             let mark = if result.is_error { "✗" } else { "✓" };
             let line = result.content.lines().next().unwrap_or_default();
             app.push_line(Role::Tool, format!("{mark} {line}"));
+            // Flash the chat so the eye finds the result that belongs to the call above it — accent
+            // for the ordinary case, the verdict colors when a run actually ended (FR-026).
+            app.chrome_cues.push(if result.terminal {
+                if result.is_error {
+                    Chrome::EpisodeFail
+                } else {
+                    Chrome::EpisodePass
+                }
+            } else {
+                Chrome::ToolResult
+            });
         }
         SessionEvent::RenderWidget { spec } => {
             app.chat.push(ChatMessage::widget(spec));

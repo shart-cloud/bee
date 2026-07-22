@@ -14,6 +14,7 @@ use ratatui::Frame;
 
 use super::app::{App, Focus, LayoutMode, TurnState};
 use super::chat::{Body, Role};
+use super::effects::{self, Chrome};
 use super::panels::{self, PanelArea};
 use super::theme_bridge::{dim_style, role_style, role_style_bold};
 use crate::render_spec::RenderSpec;
@@ -50,8 +51,16 @@ pub fn view(app: &mut App, frame: &mut Frame<'_>) {
             Layout::horizontal([Constraint::Min(20), Constraint::Length(panel_w)]).areas(chat);
         render_chat(app, frame, chat_area);
         render_panels(app, frame, panel_area);
+        // The column's first appearance is a *layout* change — the chat pane giving up width — so it
+        // gets its own arrival, distinct from the entrance of the panel inside it (FR-026).
+        if !app.column_shown {
+            app.column_shown = true;
+            effects::column_appear(&mut app.effects, panel_area, app.visual);
+        }
     } else {
         render_chat(app, frame, chat);
+        // Once the column is gone the next one arrives fresh, rather than sliding in silently.
+        app.column_shown = false;
     }
     // The takeover covers the chat area and nothing else — the header stays readable and the input
     // line stays live, so the operator can keep typing and submitting throughout (FR-014).
@@ -60,6 +69,10 @@ pub fn view(app: &mut App, frame: &mut Frame<'_>) {
     }
     render_input(app, frame, input);
     render_footer(app, frame, footer);
+
+    // Chrome cues, now that the layout has assigned every region (US5, FR-026). Drained here rather
+    // than queued forever: a cue describes a moment, and a moment that has passed is not owed.
+    play_chrome(app, header, chat, footer);
 
     // Single-pane layouts have no panel column, so `p` overlays the panels above chat (US3 T036).
     if app.overlay_open() {
@@ -72,6 +85,28 @@ pub fn view(app: &mut App, frame: &mut Frame<'_>) {
     // Effects transform cells that are already drawn (FR-001), so this is the last thing the frame
     // does: every widget above has painted, and ratatui flushes as soon as we return.
     app.effects.process(app.dt, frame.buffer_mut(), area);
+}
+
+/// Play the chrome cues the model queued, against the regions this frame laid out (US5, FR-026).
+///
+/// Every one registers unkeyed with `Origin::Chrome`, so the agent can neither trigger nor cancel
+/// bee's own UI — but the motion switch silences all of it, because that axis belongs to the
+/// operator (FR-006b/FR-006d).
+fn play_chrome(app: &mut App, header: Rect, chat: Rect, footer: Rect) {
+    if app.chrome_cues.is_empty() {
+        return;
+    }
+    let visual = app.visual;
+    for cue in std::mem::take(&mut app.chrome_cues) {
+        let area = match cue {
+            Chrome::Header => header,
+            Chrome::Footer => footer,
+            // The verdict and the tool-result flash belong to the conversation, so they play over
+            // the chat area — which is where the line the operator is looking for just appeared.
+            Chrome::ToolResult | Chrome::EpisodePass | Chrome::EpisodeFail | Chrome::Mascot => chat,
+        };
+        effects::chrome(&mut app.effects, cue, area, visual);
+    }
 }
 
 /// The full-screen takeover (009 US3, T038/T039): the agent's widget over the chat area, with the
@@ -553,6 +588,27 @@ mod tests {
         symbols(term.backend().buffer())
     }
 
+    /// Render, then keep rendering until every transition has finished — the frame an operator
+    /// actually reads. Content assertions use this: mid-animation a `stretch` or an `evolve` is
+    /// *supposed* to be holding glyphs back, so asserting on frame 1 would be asserting on the
+    /// moment before the UI has said anything.
+    fn render_settled(app: &mut App, w: u16, h: u16) -> String {
+        let mut term = Terminal::new(TestBackend::new(w, h)).expect("test backend");
+        term.draw(|f| view(app, f)).expect("draw");
+        for _ in 0..120 {
+            if !app.effects.is_running() {
+                break;
+            }
+            app.dt = std::time::Duration::from_millis(16);
+            term.draw(|f| view(app, f)).expect("draw");
+        }
+        assert!(
+            !app.effects.is_running(),
+            "the UI never settled — an effect is running longer than two seconds"
+        );
+        symbols(term.backend().buffer())
+    }
+
     fn symbols(buf: &Buffer) -> String {
         let mut s = String::new();
         for y in 0..buf.area.height {
@@ -612,7 +668,7 @@ mod tests {
                 }],
             },
         );
-        let out = render(&mut app, 120, 24);
+        let out = render_settled(&mut app, 120, 24);
         assert!(out.contains("metrics"), "panel title missing:\n{out}");
         assert!(out.contains("Latency"), "panel content missing:\n{out}");
         assert!(
@@ -692,7 +748,7 @@ mod tests {
                 },
             );
         }
-        let out = render(&mut app, 120, 24);
+        let out = render_settled(&mut app, 120, 24);
         assert!(out.contains("more"), "overflow note missing:\n{out}");
         assert!(
             out.contains("remove_panel") || out.contains("clear_panels"),
@@ -766,7 +822,7 @@ mod tests {
                 dim: false,
             },
         );
-        let out = render(&mut app, 120, 24);
+        let out = render_settled(&mut app, 120, 24);
         for expected in [
             "bee",
             "you  hello bee",
@@ -820,7 +876,7 @@ mod tests {
             a.chat.push(ChatMessage::text(Role::Assistant, "hi"));
             a
         };
-        let empty = render(&mut base(), 120, 24);
+        let empty = render_settled(&mut base(), 120, 24);
         assert!(
             !empty.contains("metrics"),
             "no panel title when empty:\n{empty}"
@@ -828,7 +884,7 @@ mod tests {
 
         let mut with = base();
         with.panels.upsert("metrics", RenderSpec::Separator);
-        let populated = render(&mut with, 120, 24);
+        let populated = render_settled(&mut with, 120, 24);
         assert!(
             populated.contains("metrics"),
             "panel appears once populated:\n{populated}"
