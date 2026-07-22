@@ -71,7 +71,7 @@ pub async fn run(
     let mut terminal = term::init();
     let mut restore_guard = term::RestoreGuard::terminal();
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-    let mut app = App::new(cols, rows);
+    let mut app = App::new(cols, rows).with_visual(config.visual);
 
     // Greeting, mirroring the inline REPL's info banner — plus the resting-pose mascot when enabled,
     // which also exercises the sprite→Buffer rasterizer (T008) on the full-screen path.

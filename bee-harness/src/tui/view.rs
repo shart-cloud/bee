@@ -45,9 +45,7 @@ pub fn view(app: &mut App, frame: &mut Frame<'_>) {
     // In TwoPane with live panels, split a right-hand panel column off the chat area (FR-012); with
     // no panels (US1) chat keeps the full width, so the US1 layout is untouched.
     if app.layout_mode == LayoutMode::TwoPane && !app.panels.is_empty() {
-        let panel_w = (chat.width / 3)
-            .clamp(30, 50)
-            .min(chat.width.saturating_sub(20));
+        let panel_w = panel_column_width(chat.width, app.visual.level);
         let [chat_area, panel_area] =
             Layout::horizontal([Constraint::Min(20), Constraint::Length(panel_w)]).areas(chat);
         render_chat(app, frame, chat_area);
@@ -299,6 +297,21 @@ fn chat_items(app: &App, width: u16) -> Vec<Item<'_>> {
 /// Smallest useful panel: top border + one content row + bottom border.
 const MIN_PANEL_ROWS: u16 = 3;
 
+/// How wide the panel column may be: 008's own sizing, narrowed by the visual level's cap (FR-011).
+///
+/// `min(level_cap, 008_cap)` per contracts/visual-levels.md — the level narrows the budget, it never
+/// widens it. 008's own "this widget needs at least N columns" script error still fires afterward on
+/// whatever budget survives; the cap changes how much room there is, not whether the check runs.
+///
+/// Note that 008's 50-column ceiling binds before either level cap on any terminal wide enough for a
+/// two-pane layout (≥120 cols ⇒ ⌊w/3⌋ ≥ 40, and the base is clamped to 50), so `panels-wide` widens
+/// nothing there today. It is not dead: it still separates the tiers on narrower surfaces, and it is
+/// the tier that admits `Overlay` requests one step below takeover.
+pub(crate) fn panel_column_width(cols: u16, level: crate::config::VisualLevel) -> u16 {
+    let base = (cols / 3).clamp(30, 50).min(cols.saturating_sub(20));
+    base.min(crate::visual_gate::panel_width_cap(level, cols))
+}
+
 /// The drawable regions this layout offers, published for the render tool's fit checks
 /// (008-grid-tui). Derived with the *same* constants `view` lays out with, so the tool can never
 /// accept a widget this renderer would then have to mangle.
@@ -309,12 +322,11 @@ pub fn viewport_for(app: &App) -> crate::viz::viewport::Viewport {
     let two_pane = app.layout_mode == LayoutMode::TwoPane && !app.panels.is_empty();
 
     let (inline_cols, panel_w) = if two_pane {
-        let pw = (cols / 3).clamp(30, 50).min(cols.saturating_sub(20));
+        let pw = panel_column_width(cols, app.visual.level);
         (cols.saturating_sub(pw), pw)
     } else if app.layout_mode == LayoutMode::TwoPane {
         // No panels yet, but a column *would* be carved out as soon as one appears.
-        let pw = (cols / 3).clamp(30, 50).min(cols.saturating_sub(20));
-        (cols, pw)
+        (cols, panel_column_width(cols, app.visual.level))
     } else {
         (cols, 0)
     };
@@ -343,7 +355,10 @@ pub fn viewport_for(app: &App) -> crate::viz::viewport::Viewport {
 /// `Rect`, which only exists after this function has laid the column out. The outgoing snapshot for
 /// the *next* update is taken from this frame's buffer on the way out.
 fn render_panels(app: &mut App, frame: &mut Frame<'_>, area: Rect) {
-    if app.panels.is_empty() || area.height == 0 {
+    // A zero-width column is what `visual_level = none` produces (its cap is 0). Panels should never
+    // reach the TUI at that level — the gate routes them inline — but drawing into no space is a
+    // no-op either way, so this stays a guard rather than an assertion.
+    if app.panels.is_empty() || area.height == 0 || area.width == 0 {
         return;
     }
     // Size each panel to its *content* (border + natural widget height) rather than splitting the
@@ -799,6 +814,110 @@ mod tests {
             panel.fx.prev.is_some(),
             "the drawn content is the next update's outgoing half"
         );
+    }
+
+    // --- 009 US2 (T030/T034/T035): the level bounds what the agent gets ------------------------
+
+    fn with_level(level: crate::config::VisualLevel) -> crate::config::VisualConfig {
+        crate::config::VisualConfig {
+            level,
+            ..crate::config::VisualConfig::default()
+        }
+    }
+
+    #[test]
+    fn the_panel_column_never_exceeds_the_levels_share_of_the_screen() {
+        // SC-005, measured on the real Rect the layout hands the column. `panels` is a third,
+        // `panels-wide` a half — and 008's own sizing still narrows it further where it is stricter.
+        for cols in [120u16, 160, 200] {
+            let third = cols / 3;
+            let half = cols / 2;
+            assert!(
+                panel_column_width(cols, crate::config::VisualLevel::Panels) <= third,
+                "panels exceeded a third at {cols} cols"
+            );
+            assert!(
+                panel_column_width(cols, crate::config::VisualLevel::PanelsWide) <= half,
+                "panels-wide exceeded a half at {cols} cols"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wider_level_is_never_narrower_than_a_stricter_one() {
+        // The tiers are a ceiling, so they must be monotonic. On a two-pane terminal 008's own
+        // 50-column ceiling binds before either level cap, which is why these are `<=` and why
+        // `panels-wide` widens nothing at these sizes — it separates the tiers on narrower
+        // surfaces, and it is the tier one step below takeover.
+        for cols in [120u16, 160, 200] {
+            let strict = panel_column_width(cols, crate::config::VisualLevel::Panels);
+            let wide = panel_column_width(cols, crate::config::VisualLevel::PanelsWide);
+            assert!(strict <= wide, "tiers inverted at {cols} cols");
+        }
+        assert_eq!(
+            panel_column_width(80, crate::config::VisualLevel::Panels),
+            26,
+            "below 008's clamp the level cap is what binds"
+        );
+        assert_eq!(
+            panel_column_width(80, crate::config::VisualLevel::PanelsWide),
+            30
+        );
+    }
+
+    #[test]
+    fn level_none_leaves_no_column_for_the_agent_at_all() {
+        // FR-010: the gate routes panels inline before they ever reach the TUI, and even if one
+        // arrived anyway there is no width for it to occupy.
+        assert_eq!(panel_column_width(120, crate::config::VisualLevel::None), 0);
+        let mut app = App::new(120, 24).with_visual(with_level(crate::config::VisualLevel::None));
+        app.panels.upsert("metrics", RenderSpec::Separator);
+        let out = render(&mut app, 120, 24);
+        assert!(
+            !out.contains("metrics"),
+            "no panel column at level none:\n{out}"
+        );
+        assert_eq!(
+            viewport_for(&app).panel_cols,
+            0,
+            "and the render tool is told so"
+        );
+    }
+
+    #[test]
+    fn level_none_strips_agent_effects_while_chrome_keeps_moving() {
+        // FR-006d / FR-024 / T031: the level governs the agent. Motion is a separate axis, so
+        // bee's own chrome is untouched by it.
+        let visual = with_level(crate::config::VisualLevel::None);
+        let area = Rect::new(0, 0, 20, 5);
+        let spec = crate::tui::effects::panel_enter_spec();
+        assert!(
+            crate::tui::effects::resolve(
+                &spec,
+                &crate::tui::effects::ResolveCtx::agent(visual, area)
+            )
+            .is_none(),
+            "an agent effect is stripped entirely"
+        );
+        assert!(
+            crate::tui::effects::resolve(
+                &spec,
+                &crate::tui::effects::ResolveCtx::chrome(visual, area)
+            )
+            .is_some(),
+            "chrome is bee's own UI, not the agent's"
+        );
+    }
+
+    #[test]
+    fn the_published_viewport_reflects_the_level_so_the_tool_sizes_to_it() {
+        // The render tool checks widgets against `panel_cols`; if that were the un-capped width the
+        // tool would accept a widget the renderer then had to mangle.
+        let mut app = App::new(120, 24).with_visual(with_level(crate::config::VisualLevel::Panels));
+        app.panels.upsert("m", RenderSpec::Separator);
+        let vp = viewport_for(&app);
+        assert!(vp.panel_cols > 0 && vp.panel_cols <= 120 / 3);
+        assert_eq!(vp.inline_cols, 120 - (vp.panel_cols + 2));
     }
 
     #[test]

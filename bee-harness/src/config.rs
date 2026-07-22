@@ -365,6 +365,16 @@ impl VisualLevel {
         }
     }
 
+    /// The canonical configured spelling — the inverse of [`Self::parse`], for banners and notes.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Panels => "panels",
+            Self::PanelsWide => "panels-wide",
+            Self::Takeover => "takeover",
+        }
+    }
+
     /// Whether a full-screen overlay is permitted at this level (FR-013).
     pub fn allows_takeover(self) -> bool {
         self >= VisualLevel::Takeover

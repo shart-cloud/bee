@@ -101,7 +101,14 @@ pub enum RenderTarget {
     /// `visual_level = "takeover"`; below that the visual gate downgrades it to a panel, and at
     /// `none` to inline. The target is carried explicitly rather than inferred from a widget
     /// property or a magic panel id, so the gate can act before any state mutates.
-    Overlay,
+    ///
+    /// `ttl_ms` is what the *script* asked for; the lifetime actually granted is
+    /// `min(requested, configured)`, resolved once at construction
+    /// (`visual_gate::resolve_ttl`). `None` means "use the configured lifetime".
+    Overlay {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl_ms: Option<u32>,
+    },
 }
 
 impl RenderTarget {

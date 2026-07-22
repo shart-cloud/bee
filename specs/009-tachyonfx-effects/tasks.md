@@ -106,15 +106,21 @@ verify it lands as a panel with a downgrade note in the tool summary.
 
 ### Implementation for User Story 2
 
-- [ ] T029 [US2] Implement the downgrade matrix in `bee-harness/src/tui/visual_gate.rs` over `(VisualLevel, RenderTarget)`, running in the session event handler **before** any panel or overlay state mutates. Emit the exact note strings from the contract (contracts/visual-levels.md, FR-009) (depends on T009, T007).
-- [ ] T030 [US2] Enforce the width caps in `bee-harness/src/tui/visual_gate.rs`: ⌊w/3⌋ at `panels`, ⌊w/2⌋ at `panels-wide`, taking `min(level_cap, existing_008_panel_w_cap)`. 008's "needs at least N columns" script error (`render_api.rs:144`) still applies afterward (FR-011, FR-012) (depends on T029).
-- [ ] T031 [US2] Strip effects entirely at `visual_level = "none"` via the `ResolveCtx` axis already threaded through `resolve` in `bee-harness/src/tui/effects.rs`; content renders immediately with no animation (FR-024) (depends on T013, T029).
-- [ ] T032 [US2] Thread the downgrade note into `ToolResult.content` in `bee-harness/src/tools/render.rs` so the model sees what happened and can adjust next turn (FR-009, FR-010) (depends on T029).
-- [ ] T033 [P] [US2] Test each downgrade matrix row in `bee-harness/src/tui/visual_gate.rs`, asserting the **exact** note text per row (SC-004, US2 §1/§3/§7) (depends on T029, T032).
-- [ ] T034 [P] [US2] Test the width caps in `bee-harness/src/tui/visual_gate.rs` by measuring the resulting panel `Rect` at a known terminal size: ≤ ⌊w/3⌋ at `panels`, ≤ ⌊w/2⌋ at `panels-wide` (SC-005, US2 §2) (depends on T030).
-- [ ] T035 [P] [US2] Test that `visual_level = "none"` routes panel **and** overlay requests inline while leaving harness chrome effects untouched (FR-006d, FR-010, US2 §7) (depends on T031, T032).
+- [X] T029 [US2] Implement the downgrade matrix in `bee-harness/src/tui/visual_gate.rs` over `(VisualLevel, RenderTarget)`, running in the session event handler **before** any panel or overlay state mutates. Emit the exact note strings from the contract (contracts/visual-levels.md, FR-009) (depends on T009, T007). **NOTE**: lives at `bee-harness/src/visual_gate.rs`, not under `tui/`. The gate's one caller is the render tool, which is not feature-gated — a gate the render tool cannot reach in a headless build would be no gate at all. It runs on the way out of the script evaluation, which is still before any panel state mutates. `RenderTarget::Overlay` also gained the `ttl_ms` field T007 specified but did not land.
+- [X] T030 [US2] Enforce the width caps in `bee-harness/src/tui/visual_gate.rs`: ⌊w/3⌋ at `panels`, ⌊w/2⌋ at `panels-wide`, taking `min(level_cap, existing_008_panel_w_cap)`. 008's "needs at least N columns" script error (`render_api.rs:144`) still applies afterward (FR-011, FR-012) (depends on T029). **NOTE**: one `view::panel_column_width(cols, level)` serves both the layout and `viewport_for`, so the published `panel_cols` and the drawn Rect cannot disagree. The cap reuses `VisualLevel::panel_width_fraction` rather than restating the fractions. **Observation**: on any terminal wide enough for a two-pane layout (≥120 cols) 008's own 50-column ceiling binds before either level cap, so `panels-wide` widens nothing there — the tiers separate only on narrower surfaces. That follows from FR-011's `min` rule; raising it would be a spec change.
+- [X] T031 [US2] Strip effects entirely at `visual_level = "none"` via the `ResolveCtx` axis already threaded through `resolve` in `bee-harness/src/tui/effects.rs`; content renders immediately with no animation (FR-024) (depends on T013, T029). **DONE IN PHASE 2**: the `ResolveCtx` axis already strips agent effects at level `none`; Phase 4 adds the panel-path test.
+- [X] T032 [US2] Thread the downgrade note into `ToolResult.content` in `bee-harness/src/tools/render.rs` so the model sees what happened and can adjust next turn (FR-009, FR-010) (depends on T029). **NOTE**: notes append to the summary as ` (note text)`, deduplicated — several downgraded panels produce one note, not one per panel.
+- [X] T033 [P] [US2] Test each downgrade matrix row in `bee-harness/src/tui/visual_gate.rs`, asserting the **exact** note text per row (SC-004, US2 §1/§3/§7) (depends on T029, T032).
+- [X] T034 [P] [US2] Test the width caps in `bee-harness/src/tui/visual_gate.rs` by measuring the resulting panel `Rect` at a known terminal size: ≤ ⌊w/3⌋ at `panels`, ≤ ⌊w/2⌋ at `panels-wide` (SC-005, US2 §2) (depends on T030). **NOTE**: measured through `panel_column_width`, the same function the layout calls, plus a monotonicity assertion so the tiers can never invert.
+- [X] T035 [P] [US2] Test that `visual_level = "none"` routes panel **and** overlay requests inline while leaving harness chrome effects untouched (FR-006d, FR-010, US2 §7) (depends on T031, T032).
 
-**Checkpoint**: the operator's ceiling is enforced, downgrades are silent-but-reported, and the agent never escalates past its tier.
+**Checkpoint**: the operator's ceiling is enforced, downgrades are silent-but-reported, and the agent never escalates past its tier. ✅ **REACHED** — 356 tui / 258 headless tests, clippy clean workspace-wide, fmt clean.
+
+> **Added, not in the original list**: `--visual-level` and `--no-animation` on `bee-repl`, resolved
+> before anything else runs and published via `visual_gate::set` (an unknown value exits 2). Without
+> them US2's story — *the operator configures how much screen the agent can use* — had no operator-
+> facing control at all: the axes parsed but nothing set them. `ReplConfig` carries the resolved
+> `VisualConfig` into both front-ends, and the startup banner prints the active level.
 
 ---
 

@@ -75,6 +75,10 @@ pub struct ReplConfig {
     /// Discovered skills (006-skills), shared with the `skill` tool. Backs the `/skill` command and
     /// the system-prompt nudge. Defaults to an empty registry (no skills, no `/skill`).
     pub skills: Arc<crate::skills::SkillRegistry>,
+    /// The three presentation axes (009): how much screen the agent may claim, whether anything
+    /// animates, and how long a takeover may live. Resolved once at startup from CLI > env >
+    /// scenario > default.
+    pub visual: crate::config::VisualConfig,
 }
 
 impl Default for ReplConfig {
@@ -92,6 +96,7 @@ impl Default for ReplConfig {
             mcp_summary: None,
             refresh_tools: None,
             skills: Arc::new(crate::skills::SkillRegistry::default()),
+            visual: crate::config::VisualConfig::default(),
         }
     }
 }
@@ -559,7 +564,9 @@ pub async fn run_exchange(
                     // request degrades to an inline widget here (009 spec, Edge Cases). The
                     // full-screen front-end is where `Overlay` means something.
                     crate::render_spec::RenderTarget::Inline
-                    | crate::render_spec::RenderTarget::Overlay => output.render_widget(spec),
+                    | crate::render_spec::RenderTarget::Overlay { .. } => {
+                        output.render_widget(spec)
+                    }
                 }
             }
             // Then each panel-lifecycle effect, in order (008-grid-tui, US2).
