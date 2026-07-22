@@ -102,6 +102,29 @@ impl RenderTarget {
     }
 }
 
+/// One effect a render script requests on the panel column (008-grid-tui, US2 lifecycle).
+///
+/// Panels were create-or-replace only, which let them accumulate unbounded with no model-side way to
+/// reclaim space. These ops close that gap: a script can remove one panel, clear them all, or give a
+/// panel a TTL so it expires on its own. Pure serde like every other render type, so the ops record
+/// in the transcript and replay exactly (NFR-002/SC-019).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum PanelOp {
+    /// Create panel `id`, or replace its content in place if it already exists (FR-008/009).
+    /// `ttl_ms`, when set, expires the panel that long after this update.
+    Upsert {
+        id: String,
+        spec: RenderSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl_ms: Option<u64>,
+    },
+    /// Remove panel `id` if it exists; a no-op when it doesn't.
+    Remove { id: String },
+    /// Remove every panel.
+    Clear,
+}
+
 /// A pixel-art sprite (003-visual-render, Slice 2, FR-028): a `width × height` grid of RGB pixels,
 /// row-major, `None` = transparent. Rendered via the half-block technique (`viz::sprite_render`) to
 /// `⌈height/2⌉` terminal rows. Like every [`RenderSpec`] member it is pure serde (no ratatui/rhai) so

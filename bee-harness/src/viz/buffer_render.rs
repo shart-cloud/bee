@@ -339,15 +339,16 @@ pub fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
                 }
             }
         }
-        // A sprite/animation nested inside a layout can't drive the truecolor half-block pipeline
-        // (the headless Buffer is basic-ANSI only) nor animate (a layout is one static render), so it
-        // shows a labelled placeholder. Top-level sprites/animations are drawn directly by
-        // `TerminalOutput::render_widget` via `viz::sprite_render` (contracts/sprite-api.md).
-        RenderSpec::Sprite { spec } => {
-            Paragraph::new(format!("[sprite {}×{}]", spec.width, spec.height)).render(area, buf);
-        }
+        // Sprites rasterize into the buffer as truecolor half-blocks (T008), wherever they appear —
+        // nested in a layout/grid cell, or inline in the full-screen chat flow. (This used to be a
+        // `[sprite W×H]` placeholder, which is why the mascot and every inline sprite showed up as
+        // literal text.) An animation is one static render here, so it draws its first frame;
+        // playback is `TerminalOutput`'s job via `viz::animator` (contracts/sprite-api.md).
+        RenderSpec::Sprite { spec } => rasterize_sprite_into(spec, area, buf),
         RenderSpec::Animation { spec } => {
-            Paragraph::new(format!("[animation: {} frames]", spec.frames.len())).render(area, buf);
+            if let Some(frame) = spec.frames.first() {
+                rasterize_sprite_into(frame, area, buf);
+            }
         }
         RenderSpec::Grid {
             rows,

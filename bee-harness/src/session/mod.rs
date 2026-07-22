@@ -89,6 +89,10 @@ impl ReplOutput for SessionSink {
             spec: spec.clone(),
         });
     }
+    fn panel_op(&self, op: &crate::render_spec::PanelOp) {
+        // Forward verbatim — the TUI's registry owns upsert/remove/clear + TTL semantics.
+        self.emit(SessionEvent::PanelOp(op.clone()));
+    }
 }
 
 #[cfg(test)]

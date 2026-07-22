@@ -142,6 +142,14 @@ pub trait ReplOutput: Send + Sync {
     fn panel_update(&self, _id: &str, spec: &RenderSpec) {
         self.render_widget(spec);
     }
+    /// One panel-lifecycle effect (008-grid-tui, US2): create/replace (optionally with a TTL),
+    /// remove, or clear. The default routes upserts to [`ReplOutput::panel_update`] and ignores
+    /// remove/clear, since a front-end with no panel column has nothing to reclaim.
+    fn panel_op(&self, op: &crate::render_spec::PanelOp) {
+        if let crate::render_spec::PanelOp::Upsert { id, spec, .. } = op {
+            self.panel_update(id, spec);
+        }
+    }
 }
 
 /// Why one user→agent exchange ended.
@@ -545,9 +553,14 @@ pub async fn run_exchange(
             // model still receives only `result.content` (the text summary), never the art (FR-023).
             if let Some(spec) = &result.render_spec {
                 match &result.render_target {
+                    // Legacy results routed panels via `render_target`; honor them for back-compat.
                     crate::render_spec::RenderTarget::Panel { id } => output.panel_update(id, spec),
                     crate::render_spec::RenderTarget::Inline => output.render_widget(spec),
                 }
+            }
+            // Then each panel-lifecycle effect, in order (008-grid-tui, US2).
+            for op in &result.panel_ops {
+                output.panel_op(op);
             }
 
             conversation.push(Message::ToolResult {

@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use rhai::{Array, Dynamic, Engine, EvalAltResult};
 
 use crate::render_spec::{
-    AnimationSpec, Bar, Direction, Dot, DotState, GridCell, Point, RenderSpec, RenderTarget, Row,
+    AnimationSpec, Bar, Direction, Dot, DotState, GridCell, PanelOp, Point, RenderSpec, Row,
     Series, SpriteSpec,
 };
 
@@ -39,9 +39,28 @@ pub struct RenderContext {
 
 #[derive(Default)]
 struct CtxInner {
-    /// The last committed widget and where it is addressed (008-grid-tui): inline or a named panel.
-    committed: Option<(RenderSpec, RenderTarget)>,
+    /// The last `render()` widget — the inline commit (last writer wins, as it always has).
+    inline: Option<RenderSpec>,
+    /// Ordered panel effects from `render_to` / `remove_panel` / `clear_panels`. A script may address
+    /// several panels in one call, so this is a list, not a single commit.
+    panel_ops: Vec<PanelOp>,
     render_calls: u32,
+}
+
+/// What one render script produced: an optional inline widget plus the panel effects it requested.
+#[derive(Debug, Default, Clone)]
+pub struct RenderOutcome {
+    pub inline: Option<RenderSpec>,
+    pub panel_ops: Vec<PanelOp>,
+    /// Total commit calls (`render`/`render_to`), for the "earlier render discarded" note.
+    pub render_calls: u32,
+}
+
+impl RenderOutcome {
+    /// True when the script drew nothing at all (no inline widget, no panel effect).
+    pub fn is_empty(&self) -> bool {
+        self.inline.is_none() && self.panel_ops.is_empty()
+    }
 }
 
 impl RenderContext {
@@ -49,15 +68,26 @@ impl RenderContext {
     pub fn reset(&self) {
         *self.inner.lock().expect("render ctx") = CtxInner::default();
     }
-    fn commit(&self, spec: RenderSpec, target: RenderTarget) {
+    fn commit_inline(&self, spec: RenderSpec) {
         let mut g = self.inner.lock().expect("render ctx");
-        g.committed = Some((spec, target));
+        g.inline = Some(spec);
         g.render_calls += 1;
     }
-    /// Take the committed widget + its target and the number of `render*()` calls made.
-    pub fn take(&self) -> (Option<(RenderSpec, RenderTarget)>, u32) {
+    fn push_op(&self, op: PanelOp) {
         let mut g = self.inner.lock().expect("render ctx");
-        (g.committed.take(), g.render_calls)
+        if matches!(op, PanelOp::Upsert { .. }) {
+            g.render_calls += 1;
+        }
+        g.panel_ops.push(op);
+    }
+    /// Take everything the script produced.
+    pub fn take(&self) -> RenderOutcome {
+        let mut g = self.inner.lock().expect("render ctx");
+        RenderOutcome {
+            inline: g.inline.take(),
+            panel_ops: std::mem::take(&mut g.panel_ops),
+            render_calls: g.render_calls,
+        }
     }
 }
 
@@ -755,63 +785,150 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
         }
     });
 
-    // --- Commit ---
-    // `render(widget)` commits to the inline chat target (unchanged); `render_to(id, widget)` commits
-    // to a named, persistent panel (008-grid-tui, FR-008; contracts/rhai-panel-api.md). Same
-    // structural caps apply to both — no new engine capability is registered.
+    // --- Commit + panel lifecycle ---
+    // `render(widget)` commits inline into the chat flow (unchanged). `render_to(id, widget)` creates
+    // or replaces a named panel; `render_to_ttl` gives it an expiry; `remove_panel`/`clear_panels`
+    // reclaim space (008-grid-tui, FR-008; contracts/rhai-panel-api.md). Same structural caps apply to
+    // every widget — no new non-drawing engine capability is registered (Constitution I, FR-020).
     let inline_ctx = ctx.clone();
     engine.register_fn(
         "render",
         move |widget: Dynamic| -> Result<(), Box<EvalAltResult>> {
             let spec = dynamic_to_spec(widget)?;
             validate(&spec)?;
-            inline_ctx.commit(spec, RenderTarget::Inline);
+            inline_ctx.commit_inline(spec);
             Ok(())
         },
     );
+    let to_ctx = ctx.clone();
     engine.register_fn(
         "render_to",
         move |panel_id: String, widget: Dynamic| -> Result<(), Box<EvalAltResult>> {
             validate_panel_id(&panel_id)?;
             let spec = dynamic_to_spec(widget)?;
             validate(&spec)?;
-            ctx.commit(spec, RenderTarget::Panel { id: panel_id });
+            to_ctx.push_op(PanelOp::Upsert {
+                id: panel_id,
+                spec,
+                ttl_ms: None,
+            });
             Ok(())
         },
     );
+    let ttl_ctx = ctx.clone();
+    engine.register_fn(
+        "render_to_ttl",
+        move |panel_id: String, widget: Dynamic, ttl_ms: i64| -> Result<(), Box<EvalAltResult>> {
+            validate_panel_id(&panel_id)?;
+            let spec = dynamic_to_spec(widget)?;
+            validate(&spec)?;
+            if ttl_ms <= 0 {
+                return Err("render_to_ttl: ttl_ms must be > 0".into());
+            }
+            ttl_ctx.push_op(PanelOp::Upsert {
+                id: panel_id,
+                spec,
+                // Clamp to a day so a typo can't pin a panel effectively forever.
+                ttl_ms: Some((ttl_ms as u64).min(24 * 60 * 60 * 1000)),
+            });
+            Ok(())
+        },
+    );
+    let rm_ctx = ctx.clone();
+    engine.register_fn(
+        "remove_panel",
+        move |panel_id: String| -> Result<(), Box<EvalAltResult>> {
+            validate_panel_id(&panel_id)?;
+            rm_ctx.push_op(PanelOp::Remove { id: panel_id });
+            Ok(())
+        },
+    );
+    engine.register_fn("clear_panels", move || {
+        ctx.push_op(PanelOp::Clear);
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Build an engine wired to a fresh context and run `script`, returning the committed
-    /// `(spec, target)` (or the script error).
-    fn run(script: &str) -> Result<Option<(RenderSpec, RenderTarget)>, String> {
+    /// Build an engine wired to a fresh context and run `script`, returning what it produced.
+    fn run(script: &str) -> Result<RenderOutcome, String> {
         let ctx = RenderContext::default();
         let mut engine = Engine::new();
         register(&mut engine, ctx.clone());
         engine.run(script).map_err(|e| e.to_string())?;
-        Ok(ctx.take().0)
+        Ok(ctx.take())
     }
 
     #[test]
-    fn render_commits_inline() {
-        let (_, target) = run(r#"render(text("hi"));"#).unwrap().unwrap();
-        assert_eq!(target, RenderTarget::Inline);
+    fn render_commits_inline_and_no_panel_ops() {
+        let out = run(r#"render(text("hi"));"#).unwrap();
+        assert!(out.inline.is_some());
+        assert!(out.panel_ops.is_empty());
     }
 
     #[test]
-    fn render_to_commits_a_panel_target() {
-        let (_, target) = run(r#"render_to("metrics", text("hi"));"#)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            target,
-            RenderTarget::Panel {
-                id: "metrics".into()
-            }
+    fn render_to_emits_an_upsert() {
+        let out = run(r#"render_to("metrics", text("hi"));"#).unwrap();
+        assert!(
+            out.inline.is_none(),
+            "a panel render does not also go inline"
         );
+        assert!(matches!(
+            &out.panel_ops[..],
+            [PanelOp::Upsert { id, ttl_ms: None, .. }] if id == "metrics"
+        ));
+    }
+
+    #[test]
+    fn inline_and_panels_coexist_in_one_script() {
+        // The old single-commit model let a later render_to clobber an earlier inline render.
+        let out =
+            run(r#"render(text("chat")); render_to("a", text("A")); render_to("b", text("B"));"#)
+                .unwrap();
+        assert!(out.inline.is_some(), "the inline render survives");
+        assert_eq!(out.panel_ops.len(), 2, "both panels are addressed");
+    }
+
+    #[test]
+    fn render_to_ttl_carries_the_expiry_and_rejects_non_positive() {
+        let out = run(r#"render_to_ttl("flash", text("x"), 500);"#).unwrap();
+        assert!(matches!(
+            &out.panel_ops[..],
+            [PanelOp::Upsert {
+                ttl_ms: Some(500),
+                ..
+            }]
+        ));
+        assert!(run(r#"render_to_ttl("flash", text("x"), 0);"#).is_err());
+        assert!(run(r#"render_to_ttl("flash", text("x"), -5);"#).is_err());
+    }
+
+    #[test]
+    fn ttl_is_clamped_to_a_day() {
+        let out = run(r#"render_to_ttl("f", text("x"), 999999999);"#).unwrap();
+        assert!(matches!(
+            &out.panel_ops[..],
+            [PanelOp::Upsert { ttl_ms: Some(ms), .. }] if *ms == 24 * 60 * 60 * 1000
+        ));
+    }
+
+    #[test]
+    fn remove_panel_and_clear_panels_emit_ops() {
+        let out = run(r#"remove_panel("old");"#).unwrap();
+        assert!(matches!(&out.panel_ops[..], [PanelOp::Remove { id }] if id == "old"));
+
+        let out = run(r#"clear_panels();"#).unwrap();
+        assert!(matches!(&out.panel_ops[..], [PanelOp::Clear]));
+    }
+
+    #[test]
+    fn ops_keep_script_order() {
+        let out = run(r#"clear_panels(); render_to("a", text("A")); remove_panel("b");"#).unwrap();
+        assert!(matches!(out.panel_ops[0], PanelOp::Clear));
+        assert!(matches!(out.panel_ops[1], PanelOp::Upsert { .. }));
+        assert!(matches!(out.panel_ops[2], PanelOp::Remove { .. }));
     }
 
     #[test]
@@ -820,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn render_to_rejects_bad_ids_as_script_errors() {
+    fn panel_ids_are_validated_on_every_entry_point() {
         // Empty, oversized, and out-of-charset ids all fail closed (contracts/rhai-panel-api.md).
         assert!(run(r#"render_to("", text("x"));"#).is_err());
         let long = "a".repeat(33);
@@ -837,18 +954,13 @@ mod tests {
             run(r#"render_to("pan/el", text("x"));"#).is_err(),
             "slash rejected"
         );
-    }
-
-    #[test]
-    fn last_commit_wins_across_mixed_targets() {
-        // Consistent with render()'s existing last-writer semantics — the final commit is kept.
-        let (_, target) = run(r#"render_to("a", text("x")); render(text("y"));"#)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            target,
-            RenderTarget::Inline,
-            "the last commit (inline) wins"
+        assert!(
+            run(r#"remove_panel("Nope");"#).is_err(),
+            "remove validates too"
+        );
+        assert!(
+            run(r#"render_to_ttl("Nope", text("x"), 10);"#).is_err(),
+            "ttl validates too"
         );
     }
 }

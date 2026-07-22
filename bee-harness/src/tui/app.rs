@@ -158,7 +158,7 @@ pub fn update(app: &mut App, msg: Message) {
         Message::Paste(s) => app.input.insert_str(&s),
         Message::Tick | Message::Suspend | Message::Resume => {}
         Message::Key(key) => handle_key(app, key),
-        Message::Session(ev) => handle_session(app, ev),
+        Message::Session(ev) => handle_session(app, *ev),
     }
 }
 
@@ -261,6 +261,8 @@ fn handle_session(app: &mut App, ev: SessionEvent) {
         // A targeted render: upsert into the panel column, never the chat flow (FR-008/009). Same id
         // replaces in place; the chat still shows the tool-result summary line separately.
         SessionEvent::PanelUpdate { id, spec } => app.panels.upsert(id, spec),
+        // A lifecycle effect: create/replace (with an optional TTL), remove one, or clear them all.
+        SessionEvent::PanelOp(op) => app.panels.apply(op),
         SessionEvent::Error(s) => app.push_line(Role::System, format!("error: {s}")),
         SessionEvent::Info(s) | SessionEvent::Footer(s) | SessionEvent::Steering(s) => {
             app.push_line(Role::System, s)
@@ -333,16 +335,16 @@ mod tests {
         let mut a = app();
         update(
             &mut a,
-            Message::Session(SessionEvent::AssistantDelta("Hel".into())),
+            Message::session(SessionEvent::AssistantDelta("Hel".into())),
         );
         update(
             &mut a,
-            Message::Session(SessionEvent::AssistantDelta("lo".into())),
+            Message::session(SessionEvent::AssistantDelta("lo".into())),
         );
         assert_eq!(a.chat.len(), 1);
         assert!(matches!(a.chat[0].role, Role::Assistant));
         assert_eq!(a.turn, TurnState::Streaming);
-        update(&mut a, Message::Session(SessionEvent::TurnDone));
+        update(&mut a, Message::session(SessionEvent::TurnDone));
         assert_eq!(a.turn, TurnState::Idle);
     }
 
@@ -425,7 +427,7 @@ mod tests {
         let mut a = app();
         update(
             &mut a,
-            Message::Session(SessionEvent::PanelUpdate {
+            Message::session(SessionEvent::PanelUpdate {
                 id: "metrics".into(),
                 spec: text_spec("v1"),
             }),
@@ -442,7 +444,7 @@ mod tests {
         for v in ["v1", "v2", "v3"] {
             update(
                 &mut a,
-                Message::Session(SessionEvent::PanelUpdate {
+                Message::session(SessionEvent::PanelUpdate {
                     id: "metrics".into(),
                     spec: text_spec(v),
                 }),
@@ -457,11 +459,41 @@ mod tests {
     }
 
     #[test]
+    fn panel_ops_remove_and_clear_through_the_reducer() {
+        use crate::render_spec::PanelOp;
+        let mut a = app();
+        for id in ["a", "b", "c"] {
+            update(
+                &mut a,
+                Message::session(SessionEvent::PanelOp(PanelOp::Upsert {
+                    id: id.into(),
+                    spec: text_spec("x"),
+                    ttl_ms: None,
+                })),
+            );
+        }
+        assert_eq!(a.panels.len(), 3);
+
+        update(
+            &mut a,
+            Message::session(SessionEvent::PanelOp(PanelOp::Remove { id: "b".into() })),
+        );
+        assert_eq!(a.panels.len(), 2);
+        assert!(a.panels.get("b").is_none(), "removed panel is gone");
+
+        update(
+            &mut a,
+            Message::session(SessionEvent::PanelOp(PanelOp::Clear)),
+        );
+        assert!(a.panels.is_empty(), "clear reclaims the whole column");
+    }
+
+    #[test]
     fn inline_render_goes_to_chat_not_panels() {
         let mut a = app();
         update(
             &mut a,
-            Message::Session(SessionEvent::RenderWidget {
+            Message::session(SessionEvent::RenderWidget {
                 spec: text_spec("inline"),
             }),
         );

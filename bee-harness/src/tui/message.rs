@@ -22,8 +22,9 @@ pub enum Message {
     Resume,
     /// An animation tick (armed only while something animates).
     Tick,
-    /// The conversation core spoke.
-    Session(SessionEvent),
+    /// The conversation core spoke. Boxed: a `SessionEvent` carries a whole `ToolResult`/`RenderSpec`,
+    /// which would otherwise inflate every `Message` (a bare `Tick`) to its size.
+    Session(Box<SessionEvent>),
     /// Quit the session.
     Quit,
 }
@@ -44,5 +45,9 @@ impl Message {
     /// A key code with modifiers (e.g. Shift+Enter for a soft newline).
     pub fn key_mods(code: KeyCode, mods: KeyModifiers) -> Self {
         Message::Key(KeyEvent::new(code, mods))
+    }
+    /// Wrap a [`SessionEvent`] as a message (boxes it — see the variant).
+    pub fn session(ev: SessionEvent) -> Self {
+        Message::Session(Box::new(ev))
     }
 }

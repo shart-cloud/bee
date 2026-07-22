@@ -5,6 +5,7 @@
 //! color comes from the theme bridge, so `NO_COLOR` degrades to monochrome (FR-014). Panels (US2)
 //! render into a right-hand column added in T028.
 
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -14,6 +15,7 @@ use ratatui::Frame;
 use super::app::{App, Focus, LayoutMode, TurnState};
 use super::chat::{Body, Role};
 use super::theme_bridge::{dim_style, role_style, role_style_bold};
+use crate::render_spec::RenderSpec;
 use crate::viz::theme::Role as ThemeRole;
 
 /// Draw the whole UI for the current model state.
@@ -103,56 +105,112 @@ fn render_input(app: &App, frame: &mut Frame<'_>, area: Rect) {
     }
 }
 
-fn render_chat(app: &App, frame: &mut Frame<'_>, area: Rect) {
-    let width = area.width.max(1);
-    let lines = chat_lines(app, width);
-    let total = lines.len() as u16;
-    let height = area.height;
+/// The tallest an inline widget may grow in the chat flow, so one big chart can't swallow the pane.
+const MAX_INLINE_WIDGET_ROWS: u16 = 24;
 
-    // Bottom-anchored virtualized scroll: `scroll` counts lines up from the newest.
-    let max_offset = total.saturating_sub(height);
-    let scroll_up = app.scroll.min(max_offset as usize) as u16;
-    let top = max_offset.saturating_sub(scroll_up);
-
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .scroll((top, 0)),
-        area,
-    );
+/// One laid-out row-unit of the chat flow. Text is pre-wrapped to the pane width, so every `Line` is
+/// exactly one row and the scroll arithmetic is exact (no hidden re-wrap by `Paragraph`).
+enum Item<'a> {
+    Line(Line<'static>),
+    /// An inline widget and the number of rows it occupies.
+    Widget(&'a RenderSpec, u16),
 }
 
-/// Render the right-hand panel column (008-grid-tui, US2 T028): each live panel a bordered block
-/// titled with its id, stacked in insertion order and given an equal share of the column height. The
-/// panel's widget is drawn richly (truecolor) into the block's inner rect via `buffer_render`, which
-/// clips any overflow to the region (FR-012).
-fn render_panels(app: &App, frame: &mut Frame<'_>, area: Rect) {
-    let n = app.panels.len() as u16;
-    if n == 0 {
-        return;
-    }
-    // Equal vertical slices; `Layout` distributes any remainder across the top chunks.
-    let slices = Layout::vertical(vec![Constraint::Ratio(1, n as u32); n as usize]).split(area);
-    for ((id, spec), rect) in app.panels.iter().zip(slices.iter()) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(dim_style())
-            .title(Span::styled(
-                format!(" {id} "),
-                role_style(ThemeRole::Accent),
-            ));
-        let inner = block.inner(*rect);
-        frame.render_widget(block, *rect);
-        if inner.width > 0 && inner.height > 0 {
-            crate::viz::buffer_render::render_into(spec, inner, frame.buffer_mut());
+impl Item<'_> {
+    fn height(&self) -> u16 {
+        match self {
+            Item::Line(_) => 1,
+            Item::Widget(_, h) => *h,
         }
     }
 }
 
-/// Flatten the chat into styled, wrapped lines (the virtualization unit). Inline widgets render as
-/// their ASCII form here in the chat flow; the rich truecolor rendering is the panel's job (US2).
-fn chat_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let mut out: Vec<Line<'static>> = Vec::new();
+fn render_chat(app: &App, frame: &mut Frame<'_>, area: Rect) {
+    let width = area.width.max(1);
+    let items = chat_items(app, width);
+    let total: u16 = items.iter().map(|i| i.height()).sum();
+    let height = area.height;
+
+    // Bottom-anchored virtualized scroll: `scroll` counts rows up from the newest. Heights here are
+    // the *rendered* heights, so the newest content always lands flush against the bottom edge.
+    let max_offset = total.saturating_sub(height);
+    let scroll_up = app.scroll.min(max_offset as usize) as u16;
+    let top = max_offset.saturating_sub(scroll_up);
+    let bottom = top.saturating_add(height);
+
+    let mut y = 0u16; // absolute row index within the whole flow
+    for item in &items {
+        let h = item.height();
+        let end = y.saturating_add(h);
+        // Skip anything entirely above or below the visible window.
+        if end > top && y < bottom {
+            let skip = top.saturating_sub(y); // rows of this item hidden above the fold
+            let draw_y = area.y + y.saturating_sub(top);
+            let avail = (bottom.min(end) - top.max(y)).min(area.bottom().saturating_sub(draw_y));
+            match item {
+                Item::Line(l) => {
+                    if avail > 0 {
+                        frame.render_widget(
+                            Paragraph::new(l.clone()),
+                            Rect::new(area.x, draw_y, area.width, 1),
+                        );
+                    }
+                }
+                Item::Widget(spec, wh) => {
+                    blit_widget(frame, spec, *wh, width, area, draw_y, skip, avail);
+                }
+            }
+        }
+        y = end;
+    }
+}
+
+/// Draw an inline widget richly (the same truecolor path panels use) into the chat flow, honoring
+/// partial scroll: the widget is rendered once into a scratch buffer at full height, then the visible
+/// row window is blitted into the frame. This is what makes an inline `render(widget)` look like a
+/// real visualization instead of a dim ASCII blob.
+#[allow(clippy::too_many_arguments)]
+fn blit_widget(
+    frame: &mut Frame<'_>,
+    spec: &RenderSpec,
+    widget_rows: u16,
+    width: u16,
+    area: Rect,
+    draw_y: u16,
+    skip: u16,
+    avail: u16,
+) {
+    if avail == 0 || width == 0 || widget_rows == 0 {
+        return;
+    }
+    let full = Rect::new(0, 0, width, widget_rows);
+    let mut scratch = Buffer::empty(full);
+    crate::viz::buffer_render::render_into(spec, full, &mut scratch);
+
+    let dst = frame.buffer_mut();
+    for row in 0..avail {
+        let src_y = skip + row;
+        if src_y >= widget_rows {
+            break;
+        }
+        let dy = draw_y + row;
+        if dy >= area.bottom() {
+            break;
+        }
+        for x in 0..width.min(area.width) {
+            let dx = area.x + x;
+            if dx >= area.right() {
+                break;
+            }
+            dst[(dx, dy)] = scratch[(x, src_y)].clone();
+        }
+    }
+}
+
+/// Lay the chat out into row-units (see [`Item`]). Text wraps to the pane width; widgets get their
+/// natural rendered height, capped so one chart can't fill the pane.
+fn chat_items(app: &App, width: u16) -> Vec<Item<'_>> {
+    let mut out: Vec<Item<'_>> = Vec::new();
     let wrap_w = width.max(8) as usize;
     for msg in &app.chat {
         match &msg.body {
@@ -165,18 +223,79 @@ fn chat_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                     } else {
                         wl.into_owned()
                     };
-                    out.push(Line::styled(content, style));
+                    out.push(Item::Line(Line::styled(content, style)));
                 }
             }
             Body::Widget(spec) => {
-                for l in spec.to_ascii().lines() {
-                    out.push(Line::styled(l.to_string(), dim_style()));
-                }
+                let h = crate::viz::buffer_render::spec_height(spec, width)
+                    .clamp(1, MAX_INLINE_WIDGET_ROWS);
+                out.push(Item::Widget(spec, h));
             }
         }
-        out.push(Line::raw("")); // blank between messages
+        out.push(Item::Line(Line::raw(""))); // blank between messages
     }
     out
+}
+
+/// Render the right-hand panel column (008-grid-tui, US2 T028): each live panel a bordered block
+/// titled with its id, stacked in insertion order and given an equal share of the column height. The
+/// panel's widget is drawn richly (truecolor) into the block's inner rect via `buffer_render`, which
+/// clips any overflow to the region (FR-012).
+/// Smallest useful panel: top border + one content row + bottom border.
+const MIN_PANEL_ROWS: u16 = 3;
+
+fn render_panels(app: &App, frame: &mut Frame<'_>, area: Rect) {
+    if app.panels.is_empty() || area.height == 0 {
+        return;
+    }
+    // Size each panel to its *content* (border + natural widget height) rather than splitting the
+    // column evenly. An even split starved every panel once a few accumulated — 13 panels in 28 rows
+    // left each with 3 rows showing a title and nothing else. Greedy top-down allocation keeps early
+    // panels legible and reports the overflow honestly instead of silently squeezing everything.
+    let inner_w = area.width.saturating_sub(2).max(1);
+    let mut y = area.y;
+    let mut shown = 0usize;
+
+    for (id, spec) in app.panels.iter() {
+        let remaining = area.bottom().saturating_sub(y);
+        // Keep a row free for the "+N more" note if this isn't the last panel and space is tight.
+        let more_after = app.panels.len() - shown > 1;
+        let reserve = u16::from(more_after && remaining <= MIN_PANEL_ROWS + 1);
+        if remaining.saturating_sub(reserve) < MIN_PANEL_ROWS {
+            break;
+        }
+        let desired = crate::viz::buffer_render::spec_height(spec, inner_w).saturating_add(2);
+        let h = desired.clamp(MIN_PANEL_ROWS, remaining - reserve);
+        let rect = Rect::new(area.x, y, area.width, h);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(dim_style())
+            .title(Span::styled(
+                format!(" {id} "),
+                role_style(ThemeRole::Accent),
+            ));
+        let inner = block.inner(rect);
+        frame.render_widget(block, rect);
+        if inner.width > 0 && inner.height > 0 {
+            crate::viz::buffer_render::render_into(spec, inner, frame.buffer_mut());
+        }
+        y += h;
+        shown += 1;
+    }
+
+    // Tell the truth about anything that didn't fit, and point at the way to reclaim space.
+    let hidden = app.panels.len() - shown;
+    if hidden > 0 {
+        let note_y = area.bottom().saturating_sub(1).max(area.y);
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                format!(" +{hidden} more — remove_panel()/clear_panels() "),
+                dim_style(),
+            )),
+            Rect::new(area.x, note_y, area.width, 1),
+        );
+    }
 }
 
 fn line_style(role: Role) -> Style {
@@ -328,6 +447,85 @@ mod tests {
         assert!(
             out.contains("you  show metrics"),
             "chat still present beside the panel:\n{out}"
+        );
+    }
+
+    #[test]
+    fn inline_widget_renders_richly_not_as_ascii_placeholder() {
+        // Regression: inline widgets used to go through `to_ascii()` + dim styling, so a sprite showed
+        // as the literal text "[sprite 16×16]" and a table as a gray blob. They now take the same
+        // truecolor buffer path panels use.
+        let mut app = App::new(80, 24);
+        app.chat.push(ChatMessage::widget(RenderSpec::Sprite {
+            spec: crate::viz::bee::sprite(),
+        }));
+        let out = render(&app, 80, 24);
+        assert!(
+            !out.contains("[sprite"),
+            "sprite must rasterize, not print its ASCII placeholder:\n{out}"
+        );
+        assert!(
+            out.contains('▀') || out.contains('▄') || out.contains('█'),
+            "expected half-block sprite pixels:\n{out}"
+        );
+    }
+
+    #[test]
+    fn newest_content_is_visible_at_the_bottom_past_a_tall_widget() {
+        // Regression: chat heights were counted pre-wrap while `Paragraph` re-wrapped at draw time,
+        // so once a tall/wide widget entered the flow the bottom-anchoring drifted and the newest
+        // lines fell off-screen. Heights are now the rendered heights.
+        let mut app = App::new(80, 20);
+        for i in 0..30 {
+            app.chat.push(ChatMessage::text(
+                Role::Assistant,
+                format!("filler line {i}"),
+            ));
+        }
+        app.chat.push(ChatMessage::widget(RenderSpec::BarChart {
+            title: "big chart".into(),
+            bars: (0..8)
+                .map(|i| crate::render_spec::Bar {
+                    label: format!("bar-{i}"),
+                    value: i * 10,
+                })
+                .collect(),
+            x_label: None,
+            y_label: None,
+            color: None,
+        }));
+        app.chat
+            .push(ChatMessage::text(Role::Assistant, "THE NEWEST LINE"));
+        let out = render(&app, 80, 20);
+        assert!(
+            out.contains("THE NEWEST LINE"),
+            "newest message must be visible at the bottom:\n{out}"
+        );
+    }
+
+    #[test]
+    fn overflowing_panels_report_what_is_hidden() {
+        // Many panels no longer get squeezed to unreadable 3-row slivers in silence: the ones that
+        // fit render at content height, and the column says how many are hidden.
+        let mut app = App::new(120, 24);
+        for i in 0..12 {
+            app.panels.upsert(
+                format!("panel-{i}"),
+                RenderSpec::Table {
+                    title: format!("t{i}"),
+                    headers: vec!["a".into()],
+                    rows: vec![crate::render_spec::Row {
+                        cells: vec!["1".into()],
+                        color: None,
+                    }],
+                },
+            );
+        }
+        let out = render(&app, 120, 24);
+        assert!(out.contains("more"), "overflow note missing:\n{out}");
+        assert!(
+            out.contains("remove_panel") || out.contains("clear_panels"),
+            "note should point at the way to reclaim space:\n{out}"
         );
     }
 

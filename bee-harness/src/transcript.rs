@@ -117,35 +117,61 @@ impl EpisodeTranscript {
         self.audit_trail.iter().filter(|e| e.decision == "denied")
     }
 
-    /// Every panel-targeted render across the episode, in turn/call order (008-grid-tui, FR-010).
-    /// Derived from the `ToolResult`s already in the transcript — a render whose target is a panel —
-    /// so no live-only panel state is stored (SC-009).
-    pub fn panel_updates(&self) -> Vec<PanelUpdate> {
+    /// Every panel effect across the episode, in turn/call order (008-grid-tui, FR-010). Derived
+    /// from the `ToolResult`s already in the transcript, so no live-only panel state is stored
+    /// (SC-009). Results recorded before the lifecycle ops existed carried the panel in
+    /// `render_target`; those are still honored.
+    pub fn panel_ops(&self) -> Vec<crate::render_spec::PanelOp> {
+        use crate::render_spec::{PanelOp, RenderTarget};
         let mut out = Vec::new();
         for turn in &self.turns {
             for call in &turn.calls {
-                if let (crate::render_spec::RenderTarget::Panel { id }, Some(spec)) =
+                // Legacy shape: a render addressed via `render_target`.
+                if let (RenderTarget::Panel { id }, Some(spec)) =
                     (&call.result.render_target, &call.result.render_spec)
                 {
-                    out.push(PanelUpdate {
+                    out.push(PanelOp::Upsert {
                         id: id.clone(),
                         spec: spec.clone(),
+                        ttl_ms: None,
                     });
                 }
+                out.extend(call.result.panel_ops.iter().cloned());
             }
         }
         out
     }
 
-    /// Replay the panel updates, folding **last-writer-wins per id** into each panel's final spec,
-    /// preserving first-seen insertion order (008-grid-tui, SC-009). Reconstructs exactly the panel
-    /// column a live session ended with.
+    /// Every panel *content* update, in order — the upserts from [`Self::panel_ops`].
+    pub fn panel_updates(&self) -> Vec<PanelUpdate> {
+        self.panel_ops()
+            .into_iter()
+            .filter_map(|op| match op {
+                crate::render_spec::PanelOp::Upsert { id, spec, .. } => {
+                    Some(PanelUpdate { id, spec })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Replay the panel effects in order — upserts fold **last-writer-wins per id**, removes and
+    /// clears take effect — reconstructing exactly the panel column a live session ended with
+    /// (008-grid-tui, SC-009). First-seen insertion order is preserved.
+    ///
+    /// TTLs are *not* applied here: expiry is wall-clock state of a live session, and a replay has no
+    /// meaningful "now". A replayed panel shows its last recorded content.
     pub fn replay_panels(&self) -> Vec<PanelUpdate> {
+        use crate::render_spec::PanelOp;
         let mut out: Vec<PanelUpdate> = Vec::new();
-        for u in self.panel_updates() {
-            match out.iter_mut().find(|p| p.id == u.id) {
-                Some(existing) => existing.spec = u.spec,
-                None => out.push(u),
+        for op in self.panel_ops() {
+            match op {
+                PanelOp::Upsert { id, spec, .. } => match out.iter_mut().find(|p| p.id == id) {
+                    Some(existing) => existing.spec = spec,
+                    None => out.push(PanelUpdate { id, spec }),
+                },
+                PanelOp::Remove { id } => out.retain(|p| p.id != id),
+                PanelOp::Clear => out.clear(),
             }
         }
         out
@@ -298,6 +324,7 @@ pub fn tool_result_from_output(
         terminal: false,
         render_spec: None,
         render_target: crate::render_spec::RenderTarget::Inline,
+        panel_ops: Vec::new(),
     }
 }
 

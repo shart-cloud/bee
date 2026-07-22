@@ -31,6 +31,9 @@ pub enum SessionEvent {
     /// A render addressed to a named, persistent panel (`panel_update`, 008-grid-tui US2). The TUI
     /// upserts `spec` into panel `id` beside chat — same id replaces in place (FR-008/009).
     PanelUpdate { id: String, spec: RenderSpec },
+    /// A panel-lifecycle effect (`panel_op`, 008-grid-tui US2): create/replace with an optional TTL,
+    /// remove one panel, or clear them all. The TUI applies it to its panel registry.
+    PanelOp(crate::render_spec::PanelOp),
     /// An error line the user should see (`error`).
     Error(String),
     /// An informational line — banners, meta-command output (`info`).

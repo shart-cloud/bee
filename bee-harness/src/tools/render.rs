@@ -37,11 +37,67 @@ available — only these drawing functions:\n\
   sprite(w, h, p) -> s;  s.paint([\"..KK..\", ...]);  s.set(x, y, color);  s.fill(color)   (max 32x32)\n\
   animation(ms) -> a;  a.add(sprite);  a.bounce(true);  a.cycles(n)   (max 16 frames, 50-1000ms)\n\
   bee_sprite();  bee_animation()   // the project mascot\n\
-  render(widget)               // commit one widget inline in the chat flow\n\
-  render_to(panel_id, widget)  // commit to a named, persistent side panel (id: 1-32 of [a-z0-9_-]);\n\
+  render(widget)               // draw inline in the chat flow\n\
+  render_to(panel_id, widget)  // draw to a named, persistent side panel (id: 1-32 of [a-z0-9_-]);\n\
                                // re-rendering the same id replaces that panel in place\n\
+  render_to_ttl(panel_id, widget, ttl_ms)  // same, but the panel auto-expires after ttl_ms\n\
+  remove_panel(panel_id)       // close one panel and reclaim its space\n\
+  clear_panels()               // close every panel\n\
+Panel hygiene: panels persist until removed and share one column, so each extra panel shrinks the \
+rest. Reuse one id for updates, give short-lived output a TTL, and remove_panel/clear_panels when \
+done. You may address several panels in a single script.\n\
 Colors: honey, pollen, sting, smoke, royal (or basic ANSI names). Caps: <=500 total elements. \
 The model receives a text summary of what was drawn, not the pixels.";
+
+/// The text summary the model gets back: what was drawn and where it went. Never pixels (FR-023).
+fn summarize(outcome: &crate::render_api::RenderOutcome) -> String {
+    use crate::render_spec::{PanelOp, RenderSpec};
+
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(spec) = &outcome.inline {
+        let mut s = format!("Rendered {} inline", spec.summary_noun());
+        // A fully-transparent sprite renders as blank rows — say so rather than look broken.
+        if let RenderSpec::Sprite { spec: sp } = spec {
+            if sp.is_fully_transparent() {
+                s.push_str(" (note: sprite is fully transparent)");
+            }
+        }
+        parts.push(s);
+    }
+    for op in &outcome.panel_ops {
+        parts.push(match op {
+            PanelOp::Upsert {
+                id,
+                spec,
+                ttl_ms: None,
+            } => format!("rendered {} to panel {id:?}", spec.summary_noun()),
+            PanelOp::Upsert {
+                id,
+                spec,
+                ttl_ms: Some(ms),
+            } => format!(
+                "rendered {} to panel {id:?} (expires in {ms}ms)",
+                spec.summary_noun()
+            ),
+            PanelOp::Remove { id } => format!("removed panel {id:?}"),
+            PanelOp::Clear => "cleared all panels".to_string(),
+        });
+    }
+
+    let mut summary = parts.join("; ");
+    summary.push('.');
+    // Capitalize when the first clause came from a panel op rather than the inline branch.
+    if let Some(first) = summary.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    if outcome.render_calls > 1 && outcome.inline.is_some() && outcome.panel_ops.is_empty() {
+        summary.push_str(&format!(
+            " (note: {} earlier render(s) discarded; showing the last)",
+            outcome.render_calls - 1
+        ));
+    }
+    summary
+}
 
 /// The render tool. The Rhai [`Engine`] is built **once** (per registry/session) with hard resource
 /// limits (research D2); per-call cost is just `run`. `eval_guard` serializes concurrent calls so the
@@ -112,32 +168,15 @@ impl Tool for RenderTool {
         self.ctx.reset();
         match self.engine.run(&script) {
             Ok(()) => {
-                let (committed, render_calls) = self.ctx.take();
-                match committed {
-                    None => ToolResult::error("render: script produced no visualization"),
-                    Some((spec, target)) => {
-                        let where_to = match &target {
-                            crate::render_spec::RenderTarget::Inline => String::new(),
-                            crate::render_spec::RenderTarget::Panel { id } => {
-                                format!(" to panel {id:?}")
-                            }
-                        };
-                        let mut summary = format!("Rendered {}{where_to}.", spec.summary_noun());
-                        // M1: a fully-transparent sprite renders as blank rows — say so.
-                        if let crate::render_spec::RenderSpec::Sprite { spec: s } = &spec {
-                            if s.is_fully_transparent() {
-                                summary.push_str(" (note: sprite is fully transparent)");
-                            }
-                        }
-                        if render_calls > 1 {
-                            summary.push_str(&format!(
-                                " (note: {} earlier render(s) discarded; showing the last)",
-                                render_calls - 1
-                            ));
-                        }
-                        ToolResult::rendered_to(summary, spec, target)
-                    }
+                let outcome = self.ctx.take();
+                if outcome.is_empty() {
+                    return ToolResult::error("render: script produced no visualization");
                 }
+                ToolResult::rendered_with_ops(
+                    summarize(&outcome),
+                    outcome.inline,
+                    outcome.panel_ops,
+                )
             }
             Err(e) => {
                 let msg = match &*e {

@@ -103,6 +103,84 @@ fn inline_only_transcript_reconstructs_no_panels() {
     assert!(t.replay_panels().is_empty());
 }
 
+/// A recorded `render` call that requested `ops` on the panel column.
+fn ops_call(id: &str, ops: Vec<bee_harness::render_spec::PanelOp>) -> RecordedCall {
+    RecordedCall {
+        call: ToolCall {
+            id: id.into(),
+            name: "render".into(),
+            arguments: serde_json::json!({ "script": "…" }),
+        },
+        result: ToolResult::rendered_with_ops("Rendered.", None, ops),
+        audit: vec![],
+    }
+}
+
+#[test]
+fn replay_applies_remove_and_clear_not_just_upserts() {
+    use bee_harness::render_spec::PanelOp;
+    let up = |id: &str, v: &str| PanelOp::Upsert {
+        id: id.into(),
+        spec: text(v),
+        ttl_ms: None,
+    };
+    let t = transcript(vec![
+        turn(
+            0,
+            vec![ops_call(
+                "c1",
+                vec![up("a", "1"), up("b", "2"), up("c", "3")],
+            )],
+        ),
+        // Remove one, then re-add a fresh panel.
+        turn(
+            1,
+            vec![ops_call(
+                "c2",
+                vec![PanelOp::Remove { id: "b".into() }, up("d", "4")],
+            )],
+        ),
+    ]);
+    let ids: Vec<String> = t.replay_panels().into_iter().map(|p| p.id).collect();
+    assert_eq!(
+        ids,
+        ["a", "c", "d"],
+        "removed panel is gone; order preserved"
+    );
+
+    // A clear wipes everything recorded before it.
+    let t2 = transcript(vec![
+        turn(0, vec![ops_call("c1", vec![up("a", "1"), up("b", "2")])]),
+        turn(
+            1,
+            vec![ops_call("c2", vec![PanelOp::Clear, up("fresh", "9")])],
+        ),
+    ]);
+    let ids2: Vec<String> = t2.replay_panels().into_iter().map(|p| p.id).collect();
+    assert_eq!(ids2, ["fresh"], "clear wipes prior panels");
+}
+
+#[test]
+fn ttl_panels_replay_with_their_last_content() {
+    use bee_harness::render_spec::PanelOp;
+    // Expiry is live-session wall-clock state; a replay has no meaningful "now", so a TTL panel
+    // replays with whatever it last held rather than vanishing.
+    let t = transcript(vec![turn(
+        0,
+        vec![ops_call(
+            "c1",
+            vec![PanelOp::Upsert {
+                id: "flash".into(),
+                spec: text("brief"),
+                ttl_ms: Some(50),
+            }],
+        )],
+    )]);
+    let panels = t.replay_panels();
+    assert_eq!(panels.len(), 1);
+    assert_eq!(panels[0].spec, text("brief"));
+}
+
 #[test]
 fn panel_updates_lists_every_targeted_render_in_order() {
     let panel = |id: &str| RenderTarget::Panel { id: id.into() };

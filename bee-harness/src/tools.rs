@@ -18,7 +18,7 @@ pub mod files;
 pub mod render;
 pub mod skill;
 
-use crate::render_spec::{RenderSpec, RenderTarget};
+use crate::render_spec::{PanelOp, RenderSpec, RenderTarget};
 
 /// The default tool set advertised to the model (contracts/scenario-schema.md). The CTF terminal
 /// tools (`submit_flag`, `give_up`) are **not** here — a scenario opts into them via its `tools`
@@ -72,10 +72,16 @@ pub struct ToolResult {
     /// recorded in the transcript for later re-rendering.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_spec: Option<RenderSpec>,
-    /// Where the `render_spec` is addressed (008-grid-tui, FR-008): the chat flow (`Inline`, default)
-    /// or a named, persistent panel. The front-end routes on this; the model never sees it.
+    /// Where the `render_spec` is addressed (008-grid-tui, FR-008). **Legacy**: panel effects now
+    /// travel in `panel_ops`; this remains so transcripts recorded before the lifecycle ops still
+    /// replay. New results always leave it `Inline`.
     #[serde(default, skip_serializing_if = "RenderTarget::is_inline")]
     pub render_target: RenderTarget,
+    /// Panel effects this call requested — create/replace (optionally with a TTL), remove, or clear
+    /// (008-grid-tui, US2 lifecycle). Ordered; the front-end applies them in sequence. The model
+    /// never sees these, only the text summary in `content`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub panel_ops: Vec<PanelOp>,
 }
 
 impl ToolResult {
@@ -90,6 +96,7 @@ impl ToolResult {
             terminal: false,
             render_spec: None,
             render_target: RenderTarget::Inline,
+            panel_ops: Vec::new(),
         }
     }
 
@@ -104,6 +111,7 @@ impl ToolResult {
             terminal: false,
             render_spec: None,
             render_target: RenderTarget::Inline,
+            panel_ops: Vec::new(),
         }
     }
 
@@ -119,6 +127,20 @@ impl ToolResult {
         ToolResult {
             render_spec: Some(spec),
             render_target: target,
+            ..ToolResult::ok(summary)
+        }
+    }
+
+    /// A successful `render`-tool result carrying an optional inline widget plus the panel effects
+    /// the script requested (008-grid-tui, US2 lifecycle). The model still receives only `summary`.
+    pub fn rendered_with_ops(
+        summary: impl Into<String>,
+        inline: Option<RenderSpec>,
+        panel_ops: Vec<PanelOp>,
+    ) -> Self {
+        ToolResult {
+            render_spec: inline,
+            panel_ops,
             ..ToolResult::ok(summary)
         }
     }

@@ -86,6 +86,7 @@ pub async fn run(
 
     // The Elm loop: draw, then wait for the next thing that changes the model.
     while !app.should_quit {
+        app.panels.prune(std::time::Instant::now());
         terminal.draw(|f| view::view(&app, f))?;
 
         // A submitted line starts a model turn; drive it to completion while still pumping the UI.
@@ -108,8 +109,18 @@ pub async fn run(
             continue;
         }
 
-        // Idle: block on a single terminal event, apply it, loop back to redraw.
-        match events.next().await {
+        // Idle: block on a single terminal event, apply it, loop back to redraw. When a panel carries
+        // a TTL we also wake periodically so it expires on time instead of lingering until the next
+        // keypress; with no expiring panels this stays a pure blocking wait (no idle CPU).
+        let next = if app.panels.has_expiring() {
+            tokio::select! {
+                ev = events.next() => ev,
+                _ = tokio::time::sleep(Duration::from_millis(250)) => continue,
+            }
+        } else {
+            events.next().await
+        };
+        match next {
             Some(Ok(ev)) => {
                 if let Some(msg) = message_from_event(ev) {
                     update(&mut app, msg);
@@ -168,6 +179,7 @@ async fn run_turn(
     let mut turn_done = false;
 
     loop {
+        app.panels.prune(std::time::Instant::now());
         terminal.draw(|f| view::view(app, f))?;
         // A mid-turn quit (Ctrl-C / q from chat focus) drops `exchange`, cancelling the call.
         if app.should_quit {
@@ -181,10 +193,10 @@ async fn run_turn(
                 // The exchange emits its trailing events (footer/TurnDone) before returning; fold
                 // them in, redraw once more via the loop head, then finish.
                 while let Ok(ev) = rx.try_recv() {
-                    update(app, Message::Session(ev));
+                    update(app, Message::session(ev));
                 }
             }
-            Some(ev) = rx.recv() => update(app, Message::Session(ev)),
+            Some(ev) = rx.recv() => update(app, Message::session(ev)),
             maybe = events.next() => match maybe {
                 Some(Ok(ev)) => {
                     if let Some(msg) = message_from_event(ev) {
