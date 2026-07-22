@@ -65,12 +65,12 @@ tests in each story before/with implementation.
 - [X] T013 [US1] `update(&mut App, Message)` reducer in `bee-harness/src/tui/app.rs` — key handling, scroll, focus, submit, quit, resize, token append (depends on T011, T012).
 - [X] T014 [P] [US1] Minimal multi-line input widget (buffer, cursor, history, multi-line paste) in `bee-harness/src/tui/input.rs` (research D5).
 - [X] T015 [P] [US1] Chat model + virtualized visible-slice render + inline-widget rendering via `render_into` in `bee-harness/src/tui/chat.rs` (research D6).
-- [ ] T016 [US1] `view(&App, &mut Frame)` — header / chat / input / footer hint bar layout in `bee-harness/src/tui/view.rs` (depends on T014, T015; keybindings.md footer).
-- [ ] T016a [US1] `?` help overlay listing all keybindings, rendered in `bee-harness/src/tui/view.rs` and toggled via a `help_open` flag in the reducer (`bee-harness/src/tui/app.rs`), closable with `?`/`Esc` (**FR-005**; contracts/keybindings.md discoverability ladder — resolves analysis G1) (depends on T013, T016).
+- [X] T016 [US1] `view(&App, &mut Frame)` — header / chat / input / footer hint bar layout in `bee-harness/src/tui/view.rs` (depends on T014, T015; keybindings.md footer).
+- [X] T016a [US1] `?` help overlay listing all keybindings, rendered in `bee-harness/src/tui/view.rs` and toggled via a `help_open` flag in the reducer (`bee-harness/src/tui/app.rs`), closable with `?`/`Esc` (**FR-005**; contracts/keybindings.md discoverability ladder — resolves analysis G1) (depends on T013, T016).
 - [ ] T017 [US1] Terminal lifecycle in `bee-harness/src/tui/term.rs`: alt-screen + raw mode via `ratatui::init`/`restore`, `Drop` guard, `color-eyre` panic hook that restores first, SIGTSTP suspend/SIGCONT redraw (makes T010 pass; contracts/modes-and-cli.md).
 - [ ] T018 [US1] Event loop in `bee-harness/src/tui/mod.rs`: `crossterm` `EventStream` + `tokio::select!` over terminal events, the `SessionEvent` channel, resize, and an on-demand tick; redraw once per handled batch (depends on T013, T016, T017; research D3).
 - [ ] T019 [US1] Add `--tui`/`--no-tui` flags and launch the full-screen front-end on a capable terminal in `bee-harness/src/bin/bee-repl.rs` (minimal; graceful fallback lands in US3) (depends on T018).
-- [ ] T020 [P] [US1] Frame snapshot test (header + chat + input + footer) at a pinned size and `NO_COLOR` in `bee-harness/tests/tui_snapshot.rs` (research D12).
+- [X] T020 [P] [US1] Frame snapshot test (header + chat + input + footer) at a pinned size and `NO_COLOR` in `bee-harness/tests/tui_snapshot.rs` (research D12).
 
 **Checkpoint**: US1 is a working full-screen chat MVP, independently testable.
 
