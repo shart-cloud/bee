@@ -36,20 +36,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_color_yields_unstyled() {
-        // SC-005: with NO_COLOR set, the bridge carries no foreground color (monochrome floor).
+    fn no_color_toggles_the_foreground() {
+        // NO_COLOR is process-global, so both states are checked in one serial test to avoid racing a
+        // parallel test in this binary (mirrors the palette tests).
+        // With NO_COLOR set (SC-005): no foreground color (monochrome floor); bold still applies.
         std::env::set_var("NO_COLOR", "1");
         assert_eq!(role_style(Role::Info), Style::default());
         assert_eq!(role_style(Role::Error).fg, None);
-        // Bold still applies — weight is not color.
         assert!(role_style_bold(Role::Info)
             .add_modifier
             .contains(Modifier::BOLD));
-        std::env::remove_var("NO_COLOR");
-    }
-
-    #[test]
-    fn color_on_sets_a_foreground() {
+        // With NO_COLOR unset: a foreground color is carried.
         std::env::remove_var("NO_COLOR");
         assert!(role_style(Role::Info).fg.is_some());
     }

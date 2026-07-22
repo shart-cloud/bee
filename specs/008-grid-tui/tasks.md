@@ -55,16 +55,16 @@ tests in each story before/with implementation.
 
 ### Tests for User Story 1
 
-- [ ] T009 [P] [US1] Reducer tests in `bee-harness/tests/tui_update.rs`: submit, scroll (PgUp/PgDn, `gg`/`G`), focus cycle, quit, resize→`layout_mode` (write to fail first).
+- [X] T009 [P] [US1] Reducer tests (realized as in-crate unit tests in `bee-harness/src/tui/app.rs` — pure, run under `--features tui`): submit, scroll (PgUp/PgDn, `gg`/`G`), focus cycle, quit, resize→`layout_mode` (write to fail first).
 - [ ] T010 [P] [US1] Terminal-restore matrix test in `bee-harness/tests/tui_restore.rs`: quit / interrupt / suspend-resume / panic all leave the terminal restored (SC-001, contracts/modes-and-cli.md).
 
 ### Implementation for User Story 1
 
-- [ ] T011 [P] [US1] `App` model (chat, input, scroll, focus, size, turn, should_quit, theme) in `bee-harness/src/tui/app.rs` (data-model.md).
-- [ ] T012 [P] [US1] `Message` enum (`Key`, `Paste`, `Resize`, `Suspend`/`Resume`, `Tick`, `Session`, `Quit`) in `bee-harness/src/tui/message.rs`.
-- [ ] T013 [US1] `update(&mut App, Message)` reducer in `bee-harness/src/tui/app.rs` — key handling, scroll, focus, submit, quit, resize, token append (depends on T011, T012).
-- [ ] T014 [P] [US1] Minimal multi-line input widget (buffer, cursor, history, multi-line paste) in `bee-harness/src/tui/input.rs` (research D5).
-- [ ] T015 [P] [US1] Chat model + virtualized visible-slice render + inline-widget rendering via `render_into` in `bee-harness/src/tui/chat.rs` (research D6).
+- [X] T011 [P] [US1] `App` model (chat, input, scroll, focus, size, turn, should_quit, theme) in `bee-harness/src/tui/app.rs` (data-model.md).
+- [X] T012 [P] [US1] `Message` enum (`Key`, `Paste`, `Resize`, `Suspend`/`Resume`, `Tick`, `Session`, `Quit`) in `bee-harness/src/tui/message.rs`.
+- [X] T013 [US1] `update(&mut App, Message)` reducer in `bee-harness/src/tui/app.rs` — key handling, scroll, focus, submit, quit, resize, token append (depends on T011, T012).
+- [X] T014 [P] [US1] Minimal multi-line input widget (buffer, cursor, history, multi-line paste) in `bee-harness/src/tui/input.rs` (research D5).
+- [X] T015 [P] [US1] Chat model + virtualized visible-slice render + inline-widget rendering via `render_into` in `bee-harness/src/tui/chat.rs` (research D6).
 - [ ] T016 [US1] `view(&App, &mut Frame)` — header / chat / input / footer hint bar layout in `bee-harness/src/tui/view.rs` (depends on T014, T015; keybindings.md footer).
 - [ ] T016a [US1] `?` help overlay listing all keybindings, rendered in `bee-harness/src/tui/view.rs` and toggled via a `help_open` flag in the reducer (`bee-harness/src/tui/app.rs`), closable with `?`/`Esc` (**FR-005**; contracts/keybindings.md discoverability ladder — resolves analysis G1) (depends on T013, T016).
 - [ ] T017 [US1] Terminal lifecycle in `bee-harness/src/tui/term.rs`: alt-screen + raw mode via `ratatui::init`/`restore`, `Drop` guard, `color-eyre` panic hook that restores first, SIGTSTP suspend/SIGCONT redraw (makes T010 pass; contracts/modes-and-cli.md).

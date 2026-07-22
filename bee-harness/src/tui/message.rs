@@ -1,2 +1,48 @@
-//! `Message` — everything that can change the `App` (008-grid-tui, US1 T012). Key/Paste/Resize/
-//! Suspend/Resume/Tick/Session(SessionEvent)/Quit. Scaffold — implemented in US1.
+//! `Message` — everything that can change the `App` (008-grid-tui, US1 T012 / data-model.md).
+//!
+//! The Elm-architecture input to [`super::app::update`]. Terminal events and [`SessionEvent`]s both
+//! funnel into this one type. The `key_*` constructors let tests (and the event loop) build key
+//! messages without naming crossterm at every call site.
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::session::SessionEvent;
+
+/// One thing that can change the model.
+#[derive(Debug, Clone)]
+pub enum Message {
+    /// A key press.
+    Key(KeyEvent),
+    /// A bracketed paste.
+    Paste(String),
+    /// Terminal resized to `(cols, rows)`.
+    Resize(u16, u16),
+    /// Ctrl-Z suspend requested / resumed.
+    Suspend,
+    Resume,
+    /// An animation tick (armed only while something animates).
+    Tick,
+    /// The conversation core spoke.
+    Session(SessionEvent),
+    /// Quit the session.
+    Quit,
+}
+
+impl Message {
+    /// A plain character key.
+    pub fn char(c: char) -> Self {
+        Message::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+    }
+    /// A character key with modifiers (e.g. Ctrl-C).
+    pub fn char_mods(c: char, mods: KeyModifiers) -> Self {
+        Message::Key(KeyEvent::new(KeyCode::Char(c), mods))
+    }
+    /// A bare key code (Enter, Tab, Up, …).
+    pub fn key(code: KeyCode) -> Self {
+        Message::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+    /// A key code with modifiers (e.g. Shift+Enter for a soft newline).
+    pub fn key_mods(code: KeyCode, mods: KeyModifiers) -> Self {
+        Message::Key(KeyEvent::new(code, mods))
+    }
+}
