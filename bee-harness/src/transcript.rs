@@ -59,6 +59,15 @@ pub struct RecordedCall {
     pub audit: Vec<AuditEvent>,
 }
 
+/// A panel-targeted render recorded in / replayed from a transcript (008-grid-tui, FR-010/SC-009): a
+/// render whose target was a named panel. Pure serde (no ratatui/rhai types; NFR-002/SC-019), so the
+/// transcript stays re-renderable without pulling terminal types into `bee-core`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PanelUpdate {
+    pub id: String,
+    pub spec: crate::render_spec::RenderSpec,
+}
+
 /// One model turn as recorded: assistant prose + the calls it made (with results + audit).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptTurn {
@@ -106,6 +115,66 @@ impl EpisodeTranscript {
     /// Convenience: every denied audit event across the episode.
     pub fn denials(&self) -> impl Iterator<Item = &AuditEvent> {
         self.audit_trail.iter().filter(|e| e.decision == "denied")
+    }
+
+    /// Every panel effect across the episode, in turn/call order (008-grid-tui, FR-010). Derived
+    /// from the `ToolResult`s already in the transcript, so no live-only panel state is stored
+    /// (SC-009). Results recorded before the lifecycle ops existed carried the panel in
+    /// `render_target`; those are still honored.
+    pub fn panel_ops(&self) -> Vec<crate::render_spec::PanelOp> {
+        use crate::render_spec::{PanelOp, RenderTarget};
+        let mut out = Vec::new();
+        for turn in &self.turns {
+            for call in &turn.calls {
+                // Legacy shape: a render addressed via `render_target`.
+                if let (RenderTarget::Panel { id }, Some(spec)) =
+                    (&call.result.render_target, &call.result.render_spec)
+                {
+                    out.push(PanelOp::Upsert {
+                        id: id.clone(),
+                        spec: spec.clone(),
+                        ttl_ms: None,
+                    });
+                }
+                out.extend(call.result.panel_ops.iter().cloned());
+            }
+        }
+        out
+    }
+
+    /// Every panel *content* update, in order — the upserts from [`Self::panel_ops`].
+    pub fn panel_updates(&self) -> Vec<PanelUpdate> {
+        self.panel_ops()
+            .into_iter()
+            .filter_map(|op| match op {
+                crate::render_spec::PanelOp::Upsert { id, spec, .. } => {
+                    Some(PanelUpdate { id, spec })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Replay the panel effects in order — upserts fold **last-writer-wins per id**, removes and
+    /// clears take effect — reconstructing exactly the panel column a live session ended with
+    /// (008-grid-tui, SC-009). First-seen insertion order is preserved.
+    ///
+    /// TTLs are *not* applied here: expiry is wall-clock state of a live session, and a replay has no
+    /// meaningful "now". A replayed panel shows its last recorded content.
+    pub fn replay_panels(&self) -> Vec<PanelUpdate> {
+        use crate::render_spec::PanelOp;
+        let mut out: Vec<PanelUpdate> = Vec::new();
+        for op in self.panel_ops() {
+            match op {
+                PanelOp::Upsert { id, spec, .. } => match out.iter_mut().find(|p| p.id == id) {
+                    Some(existing) => existing.spec = spec,
+                    None => out.push(PanelUpdate { id, spec }),
+                },
+                PanelOp::Remove { id } => out.retain(|p| p.id != id),
+                PanelOp::Clear => out.clear(),
+            }
+        }
+        out
     }
 
     /// Build a transcript for an episode that never ran (setup failed before the loop). Used by the
@@ -254,6 +323,8 @@ pub fn tool_result_from_output(
         original_len,
         terminal: false,
         render_spec: None,
+        render_target: crate::render_spec::RenderTarget::Inline,
+        panel_ops: Vec::new(),
     }
 }
 

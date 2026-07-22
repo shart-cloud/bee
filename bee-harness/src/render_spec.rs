@@ -54,12 +54,75 @@ pub enum DotState {
     Skip,
 }
 
+/// serde default for [`GridCell`] spans (a cell covers one track unless told otherwise).
+fn default_span() -> u16 {
+    1
+}
+
+/// One cell of a [`RenderSpec::Grid`] (grid-tui, M1): a widget placed at `(row, col)`, optionally
+/// spanning multiple tracks. `content` is any [`RenderSpec`], so the whole component system nests
+/// inside a grid. Pure serde like everything else here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GridCell {
+    pub row: u16,
+    pub col: u16,
+    #[serde(default = "default_span")]
+    pub row_span: u16,
+    #[serde(default = "default_span")]
+    pub col_span: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub content: RenderSpec,
+}
+
 /// A layout direction — maps to a ratatui `Direction` at render time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     Vertical,
     Horizontal,
+}
+
+/// Where a rendered spec is sent (008-grid-tui): the chat flow, or a named persistent panel. Pure
+/// serde so the render tool result and the episode transcript can carry it (contracts/rhai-panel-api).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "target", rename_all = "snake_case")]
+pub enum RenderTarget {
+    /// Flows inline into the conversation — the default and today's behavior.
+    #[default]
+    Inline,
+    /// A named, persistent, model-owned panel; re-rendering the same `id` replaces it in place.
+    Panel { id: String },
+}
+
+impl RenderTarget {
+    /// True for the default inline target — used by serde to skip the field for inline results.
+    pub fn is_inline(&self) -> bool {
+        matches!(self, RenderTarget::Inline)
+    }
+}
+
+/// One effect a render script requests on the panel column (008-grid-tui, US2 lifecycle).
+///
+/// Panels were create-or-replace only, which let them accumulate unbounded with no model-side way to
+/// reclaim space. These ops close that gap: a script can remove one panel, clear them all, or give a
+/// panel a TTL so it expires on its own. Pure serde like every other render type, so the ops record
+/// in the transcript and replay exactly (NFR-002/SC-019).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum PanelOp {
+    /// Create panel `id`, or replace its content in place if it already exists (FR-008/009).
+    /// `ttl_ms`, when set, expires the panel that long after this update.
+    Upsert {
+        id: String,
+        spec: RenderSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl_ms: Option<u64>,
+    },
+    /// Remove panel `id` if it exists; a no-op when it doesn't.
+    Remove { id: String },
+    /// Remove every panel.
+    Clear,
 }
 
 /// A pixel-art sprite (003-visual-render, Slice 2, FR-028): a `width × height` grid of RGB pixels,
@@ -175,6 +238,20 @@ pub enum RenderSpec {
     Animation {
         spec: AnimationSpec,
     },
+    /// A model-defined N×M grid of cells, each holding any widget (grid-tui, M1). `rows`/`cols` are
+    /// the track counts; `*_weights` size the tracks proportionally (empty = equal); `gap` is the
+    /// inter-track spacing. Cells are validated non-overlapping and in-bounds at build time.
+    Grid {
+        rows: u16,
+        cols: u16,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        col_weights: Vec<u16>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        row_weights: Vec<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gap: Option<u16>,
+        cells: Vec<GridCell>,
+    },
 }
 
 impl RenderSpec {
@@ -189,6 +266,7 @@ impl RenderSpec {
             RenderSpec::Table { rows, .. } => rows.len(),
             RenderSpec::DotGrid { dots, .. } => dots.len(),
             RenderSpec::Layout { children, .. } => children.iter().map(|c| c.element_count()).sum(),
+            RenderSpec::Grid { cells, .. } => cells.iter().map(|c| c.content.element_count()).sum(),
             RenderSpec::Sprite { .. } => 1,
             RenderSpec::Animation { spec } => spec.frames.len(),
             _ => 0,
@@ -203,6 +281,13 @@ impl RenderSpec {
                 1 + children
                     .iter()
                     .map(|c| c.nesting_depth())
+                    .max()
+                    .unwrap_or(0)
+            }
+            RenderSpec::Grid { cells, .. } => {
+                1 + cells
+                    .iter()
+                    .map(|c| c.content.nesting_depth())
                     .max()
                     .unwrap_or(0)
             }
@@ -285,6 +370,15 @@ impl RenderSpec {
             RenderSpec::Animation { spec } => {
                 format!("[animation: {} frames]\n", spec.frames.len())
             }
+            RenderSpec::Grid {
+                rows, cols, cells, ..
+            } => {
+                let mut s = format!("[grid {rows}×{cols}]\n");
+                for c in cells {
+                    s.push_str(&format!("  ({},{}) {}", c.row, c.col, c.content.to_ascii()));
+                }
+                s
+            }
         }
     }
 
@@ -334,6 +428,32 @@ impl RenderSpec {
             RenderSpec::Animation { spec } => {
                 format!("a {}-frame animation", spec.frames.len())
             }
+            RenderSpec::Grid {
+                rows, cols, cells, ..
+            } => {
+                format!("a {rows}×{cols} grid with {} cells", cells.len())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_target_serde_roundtrips() {
+        // Default is Inline (008-grid-tui); Panel carries its id. Both survive a serde round-trip.
+        assert_eq!(RenderTarget::default(), RenderTarget::Inline);
+        for t in [
+            RenderTarget::Inline,
+            RenderTarget::Panel {
+                id: "metrics".into(),
+            },
+        ] {
+            let json = serde_json::to_string(&t).expect("serialize");
+            let back: RenderTarget = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(t, back);
         }
     }
 }

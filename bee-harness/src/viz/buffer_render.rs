@@ -12,7 +12,7 @@ use ratatui::widgets::{
     Widget,
 };
 
-use crate::render_spec::{Direction, DotState, RenderSpec};
+use crate::render_spec::{Direction, DotState, RenderSpec, SpriteSpec};
 use crate::viz::grid::{dot_cell, Status};
 use crate::viz::palette;
 use crate::viz::sprite_render::{detect_color_mode, ColorMode};
@@ -84,8 +84,75 @@ pub fn spec_height(spec: &RenderSpec, width: u16) -> u16 {
             .first()
             .map(|f| f.height.div_ceil(2))
             .unwrap_or(1),
+        RenderSpec::Grid {
+            rows,
+            cols,
+            gap,
+            cells,
+            ..
+        } => {
+            // Uniform-height rows: the row height is the tallest cell content (normalized by its
+            // row-span). Simple and deterministic for the inline snapshot; the full-screen renderer
+            // will honor row_weights for proportional sizing (docs/grid-tui-plan.md §2).
+            let gap = gap.unwrap_or(0);
+            let cell_w = (width / (*cols).max(1)).max(1);
+            let unit = cells
+                .iter()
+                .map(|c| spec_height(&c.content, cell_w).div_ceil(c.row_span.max(1)))
+                .max()
+                .unwrap_or(3)
+                .max(1);
+            rows.saturating_mul(unit)
+                .saturating_add(rows.saturating_sub(1).saturating_mul(gap))
+        }
     };
     h.max(1)
+}
+
+/// The narrowest terminal width at which `spec` is still *legible* (008-grid-tui). Used to fail a
+/// render early when the surface can't show it, instead of drawing an unreadable smear.
+///
+/// Deliberately forgiving — it answers "is this hopeless?", not "is this pretty?" — so a legitimate
+/// render is never rejected. Grids dominate: N columns each need a few cells of content plus gaps.
+pub fn min_width(spec: &RenderSpec) -> u16 {
+    /// Narrowest column that can still show something in a grid cell.
+    const MIN_CELL_COLS: u16 = 8;
+    /// Narrowest column of a table.
+    const MIN_TABLE_COL: u16 = 6;
+    /// Floor for everything that wraps or scales freely (text, gauges, charts…).
+    const MIN_ANY: u16 = 8;
+
+    match spec {
+        RenderSpec::Grid {
+            cols, gap, cells, ..
+        } => {
+            let cols = (*cols).max(1);
+            let gaps = gap.unwrap_or(0).saturating_mul(cols.saturating_sub(1));
+            // Each track must fit the widest thing placed in it, floored at MIN_CELL_COLS.
+            let per_cell = cells
+                .iter()
+                .map(|c| min_width(&c.content).div_ceil(c.col_span.max(1)))
+                .max()
+                .unwrap_or(MIN_CELL_COLS)
+                .max(MIN_CELL_COLS);
+            cols.saturating_mul(per_cell).saturating_add(gaps)
+        }
+        RenderSpec::Table { headers, .. } => {
+            (headers.len() as u16).max(1).saturating_mul(MIN_TABLE_COL)
+        }
+        RenderSpec::Layout {
+            direction,
+            children,
+        } => match direction {
+            // Side-by-side children each need their own width; stacked ones share it.
+            Direction::Horizontal => children.iter().map(min_width).sum::<u16>().max(MIN_ANY),
+            Direction::Vertical => children.iter().map(min_width).max().unwrap_or(MIN_ANY),
+        },
+        // A sprite is one terminal column per pixel column (half-block packs rows, not columns).
+        RenderSpec::Sprite { spec } => spec.width.max(1),
+        RenderSpec::Animation { spec } => spec.frames.first().map(|f| f.width).unwrap_or(1).max(1),
+        _ => MIN_ANY,
+    }
 }
 
 /// Render a [`RenderSpec`] to inline ANSI lines. `max_width`/`max_height` bound the surface (each is
@@ -142,8 +209,10 @@ fn ansi_code_to_ratatui(code: &str) -> Color {
     }
 }
 
-/// Recursively render `spec` into `area` of `buf`.
-fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
+/// Recursively render `spec` into `area` of `buf`. Public so the full-screen TUI can draw a panel's
+/// widget directly into its (bordered) sub-rect (008-grid-tui, US2 T028); content is clipped to
+/// `area` by construction — sub-renders receive sub-rects and never write outside them.
+pub fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
     if area.height == 0 || area.width == 0 {
         return;
     }
@@ -316,15 +385,115 @@ fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
                 }
             }
         }
-        // A sprite/animation nested inside a layout can't drive the truecolor half-block pipeline
-        // (the headless Buffer is basic-ANSI only) nor animate (a layout is one static render), so it
-        // shows a labelled placeholder. Top-level sprites/animations are drawn directly by
-        // `TerminalOutput::render_widget` via `viz::sprite_render` (contracts/sprite-api.md).
-        RenderSpec::Sprite { spec } => {
-            Paragraph::new(format!("[sprite {}×{}]", spec.width, spec.height)).render(area, buf);
-        }
+        // Sprites rasterize into the buffer as truecolor half-blocks (T008), wherever they appear —
+        // nested in a layout/grid cell, or inline in the full-screen chat flow. (This used to be a
+        // `[sprite W×H]` placeholder, which is why the mascot and every inline sprite showed up as
+        // literal text.) An animation is one static render here, so it draws its first frame;
+        // playback is `TerminalOutput`'s job via `viz::animator` (contracts/sprite-api.md).
+        RenderSpec::Sprite { spec } => rasterize_sprite_into(spec, area, buf),
         RenderSpec::Animation { spec } => {
-            Paragraph::new(format!("[animation: {} frames]", spec.frames.len())).render(area, buf);
+            if let Some(frame) = spec.frames.first() {
+                rasterize_sprite_into(frame, area, buf);
+            }
+        }
+        RenderSpec::Grid {
+            rows,
+            cols,
+            col_weights,
+            row_weights,
+            gap,
+            cells,
+        } => {
+            if *rows == 0 || *cols == 0 {
+                return;
+            }
+            let gap = gap.unwrap_or(0);
+            // Track boundaries: split the whole area into `cols` columns and `rows` rows (weighted by
+            // *_weights, default equal Fill). A spanning cell's Rect is the union of the base tracks
+            // it covers, so spans "just work" (docs/grid-tui-plan.md §2).
+            let col_c: Vec<Constraint> = (0..*cols)
+                .map(|c| Constraint::Fill(col_weights.get(c as usize).copied().unwrap_or(1).max(1)))
+                .collect();
+            let row_c: Vec<Constraint> = (0..*rows)
+                .map(|r| Constraint::Fill(row_weights.get(r as usize).copied().unwrap_or(1).max(1)))
+                .collect();
+            let col_rects = Layout::default()
+                .direction(LayoutDir::Horizontal)
+                .spacing(gap)
+                .constraints(col_c)
+                .split(area);
+            let row_rects = Layout::default()
+                .direction(LayoutDir::Vertical)
+                .spacing(gap)
+                .constraints(row_c)
+                .split(area);
+            for cell in cells {
+                let (c0, r0) = (cell.col as usize, cell.row as usize);
+                let c1 = (cell.col + cell.col_span - 1) as usize;
+                let r1 = (cell.row + cell.row_span - 1) as usize;
+                if r1 >= row_rects.len() || c1 >= col_rects.len() {
+                    continue; // out of bounds — validated away at build, guarded here for safety
+                }
+                let x = col_rects[c0].x;
+                let y = row_rects[r0].y;
+                let w = col_rects[c1].right().saturating_sub(x);
+                let h = row_rects[r1].bottom().saturating_sub(y);
+                let rect = Rect::new(x, y, w, h);
+                // An optional cell title wraps the content in a bordered block; otherwise the inner
+                // widget draws directly (most widgets carry their own titled block).
+                let inner = match &cell.title {
+                    Some(t) => {
+                        let block = Block::bordered().title(t.clone());
+                        let inner = block.inner(rect);
+                        block.render(rect, buf);
+                        inner
+                    }
+                    None => rect,
+                };
+                render_into(&cell.content, inner, buf);
+            }
+        }
+    }
+}
+
+/// Composite a [`SpriteSpec`] into `area` of a truecolor `Buffer` using vertical half-blocks
+/// (008-grid-tui, T008 / research D8): two stacked pixels per cell — `fg` = the lower pixel, `bg` =
+/// the upper pixel (`▄`), or `▀` when only the top is opaque.
+///
+/// This is the path the **full-screen TUI** uses to draw sprites *inside* grid cells and panels,
+/// where the real backend carries a per-cell background. It deliberately is **not** wired into the
+/// inline `render_into` placeholder: that path serializes through [`buffer_to_ansi`], which emits only
+/// a foreground SGR, so a background would be lost. A transparent half leaves the buffer's existing
+/// content in that cell.
+pub fn rasterize_sprite_into(spec: &SpriteSpec, area: Rect, buf: &mut Buffer) {
+    let rows = spec.height.div_ceil(2);
+    for r in 0..rows {
+        let y = area.top() + r;
+        if y >= area.bottom() {
+            break;
+        }
+        for x in 0..spec.width {
+            let cx = area.left() + x;
+            if cx >= area.right() {
+                break;
+            }
+            let top = spec.pixel(x, 2 * r);
+            let bottom = spec.pixel(x, 2 * r + 1);
+            let cell = &mut buf[(cx, y)];
+            match (top, bottom) {
+                (None, None) => {}
+                (Some(t), Some(b)) => {
+                    cell.set_symbol("▄")
+                        .set_fg(Color::Rgb(b.0, b.1, b.2))
+                        .set_bg(Color::Rgb(t.0, t.1, t.2));
+                }
+                (Some(t), None) => {
+                    cell.set_symbol("▀").set_fg(Color::Rgb(t.0, t.1, t.2));
+                }
+                (None, Some(b)) => {
+                    cell.set_symbol("▄").set_fg(Color::Rgb(b.0, b.1, b.2));
+                }
+            }
         }
     }
 }

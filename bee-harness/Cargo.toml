@@ -36,6 +36,11 @@ concurrent = ["enforce", "bee-userspace/tokio"]
 # the optional `rmcp` dep below. Stdio (`transport-child-process`) ships first; the remote
 # Streamable-HTTP transport feature is added with the domain-gating slice (US9, task T024).
 mcp = ["dep:rmcp"]
+# Full-screen TUI front-end (008-grid-tui, M3–M4). Default-off so the plain build stays headless and
+# free of a terminal backend (Constitution V / SC-005): turns on ratatui's crossterm backend and pulls
+# the optional terminal deps below. Without it, `viz::buffer_render` keeps using the headless Buffer
+# and `bee-repl` runs the inline REPL only.
+tui = ["dep:crossterm", "dep:color-eyre", "dep:textwrap", "ratatui/crossterm", "tokio/sync"]
 
 [dependencies]
 bee-core = { workspace = true }
@@ -59,6 +64,14 @@ rustyline = "17"
 rhai = { version = "1", default-features = false, features = ["only_i64", "sync"] }
 ratatui = { version = "0.29", default-features = false }
 
+# Full-screen TUI backend (008-grid-tui). All optional + gated by the `tui` feature above so the
+# default build stays headless (research D1/D10). crossterm 0.28 matches ratatui 0.29's pin;
+# `event-stream` gives the async input stream. color-eyre installs the panic hook that restores the
+# terminal; textwrap wraps chat to the pane width.
+crossterm = { version = "0.28", features = ["event-stream"], optional = true }
+color-eyre = { version = "0.6", optional = true }
+textwrap = { version = "0.16", optional = true }
+
 # MCP client SDK (004-mcp-client, bee-harness only — MUST NOT propagate to bee-core/bee-common,
 # NFR-004/SC-026). Optional + gated by the `mcp` feature above. rmcp is v2.x (the spec's "1" is a
 # stale major with a different API; research R1). `default-features = false` because rmcp's defaults
@@ -80,3 +93,5 @@ libc = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "time"] }
 proptest = { workspace = true }
+# Pinned frame snapshots for the TUI (008-grid-tui, research D12).
+insta = "1"

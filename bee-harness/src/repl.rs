@@ -135,6 +135,21 @@ pub trait ReplOutput: Send + Sync {
             self.info(line);
         }
     }
+    /// A render addressed to a named, persistent panel (008-grid-tui, FR-008). Defaults to drawing
+    /// inline via [`ReplOutput::render_widget`] — the inline REPL has no panel column, so targeted
+    /// renders still appear in the chat flow (back-compat, FR-008 scenario 3). The full-screen TUI's
+    /// `SessionSink` overrides this to upsert the panel beside chat.
+    fn panel_update(&self, _id: &str, spec: &RenderSpec) {
+        self.render_widget(spec);
+    }
+    /// One panel-lifecycle effect (008-grid-tui, US2): create/replace (optionally with a TTL),
+    /// remove, or clear. The default routes upserts to [`ReplOutput::panel_update`] and ignores
+    /// remove/clear, since a front-end with no panel column has nothing to reclaim.
+    fn panel_op(&self, op: &crate::render_spec::PanelOp) {
+        if let crate::render_spec::PanelOp::Upsert { id, spec, .. } = op {
+            self.panel_update(id, spec);
+        }
+    }
 }
 
 /// Why one user→agent exchange ended.
@@ -533,10 +548,19 @@ pub async fn run_exchange(
             let audit = sandbox.drain_audit();
             denials += audit.iter().filter(|e| e.decision == "denied").count() as u32;
             output.tool_result(&result, &audit);
-            // If the tool produced a visualization (the `render` tool), draw it inline. The model
-            // still receives only `result.content` (the text summary) — never the ANSI art (FR-023).
+            // If the tool produced a visualization (the `render` tool), surface it — routed by its
+            // target: inline into chat, or upserted into a named panel (008-grid-tui, FR-008). The
+            // model still receives only `result.content` (the text summary), never the art (FR-023).
             if let Some(spec) = &result.render_spec {
-                output.render_widget(spec);
+                match &result.render_target {
+                    // Legacy results routed panels via `render_target`; honor them for back-compat.
+                    crate::render_spec::RenderTarget::Panel { id } => output.panel_update(id, spec),
+                    crate::render_spec::RenderTarget::Inline => output.render_widget(spec),
+                }
+            }
+            // Then each panel-lifecycle effect, in order (008-grid-tui, US2).
+            for op in &result.panel_ops {
+                output.panel_op(op);
             }
 
             conversation.push(Message::ToolResult {
@@ -772,7 +796,7 @@ fn remember(editor: &mut DefaultEditor, path: &Option<PathBuf>, line: &str) {
 /// aware visuals exist and nudges it to use them when a chart/table/status grid reads better than
 /// prose. When `render` is not among the enabled tools, the base prompt is returned unchanged so the
 /// agent is never told about a tool it doesn't have.
-fn effective_system_prompt(base: &str, registry: &ToolRegistry) -> String {
+pub(crate) fn effective_system_prompt(base: &str, registry: &ToolRegistry) -> String {
     let mut prompt = base.to_string();
     if registry.contains("render") {
         prompt.push_str(
@@ -880,11 +904,29 @@ pub async fn run_repl(
     };
     let output = TerminalOutput::new(Box::new(printer));
 
-    // Bee mascot (on by default; `--no-bee` / `BEE_MASCOT=0` to suppress): play the wing-flap once
-    // beside the session line, then it reclaims its rows (003-visual-render, Slice 2, FR-032).
+    // Publish the drawable width so the render tool can reject widgets this terminal can't show
+    // (008-grid-tui). Height is unbounded here — the inline REPL scrolls — and off a tty (piped
+    // output) nothing is known, so the viewport stays unconstrained and no fit check fires.
+    {
+        let (cols, is_tty) = crate::viz::terminal_dims();
+        crate::viz::viewport::set(crate::viz::viewport::Viewport {
+            cols,
+            inline_cols: cols,
+            full_screen: false,
+            constrained: is_tty,
+            ..crate::viz::viewport::Viewport::unconstrained()
+        });
+    }
+
+    // Bee mascot (on by default; `--no-bee` / `BEE_MASCOT=0` to suppress): a static sprite banner in
+    // the resting pose. (It was a fire-and-forget wing-flap, but the animation's deferred row-reclaim
+    // fought the info line + prompt printed immediately below it, leaving two stray black antenna rows
+    // after the first message. A static block has no reclaim, so no artifact. The flap belongs in the
+    // upcoming full-screen TUI, where a tick-driven redraw needs no cursor-reclaim hack — see
+    // docs/grid-tui-plan.md §5.)
     if config.mascot {
-        output.render_widget(&RenderSpec::Animation {
-            spec: crate::viz::bee::animation(),
+        output.render_widget(&RenderSpec::Sprite {
+            spec: crate::viz::bee::sprite(),
         });
     }
 

@@ -66,6 +66,31 @@ pub struct MockStep {
     pub text: Option<String>,
 }
 
+/// Anthropic **extended thinking** mode (008 / provider config). Maps to the `thinking` request
+/// field. On current models (Opus 4.8/4.7, Sonnet 5, Fable 5) thinking is **off** unless set here —
+/// omitting the field runs without reasoning. Anthropic-only; ignored for other providers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingMode {
+    /// `thinking = {type: "adaptive"}` — the model decides when and how much to reason (the only
+    /// on-mode on current models).
+    Adaptive,
+    /// `thinking = {type: "disabled"}` — explicit off (accepted on Opus 4.8/4.7; rejected on Fable 5).
+    Disabled,
+}
+
+/// Anthropic reasoning **effort** (008 / provider config). Sent as `output_config = {effort: …}`;
+/// controls thinking depth and overall token spend. Anthropic-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Effort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
 /// A provider selection (which model / endpoint / key var).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
@@ -83,6 +108,15 @@ pub struct ProviderConfig {
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub temperature: Option<f32>,
+    /// Anthropic **extended thinking** (opt-in). `thinking = "adaptive"` lets the model decide when
+    /// and how much to reason; omit to leave it off. Anthropic-only. Note: on Opus 4.8/4.7 (and
+    /// Sonnet 5 / Fable 5) reasoning is **off** unless this is set. See [`ThinkingMode`].
+    #[serde(default)]
+    pub thinking: Option<ThinkingMode>,
+    /// Anthropic reasoning **effort** (`low`|`medium`|`high`|`xhigh`|`max`). Sent as
+    /// `output_config = {effort: …}`; omit for the provider default. Anthropic-only. See [`Effort`].
+    #[serde(default)]
+    pub effort: Option<Effort>,
     /// Enable Anthropic prompt caching — caches the system prompt, tool schemas, and the growing
     /// conversation prefix so repeated turns re-read them at ~0.1× cost instead of full price. On by
     /// default; ignored for non-Anthropic providers. Set `prompt_caching = false` in the provider
@@ -147,6 +181,15 @@ impl ProviderConfig {
         {
             return Err(ConfigError::Invalid(
                 "provider.base_url is required for openai-compat".into(),
+            ));
+        }
+        // `thinking` / `effort` are Anthropic request fields; reject them on other providers rather
+        // than silently ignoring the setting.
+        if self.provider != ProviderType::Anthropic
+            && (self.thinking.is_some() || self.effort.is_some())
+        {
+            return Err(ConfigError::Invalid(
+                "provider.thinking / provider.effort apply only to the anthropic provider".into(),
             ));
         }
         Ok(())
@@ -232,6 +275,46 @@ prompt_caching = false
 provider    = "openai-compat"
 model       = "qwen2.5-coder"
 api_key_env = "OPENAI_API_KEY"
+"#,
+        );
+        let err = ProviderConfig::from_path(&p).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn thinking_and_effort_parse() {
+        let tmp = std::env::temp_dir().join(format!("bee-cfg-think-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let p = write(
+            &tmp,
+            r#"
+[provider]
+provider    = "anthropic"
+model       = "claude-opus-4-8"
+api_key_env = "ANTHROPIC_API_KEY"
+max_tokens  = 4096
+thinking    = "adaptive"
+effort      = "xhigh"
+"#,
+        );
+        let cfg = ProviderConfig::from_path(&p).unwrap();
+        assert_eq!(cfg.thinking, Some(ThinkingMode::Adaptive));
+        assert_eq!(cfg.effort, Some(Effort::Xhigh));
+    }
+
+    #[test]
+    fn thinking_rejected_on_non_anthropic() {
+        let tmp = std::env::temp_dir().join(format!("bee-cfg-think-oai-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let p = write(
+            &tmp,
+            r#"
+[provider]
+provider    = "openai-compat"
+model       = "qwen2.5-coder"
+api_key_env = "OPENAI_API_KEY"
+base_url    = "http://localhost:11434/v1"
+thinking    = "adaptive"
 "#,
         );
         let err = ProviderConfig::from_path(&p).unwrap_err();

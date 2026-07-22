@@ -36,67 +36,74 @@ fn build(rows: &[&str; 16]) -> SpriteSpec {
     }
 }
 
+// A side-view flying bee (003-visual-render, redesign), facing right and tilted up as if in flight.
+// Left→right the anatomy reads: a red stinger, a yellow abdomen banded with vertical black stripes,
+// a thorax the wings attach above, and a black head with a white eye and an antenna. Three little
+// legs dangle below. The stripes + antenna + wings-over-the-thorax + stinger are what make it read as
+// a bee rather than a blob. Everything except the wings (rows 3–6, columns 4–10) is byte-identical
+// across the three frames — only the wings flap up → mid → down.
+
 const FRAME_UP: [&str; 16] = [
-    "......KK........",
-    "....KKWWKK......",
-    "...KWWBBWWK.....",
-    "...KWBWWBWK.....",
-    "..KKWWWWWWKK....",
-    "..KYYYYYYYYYK...",
-    ".KYYYYKYYYYYK...",
-    ".KYYYKKYYKK.K...",
-    ".KYYYYYYYYYK....",
-    "..KYYYYYYKK.....",
-    "..KKYYYYKK......",
-    "...KYYYYK.......",
-    "....KKKK........",
-    "......KK........",
-    ".....KRRK.......",
-    "......KK........",
+    "................",
+    ".............KK.", // antenna tip
+    "............K...", // antenna
+    "......WWWW..K...", // wings gathered high
+    ".....WWWWW..KK..", // head crown
+    "......WWWWWKKKK.",
+    ".......WWW.KWWK.", // head + white eye
+    "..KKKKKKKKKKKKKK", // body top outline
+    ".KRYYKKYYKKYKWKK", // stinger · abdomen stripes · thorax · head
+    "KRYYYKKYYKKYKKKK",
+    ".KRYYKKYYKKYKKK.",
+    "..KKKKKKKKKKKK..", // body bottom outline
+    "...K..K..K......", // legs
+    "................",
+    "................",
+    "................",
 ];
 
 const FRAME_MID: [&str; 16] = [
     "................",
-    "......KK........",
-    "...KWWKKWWK.....",
-    "..KKWWWWWWKK....",
-    "..KYYYYYYYYYK...",
-    ".KYYYYKYYYYYK...",
-    ".KYYYKKYYKK.K...",
-    ".KYYYYYYYYYK....",
-    "..KYYYYYYKK.....",
-    "..KKYYYYKK......",
-    "...KYYYYK.......",
-    "....KKKK........",
-    "......KK........",
-    ".....KRRK.......",
-    "......KK........",
+    ".............KK.",
+    "............K...",
+    ".......WWW..K...", // wings level
+    "......WWWWW.KK..",
+    ".....WWWWWWKKKK.",
+    "....WWWWWW.KWWK.",
+    "..KKKKKKKKKKKKKK",
+    ".KRYYKKYYKKYKWKK",
+    "KRYYYKKYYKKYKKKK",
+    ".KRYYKKYYKKYKKK.",
+    "..KKKKKKKKKKKK..",
+    "...K..K..K......",
+    "................",
+    "................",
     "................",
 ];
 
 const FRAME_DOWN: [&str; 16] = [
     "................",
-    "......KK........",
-    "....KK..KK......",
-    "..KKWWWWWWKK....",
-    "..KYYYYYYYYYK...",
-    ".KYYYYKYYYYYK...",
-    ".KYYYKKYYKK.K...",
-    ".KYYYYYYYYYK....",
-    "..KYYYYYYKK.....",
-    "..KKYYYYKK......",
-    "...KYYYYK.......",
-    "....KKKK........",
-    "......KK........",
-    ".....KRRK.......",
-    "......KK........",
+    ".............KK.",
+    "............K...",
+    "........WW..K...", // wings spread low
+    "......WWWW..KK..",
+    "....WWWWWWWKKKK.",
+    "....WWWWWWWKWWK.",
+    "..KKKKKKKKKKKKKK",
+    ".KRYYKKYYKKYKWKK",
+    "KRYYYKKYYKKYKKKK",
+    ".KRYYKKYYKKYKKK.",
+    "..KKKKKKKKKKKK..",
+    "...K..K..K......",
+    "................",
+    "................",
     "................",
 ];
 
-/// The 16×16 bee sprite (wings up).
+/// The 16×16 bee sprite — the level-wing resting pose.
 pub fn sprite() -> SpriteSpec {
     static BEE: OnceLock<SpriteSpec> = OnceLock::new();
-    BEE.get_or_init(|| build(&FRAME_UP)).clone()
+    BEE.get_or_init(|| build(&FRAME_MID)).clone()
 }
 
 /// The 3-frame wing-flap animation (150 ms/frame, bounce).

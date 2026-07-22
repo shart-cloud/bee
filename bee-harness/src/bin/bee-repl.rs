@@ -58,6 +58,13 @@ struct Args {
     /// `--features mcp` (004-mcp-client).
     #[arg(long)]
     mcp_config: Option<PathBuf>,
+    /// Launch the full-screen TUI front-end (008-grid-tui). Requires building with `--features tui`;
+    /// opt-in for now — capability-based auto-selection and fallback land in US3.
+    #[arg(long, conflicts_with = "no_tui")]
+    tui: bool,
+    /// Force the inline REPL, overriding `--tui`.
+    #[arg(long)]
+    no_tui: bool,
 }
 
 #[tokio::main]
@@ -231,7 +238,55 @@ async fn main() -> ExitCode {
     }
     println!();
 
-    let session = run_repl(model.as_ref(), &mut registry, &mut sbox, &config).await;
+    // Choose the front-end (008-grid-tui, US3 T033; contracts/modes-and-cli.md). `--tui` is a
+    // request: piping, TERM=dumb, or a terminal below the hard floor all fall back to the inline
+    // REPL with a one-line note, so `--tui` never silently does nothing. The TUI front-end produces
+    // no transcript yet, so `session` is `None` in that path and `--save` is a no-op there.
+    let use_tui = {
+        #[cfg(feature = "tui")]
+        {
+            use std::io::IsTerminal;
+            let (cols, is_tty) = bee_harness::viz::terminal_dims();
+            let rows = terminal_rows().unwrap_or(24);
+            let choice = bee_harness::tui::frontend::choose(
+                args.tui,
+                args.no_tui,
+                is_tty && std::io::stdout().is_terminal(),
+                std::env::var("TERM").ok().as_deref(),
+                (cols, rows),
+            );
+            if let Some(note) = &choice.note {
+                eprintln!("bee-repl: {note}");
+            }
+            choice.frontend == bee_harness::tui::frontend::Frontend::FullScreen
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            args.tui && !args.no_tui
+        }
+    };
+    let session: Option<bee_harness::repl::ReplSession> = {
+        #[cfg(feature = "tui")]
+        {
+            if use_tui {
+                if let Err(e) =
+                    bee_harness::tui::run(model.as_ref(), &mut registry, &mut sbox, &config).await
+                {
+                    eprintln!("bee-repl: tui error: {e}");
+                }
+                None
+            } else {
+                Some(run_repl(model.as_ref(), &mut registry, &mut sbox, &config).await)
+            }
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            if use_tui {
+                eprintln!("bee-repl: --tui requires building with --features tui; running inline");
+            }
+            Some(run_repl(model.as_ref(), &mut registry, &mut sbox, &config).await)
+        }
+    };
 
     // Drop the refresh hook (its bridge clone lives in `config`) then the bridge, killing the MCP
     // children (they live in the scope cgroup) before the scope itself is torn down.
@@ -242,9 +297,10 @@ async fn main() -> ExitCode {
     }
     sbox.teardown();
 
-    // Persist the transcript to --save on exit, if requested.
+    // Persist the transcript to --save on exit, if requested. (The TUI path yields no transcript
+    // yet, so `session` is `None` there and `--save` writes nothing.)
     if let Some(path) = &args.save {
-        if let Some(transcript) = &session.transcript {
+        if let Some(transcript) = session.as_ref().and_then(|s| s.transcript.as_ref()) {
             match std::fs::write(path, transcript.to_json()) {
                 Ok(()) => eprintln!("bee-repl: saved transcript to {}", path.display()),
                 Err(e) => {
@@ -256,6 +312,31 @@ async fn main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+/// The terminal's row count via `TIOCGWINSZ` — the companion to `viz::terminal_dims`, which only
+/// reports columns (008-grid-tui, US3 T033: the hard-floor check needs both). `None` off a tty.
+#[cfg(feature = "tui")]
+fn terminal_rows() -> Option<u16> {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        return None;
+    }
+    if let Some(rows) = std::env::var("LINES")
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok())
+        .filter(|r| *r > 0)
+    {
+        return Some(rows);
+    }
+    // SAFETY: `winsize` is POD; `ioctl(TIOCGWINSZ)` only writes into it and returns 0 on success.
+    unsafe {
+        let mut ws: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_row > 0 {
+            return Some(ws.ws_row);
+        }
+    }
+    None
 }
 
 /// Build the sandbox for the session. With `--features enforce` and a policy, this is a real
