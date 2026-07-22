@@ -772,7 +772,7 @@ fn remember(editor: &mut DefaultEditor, path: &Option<PathBuf>, line: &str) {
 /// aware visuals exist and nudges it to use them when a chart/table/status grid reads better than
 /// prose. When `render` is not among the enabled tools, the base prompt is returned unchanged so the
 /// agent is never told about a tool it doesn't have.
-fn effective_system_prompt(base: &str, registry: &ToolRegistry) -> String {
+pub(crate) fn effective_system_prompt(base: &str, registry: &ToolRegistry) -> String {
     let mut prompt = base.to_string();
     if registry.contains("render") {
         prompt.push_str(

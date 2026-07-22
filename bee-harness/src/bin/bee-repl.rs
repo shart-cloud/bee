@@ -58,6 +58,13 @@ struct Args {
     /// `--features mcp` (004-mcp-client).
     #[arg(long)]
     mcp_config: Option<PathBuf>,
+    /// Launch the full-screen TUI front-end (008-grid-tui). Requires building with `--features tui`;
+    /// opt-in for now — capability-based auto-selection and fallback land in US3.
+    #[arg(long, conflicts_with = "no_tui")]
+    tui: bool,
+    /// Force the inline REPL, overriding `--tui`.
+    #[arg(long)]
+    no_tui: bool,
 }
 
 #[tokio::main]
@@ -231,7 +238,33 @@ async fn main() -> ExitCode {
     }
     println!();
 
-    let session = run_repl(model.as_ref(), &mut registry, &mut sbox, &config).await;
+    // --tui opts into the full-screen front-end; --no-tui forces the inline REPL (they conflict, so
+    // at most one is set). The default is the inline REPL — auto-selecting the TUI on a capable
+    // terminal is US3 (T033). The TUI front-end produces no transcript yet, so `session` is `None`
+    // in that path and `--save` is a no-op there.
+    let use_tui = args.tui && !args.no_tui;
+    let session: Option<bee_harness::repl::ReplSession> = {
+        #[cfg(feature = "tui")]
+        {
+            if use_tui {
+                if let Err(e) =
+                    bee_harness::tui::run(model.as_ref(), &mut registry, &mut sbox, &config).await
+                {
+                    eprintln!("bee-repl: tui error: {e}");
+                }
+                None
+            } else {
+                Some(run_repl(model.as_ref(), &mut registry, &mut sbox, &config).await)
+            }
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            if use_tui {
+                eprintln!("bee-repl: --tui requires building with --features tui; running inline");
+            }
+            Some(run_repl(model.as_ref(), &mut registry, &mut sbox, &config).await)
+        }
+    };
 
     // Drop the refresh hook (its bridge clone lives in `config`) then the bridge, killing the MCP
     // children (they live in the scope cgroup) before the scope itself is torn down.
@@ -242,9 +275,10 @@ async fn main() -> ExitCode {
     }
     sbox.teardown();
 
-    // Persist the transcript to --save on exit, if requested.
+    // Persist the transcript to --save on exit, if requested. (The TUI path yields no transcript
+    // yet, so `session` is `None` there and `--save` writes nothing.)
     if let Some(path) = &args.save {
-        if let Some(transcript) = &session.transcript {
+        if let Some(transcript) = session.as_ref().and_then(|s| s.transcript.as_ref()) {
             match std::fs::write(path, transcript.to_json()) {
                 Ok(()) => eprintln!("bee-repl: saved transcript to {}", path.display()),
                 Err(e) => {
