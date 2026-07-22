@@ -59,6 +59,15 @@ pub struct RecordedCall {
     pub audit: Vec<AuditEvent>,
 }
 
+/// A panel-targeted render recorded in / replayed from a transcript (008-grid-tui, FR-010/SC-009): a
+/// render whose target was a named panel. Pure serde (no ratatui/rhai types; NFR-002/SC-019), so the
+/// transcript stays re-renderable without pulling terminal types into `bee-core`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PanelUpdate {
+    pub id: String,
+    pub spec: crate::render_spec::RenderSpec,
+}
+
 /// One model turn as recorded: assistant prose + the calls it made (with results + audit).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptTurn {
@@ -106,6 +115,40 @@ impl EpisodeTranscript {
     /// Convenience: every denied audit event across the episode.
     pub fn denials(&self) -> impl Iterator<Item = &AuditEvent> {
         self.audit_trail.iter().filter(|e| e.decision == "denied")
+    }
+
+    /// Every panel-targeted render across the episode, in turn/call order (008-grid-tui, FR-010).
+    /// Derived from the `ToolResult`s already in the transcript — a render whose target is a panel —
+    /// so no live-only panel state is stored (SC-009).
+    pub fn panel_updates(&self) -> Vec<PanelUpdate> {
+        let mut out = Vec::new();
+        for turn in &self.turns {
+            for call in &turn.calls {
+                if let (crate::render_spec::RenderTarget::Panel { id }, Some(spec)) =
+                    (&call.result.render_target, &call.result.render_spec)
+                {
+                    out.push(PanelUpdate {
+                        id: id.clone(),
+                        spec: spec.clone(),
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Replay the panel updates, folding **last-writer-wins per id** into each panel's final spec,
+    /// preserving first-seen insertion order (008-grid-tui, SC-009). Reconstructs exactly the panel
+    /// column a live session ended with.
+    pub fn replay_panels(&self) -> Vec<PanelUpdate> {
+        let mut out: Vec<PanelUpdate> = Vec::new();
+        for u in self.panel_updates() {
+            match out.iter_mut().find(|p| p.id == u.id) {
+                Some(existing) => existing.spec = u.spec,
+                None => out.push(u),
+            }
+        }
+        out
     }
 
     /// Build a transcript for an episode that never ran (setup failed before the loop). Used by the
@@ -254,6 +297,7 @@ pub fn tool_result_from_output(
         original_len,
         terminal: false,
         render_spec: None,
+        render_target: crate::render_spec::RenderTarget::Inline,
     }
 }
 

@@ -84,19 +84,19 @@ tests in each story before/with implementation.
 
 ### Tests for User Story 2
 
-- [ ] T021 [P] [US2] Reducer tests appended to `bee-harness/tests/tui_update.rs`: panel upsert (new vs replace), update coalescing, and inline-vs-panel routing.
-- [ ] T022 [P] [US2] Transcript replay test in `bee-harness/tests/panel_replay.rs`: `PanelUpdate` events fold last-writer-wins to each panel's final state (SC-009).
+- [X] T021 [P] [US2] Reducer tests appended to `bee-harness/tests/tui_update.rs`: panel upsert (new vs replace), update coalescing, and inline-vs-panel routing. **Realized as in-crate `app.rs` unit tests** (like US1's reducer tests): panel upsert new-vs-replace, coalescing (in `panels.rs`), and inline-vs-panel routing.
+- [X] T022 [P] [US2] Transcript replay test in `bee-harness/tests/panel_replay.rs`: `PanelUpdate` events fold last-writer-wins to each panel's final state (SC-009). Integration test `tests/panel_replay.rs`: derives `PanelUpdate`s from the recorded `ToolResult`s and folds last-writer-wins per id in insertion order — no live-only state (SC-009).
 
 ### Implementation for User Story 2
 
-- [ ] T023 [P] [US2] Add pure-serde `PanelUpdate { id, spec }` transcript event in `bee-harness/src/transcript.rs` (data-model.md).
-- [ ] T024 [US2] Add `render_to(panel_id, widget)` (with `panel_id` validation) in `bee-harness/src/render_api.rs`, and carry `RenderTarget` through the render tool result in `bee-harness/src/tools/render.rs` (depends on T003; contracts/rhai-panel-api.md).
-- [ ] T025 [US2] Route tool results by target in `session::SessionEngine` → emit `ToolResult`/`PanelUpdate` `SessionEvent`s in `bee-harness/src/session/mod.rs` (depends on T024, T005).
-- [ ] T026 [P] [US2] Panel registry (`IndexMap<PanelId, RenderSpec>`) with upsert + per-redraw coalescing in `bee-harness/src/tui/panels.rs` (research D7).
-- [ ] T027 [US2] Handle `Session(PanelUpdate | ToolResult)` in the reducer → panel upsert or inline chat append in `bee-harness/src/tui/app.rs` (depends on T026, T013).
-- [ ] T028 [US2] Render the right-hand panel column (TwoPane) in `bee-harness/src/tui/view.rs`, each panel a bordered block titled with its id, clipped to its area (depends on T027; FR-012).
-- [ ] T029 [P] [US2] Add example `specs/003-visual-render/examples/panel-metrics.rhai` using `render_to` (quickstart Scenario B).
-- [ ] T030 [P] [US2] Panel snapshot test (a grid in a panel beside chat) in `bee-harness/tests/tui_snapshot.rs`.
+- [X] T023 [P] [US2] Add pure-serde `PanelUpdate { id, spec }` transcript event in `bee-harness/src/transcript.rs` (data-model.md). `PanelUpdate { id, spec }` + `EpisodeTranscript::panel_updates()`/`replay_panels()`; derived from the already-recorded `ToolResult.render_target`, so no new stored field and the transcript stays pure-serde.
+- [X] T024 [US2] Add `render_to(panel_id, widget)` (with `panel_id` validation) in `bee-harness/src/render_api.rs`, and carry `RenderTarget` through the render tool result in `bee-harness/src/tools/render.rs` (depends on T003; contracts/rhai-panel-api.md). `render_to(id, widget)` with 1–32 `[a-z0-9_-]` id validation (fail-closed); `RenderContext` now carries `(spec, RenderTarget)`; `ToolResult.render_target` + `rendered_to`; schema/summary mention the panel.
+- [X] T025 [US2] Route tool results by target in `session::SessionEngine` → emit `ToolResult`/`PanelUpdate` `SessionEvent`s in `bee-harness/src/session/mod.rs` (depends on T024, T005). Routed in `run_exchange` via a new `ReplOutput::panel_update` seam (defaults to inline for the REPL); `SessionSink` overrides it to emit `SessionEvent::PanelUpdate`.
+- [X] T026 [P] [US2] Panel registry (`IndexMap<PanelId, RenderSpec>`) with upsert + per-redraw coalescing in `bee-harness/src/tui/panels.rs` (research D7). `PanelRegistry` (insertion-ordered `Vec`, dependency-free) with `upsert` (replace-in-place) + automatic coalescing.
+- [X] T027 [US2] Handle `Session(PanelUpdate | ToolResult)` in the reducer → panel upsert or inline chat append in `bee-harness/src/tui/app.rs` (depends on T026, T013). `App.panels`; reducer upserts on `PanelUpdate` (chat untouched), inline `RenderWidget` still appends to chat.
+- [X] T028 [US2] Render the right-hand panel column (TwoPane) in `bee-harness/src/tui/view.rs`, each panel a bordered block titled with its id, clipped to its area (depends on T027; FR-012). Right-hand column in TwoPane when panels exist (US1 full-width layout untouched otherwise); each panel a bordered block, content drawn truecolor via now-public `buffer_render::render_into`, clipped to its rect.
+- [X] T029 [P] [US2] Add example `specs/003-visual-render/examples/panel-metrics.rhai` using `render_to` (quickstart Scenario B). `panel-metrics.rhai` — a grid committed via `render_to("metrics", g)`.
+- [X] T030 [P] [US2] Panel snapshot test (a grid in a panel beside chat) in `bee-harness/tests/tui_snapshot.rs`. **Realized as in-crate `view.rs` snapshot tests**: a table in a panel beside chat; plus a guard that the column appears only once populated.
 
 **Checkpoint**: US1 + US2 both work independently; the model owns live panels.
 

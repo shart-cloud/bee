@@ -83,6 +83,12 @@ impl ReplOutput for SessionSink {
     fn render_widget(&self, spec: &RenderSpec) {
         self.emit(SessionEvent::RenderWidget { spec: spec.clone() });
     }
+    fn panel_update(&self, id: &str, spec: &RenderSpec) {
+        self.emit(SessionEvent::PanelUpdate {
+            id: id.to_string(),
+            spec: spec.clone(),
+        });
+    }
 }
 
 #[cfg(test)]

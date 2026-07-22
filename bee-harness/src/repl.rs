@@ -135,6 +135,13 @@ pub trait ReplOutput: Send + Sync {
             self.info(line);
         }
     }
+    /// A render addressed to a named, persistent panel (008-grid-tui, FR-008). Defaults to drawing
+    /// inline via [`ReplOutput::render_widget`] — the inline REPL has no panel column, so targeted
+    /// renders still appear in the chat flow (back-compat, FR-008 scenario 3). The full-screen TUI's
+    /// `SessionSink` overrides this to upsert the panel beside chat.
+    fn panel_update(&self, _id: &str, spec: &RenderSpec) {
+        self.render_widget(spec);
+    }
 }
 
 /// Why one user→agent exchange ended.
@@ -533,10 +540,14 @@ pub async fn run_exchange(
             let audit = sandbox.drain_audit();
             denials += audit.iter().filter(|e| e.decision == "denied").count() as u32;
             output.tool_result(&result, &audit);
-            // If the tool produced a visualization (the `render` tool), draw it inline. The model
-            // still receives only `result.content` (the text summary) — never the ANSI art (FR-023).
+            // If the tool produced a visualization (the `render` tool), surface it — routed by its
+            // target: inline into chat, or upserted into a named panel (008-grid-tui, FR-008). The
+            // model still receives only `result.content` (the text summary), never the art (FR-023).
             if let Some(spec) = &result.render_spec {
-                output.render_widget(spec);
+                match &result.render_target {
+                    crate::render_spec::RenderTarget::Panel { id } => output.panel_update(id, spec),
+                    crate::render_spec::RenderTarget::Inline => output.render_widget(spec),
+                }
             }
 
             conversation.push(Message::ToolResult {

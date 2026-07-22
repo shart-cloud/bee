@@ -163,8 +163,10 @@ fn ansi_code_to_ratatui(code: &str) -> Color {
     }
 }
 
-/// Recursively render `spec` into `area` of `buf`.
-fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
+/// Recursively render `spec` into `area` of `buf`. Public so the full-screen TUI can draw a panel's
+/// widget directly into its (bordered) sub-rect (008-grid-tui, US2 T028); content is clipped to
+/// `area` by construction — sub-renders receive sub-rects and never write outside them.
+pub fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
     if area.height == 0 || area.width == 0 {
         return;
     }

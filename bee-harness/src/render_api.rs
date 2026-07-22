@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use rhai::{Array, Dynamic, Engine, EvalAltResult};
 
 use crate::render_spec::{
-    AnimationSpec, Bar, Direction, Dot, DotState, GridCell, Point, RenderSpec, Row, Series,
-    SpriteSpec,
+    AnimationSpec, Bar, Direction, Dot, DotState, GridCell, Point, RenderSpec, RenderTarget, Row,
+    Series, SpriteSpec,
 };
 
 /// Max layout-nesting depth. A `Grid` counts as one level (like a vsplit/hsplit), so 4 keeps a
@@ -39,7 +39,8 @@ pub struct RenderContext {
 
 #[derive(Default)]
 struct CtxInner {
-    committed: Option<RenderSpec>,
+    /// The last committed widget and where it is addressed (008-grid-tui): inline or a named panel.
+    committed: Option<(RenderSpec, RenderTarget)>,
     render_calls: u32,
 }
 
@@ -48,16 +49,34 @@ impl RenderContext {
     pub fn reset(&self) {
         *self.inner.lock().expect("render ctx") = CtxInner::default();
     }
-    fn commit(&self, spec: RenderSpec) {
+    fn commit(&self, spec: RenderSpec, target: RenderTarget) {
         let mut g = self.inner.lock().expect("render ctx");
-        g.committed = Some(spec);
+        g.committed = Some((spec, target));
         g.render_calls += 1;
     }
-    /// Take the committed widget and the number of `render()` calls made.
-    pub fn take(&self) -> (Option<RenderSpec>, u32) {
+    /// Take the committed widget + its target and the number of `render*()` calls made.
+    pub fn take(&self) -> (Option<(RenderSpec, RenderTarget)>, u32) {
         let mut g = self.inner.lock().expect("render ctx");
         (g.committed.take(), g.render_calls)
     }
+}
+
+/// Validate a panel id (contracts/rhai-panel-api.md): 1–32 chars of `[a-z0-9_-]`. A bad id is a
+/// fail-closed script error, matching the drawing API's error style.
+fn validate_panel_id(id: &str) -> Result<(), Box<EvalAltResult>> {
+    if id.is_empty() || id.len() > 32 {
+        return Err(format!("render_to: panel id must be 1–32 chars (got {})", id.len()).into());
+    }
+    if let Some(bad) = id
+        .chars()
+        .find(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_' || *c == '-'))
+    {
+        return Err(format!(
+            "render_to: panel id {id:?} has an invalid char {bad:?} (want [a-z0-9_-])"
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// What kind of chart a [`ChartBuilder`] is accumulating.
@@ -737,13 +756,99 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
     });
 
     // --- Commit ---
+    // `render(widget)` commits to the inline chat target (unchanged); `render_to(id, widget)` commits
+    // to a named, persistent panel (008-grid-tui, FR-008; contracts/rhai-panel-api.md). Same
+    // structural caps apply to both — no new engine capability is registered.
+    let inline_ctx = ctx.clone();
     engine.register_fn(
         "render",
         move |widget: Dynamic| -> Result<(), Box<EvalAltResult>> {
             let spec = dynamic_to_spec(widget)?;
             validate(&spec)?;
-            ctx.commit(spec);
+            inline_ctx.commit(spec, RenderTarget::Inline);
             Ok(())
         },
     );
+    engine.register_fn(
+        "render_to",
+        move |panel_id: String, widget: Dynamic| -> Result<(), Box<EvalAltResult>> {
+            validate_panel_id(&panel_id)?;
+            let spec = dynamic_to_spec(widget)?;
+            validate(&spec)?;
+            ctx.commit(spec, RenderTarget::Panel { id: panel_id });
+            Ok(())
+        },
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build an engine wired to a fresh context and run `script`, returning the committed
+    /// `(spec, target)` (or the script error).
+    fn run(script: &str) -> Result<Option<(RenderSpec, RenderTarget)>, String> {
+        let ctx = RenderContext::default();
+        let mut engine = Engine::new();
+        register(&mut engine, ctx.clone());
+        engine.run(script).map_err(|e| e.to_string())?;
+        Ok(ctx.take().0)
+    }
+
+    #[test]
+    fn render_commits_inline() {
+        let (_, target) = run(r#"render(text("hi"));"#).unwrap().unwrap();
+        assert_eq!(target, RenderTarget::Inline);
+    }
+
+    #[test]
+    fn render_to_commits_a_panel_target() {
+        let (_, target) = run(r#"render_to("metrics", text("hi"));"#)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            target,
+            RenderTarget::Panel {
+                id: "metrics".into()
+            }
+        );
+    }
+
+    #[test]
+    fn render_to_accepts_the_full_legal_charset() {
+        assert!(run(r#"render_to("ab_9-z", text("x"));"#).is_ok());
+    }
+
+    #[test]
+    fn render_to_rejects_bad_ids_as_script_errors() {
+        // Empty, oversized, and out-of-charset ids all fail closed (contracts/rhai-panel-api.md).
+        assert!(run(r#"render_to("", text("x"));"#).is_err());
+        let long = "a".repeat(33);
+        assert!(run(&format!(r#"render_to("{long}", text("x"));"#)).is_err());
+        assert!(
+            run(r#"render_to("Metrics", text("x"));"#).is_err(),
+            "uppercase rejected"
+        );
+        assert!(
+            run(r#"render_to("a b", text("x"));"#).is_err(),
+            "space rejected"
+        );
+        assert!(
+            run(r#"render_to("pan/el", text("x"));"#).is_err(),
+            "slash rejected"
+        );
+    }
+
+    #[test]
+    fn last_commit_wins_across_mixed_targets() {
+        // Consistent with render()'s existing last-writer semantics — the final commit is kept.
+        let (_, target) = run(r#"render_to("a", text("x")); render(text("y"));"#)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            target,
+            RenderTarget::Inline,
+            "the last commit (inline) wins"
+        );
+    }
 }

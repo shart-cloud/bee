@@ -95,6 +95,13 @@ pub enum RenderTarget {
     Panel { id: String },
 }
 
+impl RenderTarget {
+    /// True for the default inline target — used by serde to skip the field for inline results.
+    pub fn is_inline(&self) -> bool {
+        matches!(self, RenderTarget::Inline)
+    }
+}
+
 /// A pixel-art sprite (003-visual-render, Slice 2, FR-028): a `width × height` grid of RGB pixels,
 /// row-major, `None` = transparent. Rendered via the half-block technique (`viz::sprite_render`) to
 /// `⌈height/2⌉` terminal rows. Like every [`RenderSpec`] member it is pure serde (no ratatui/rhai) so

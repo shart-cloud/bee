@@ -10,6 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::chat::{ChatMessage, Role};
 use super::input::InputState;
 use super::message::Message;
+use super::panels::PanelRegistry;
 use crate::session::SessionEvent;
 
 /// Which region has keyboard focus. (Panels focus arrives with US2.)
@@ -53,6 +54,8 @@ impl LayoutMode {
 /// The full-screen application model.
 pub struct App {
     pub chat: Vec<ChatMessage>,
+    /// Model-owned panels rendered beside chat (US2). Empty in a US1 session.
+    pub panels: PanelRegistry,
     pub input: InputState,
     pub focus: Focus,
     pub turn: TurnState,
@@ -75,6 +78,7 @@ impl App {
     pub fn new(cols: u16, rows: u16) -> Self {
         App {
             chat: Vec::new(),
+            panels: PanelRegistry::new(),
             input: InputState::default(),
             focus: Focus::Input,
             turn: TurnState::Idle,
@@ -254,6 +258,9 @@ fn handle_session(app: &mut App, ev: SessionEvent) {
             app.chat.push(ChatMessage::widget(spec));
             app.autoscroll();
         }
+        // A targeted render: upsert into the panel column, never the chat flow (FR-008/009). Same id
+        // replaces in place; the chat still shows the tool-result summary line separately.
+        SessionEvent::PanelUpdate { id, spec } => app.panels.upsert(id, spec),
         SessionEvent::Error(s) => app.push_line(Role::System, format!("error: {s}")),
         SessionEvent::Info(s) | SessionEvent::Footer(s) | SessionEvent::Steering(s) => {
             app.push_line(Role::System, s)
@@ -400,5 +407,65 @@ mod tests {
         assert_eq!(a.layout_mode, LayoutMode::SinglePane);
         update(&mut a, Message::Resize(30, 8));
         assert_eq!(a.layout_mode, LayoutMode::TooSmall);
+    }
+
+    // --- US2 (T021): panel routing + upsert through the reducer ---------------------------------
+
+    fn text_spec(s: &str) -> crate::render_spec::RenderSpec {
+        crate::render_spec::RenderSpec::Text {
+            content: s.into(),
+            style: None,
+            bold: false,
+            dim: false,
+        }
+    }
+
+    #[test]
+    fn panel_update_upserts_into_panels_not_chat() {
+        let mut a = app();
+        update(
+            &mut a,
+            Message::Session(SessionEvent::PanelUpdate {
+                id: "metrics".into(),
+                spec: text_spec("v1"),
+            }),
+        );
+        // A targeted render populates the panel column and leaves chat untouched (FR-008).
+        assert_eq!(a.panels.len(), 1);
+        assert_eq!(a.panels.get("metrics"), Some(&text_spec("v1")));
+        assert!(a.chat.is_empty(), "panel render must not append to chat");
+    }
+
+    #[test]
+    fn re_rendering_a_panel_replaces_in_place_no_duplicate() {
+        let mut a = app();
+        for v in ["v1", "v2", "v3"] {
+            update(
+                &mut a,
+                Message::Session(SessionEvent::PanelUpdate {
+                    id: "metrics".into(),
+                    spec: text_spec(v),
+                }),
+            );
+        }
+        assert_eq!(
+            a.panels.len(),
+            1,
+            "same id replaces — exactly one panel (SC-008)"
+        );
+        assert_eq!(a.panels.get("metrics"), Some(&text_spec("v3")));
+    }
+
+    #[test]
+    fn inline_render_goes_to_chat_not_panels() {
+        let mut a = app();
+        update(
+            &mut a,
+            Message::Session(SessionEvent::RenderWidget {
+                spec: text_spec("inline"),
+            }),
+        );
+        assert_eq!(a.chat.len(), 1, "inline render appends a chat widget");
+        assert!(a.panels.is_empty(), "inline render never touches panels");
     }
 }

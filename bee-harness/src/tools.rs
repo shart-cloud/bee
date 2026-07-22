@@ -18,7 +18,7 @@ pub mod files;
 pub mod render;
 pub mod skill;
 
-use crate::render_spec::RenderSpec;
+use crate::render_spec::{RenderSpec, RenderTarget};
 
 /// The default tool set advertised to the model (contracts/scenario-schema.md). The CTF terminal
 /// tools (`submit_flag`, `give_up`) are **not** here — a scenario opts into them via its `tools`
@@ -72,6 +72,10 @@ pub struct ToolResult {
     /// recorded in the transcript for later re-rendering.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_spec: Option<RenderSpec>,
+    /// Where the `render_spec` is addressed (008-grid-tui, FR-008): the chat flow (`Inline`, default)
+    /// or a named, persistent panel. The front-end routes on this; the model never sees it.
+    #[serde(default, skip_serializing_if = "RenderTarget::is_inline")]
+    pub render_target: RenderTarget,
 }
 
 impl ToolResult {
@@ -85,6 +89,7 @@ impl ToolResult {
             original_len: None,
             terminal: false,
             render_spec: None,
+            render_target: RenderTarget::Inline,
         }
     }
 
@@ -98,14 +103,22 @@ impl ToolResult {
             original_len: None,
             terminal: false,
             render_spec: None,
+            render_target: RenderTarget::Inline,
         }
     }
 
-    /// A successful `render`-tool result: `content` is the text summary, `render_spec` the widget
-    /// (003-visual-render, FR-023).
+    /// A successful `render`-tool result committed to the **inline** target: `content` is the text
+    /// summary, `render_spec` the widget (003-visual-render, FR-023).
     pub fn rendered(summary: impl Into<String>, spec: RenderSpec) -> Self {
+        ToolResult::rendered_to(summary, spec, RenderTarget::Inline)
+    }
+
+    /// A successful `render`-tool result committed to `target` — inline (chat) or a named panel
+    /// (008-grid-tui, FR-008). The model still receives only the text `summary`.
+    pub fn rendered_to(summary: impl Into<String>, spec: RenderSpec, target: RenderTarget) -> Self {
         ToolResult {
             render_spec: Some(spec),
+            render_target: target,
             ..ToolResult::ok(summary)
         }
     }

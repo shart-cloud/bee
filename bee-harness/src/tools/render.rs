@@ -37,7 +37,9 @@ available — only these drawing functions:\n\
   sprite(w, h, p) -> s;  s.paint([\"..KK..\", ...]);  s.set(x, y, color);  s.fill(color)   (max 32x32)\n\
   animation(ms) -> a;  a.add(sprite);  a.bounce(true);  a.cycles(n)   (max 16 frames, 50-1000ms)\n\
   bee_sprite();  bee_animation()   // the project mascot\n\
-  render(widget)   // commit exactly one widget at the end\n\
+  render(widget)               // commit one widget inline in the chat flow\n\
+  render_to(panel_id, widget)  // commit to a named, persistent side panel (id: 1-32 of [a-z0-9_-]);\n\
+                               // re-rendering the same id replaces that panel in place\n\
 Colors: honey, pollen, sting, smoke, royal (or basic ANSI names). Caps: <=500 total elements. \
 The model receives a text summary of what was drawn, not the pixels.";
 
@@ -110,11 +112,17 @@ impl Tool for RenderTool {
         self.ctx.reset();
         match self.engine.run(&script) {
             Ok(()) => {
-                let (spec, render_calls) = self.ctx.take();
-                match spec {
+                let (committed, render_calls) = self.ctx.take();
+                match committed {
                     None => ToolResult::error("render: script produced no visualization"),
-                    Some(spec) => {
-                        let mut summary = format!("Rendered {}.", spec.summary_noun());
+                    Some((spec, target)) => {
+                        let where_to = match &target {
+                            crate::render_spec::RenderTarget::Inline => String::new(),
+                            crate::render_spec::RenderTarget::Panel { id } => {
+                                format!(" to panel {id:?}")
+                            }
+                        };
+                        let mut summary = format!("Rendered {}{where_to}.", spec.summary_noun());
                         // M1: a fully-transparent sprite renders as blank rows — say so.
                         if let crate::render_spec::RenderSpec::Sprite { spec: s } = &spec {
                             if s.is_fully_transparent() {
@@ -127,7 +135,7 @@ impl Tool for RenderTool {
                                 render_calls - 1
                             ));
                         }
-                        ToolResult::rendered(summary, spec)
+                        ToolResult::rendered_to(summary, spec, target)
                     }
                 }
             }

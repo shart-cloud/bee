@@ -35,7 +35,19 @@ pub fn view(app: &App, frame: &mut Frame<'_>) {
     .areas(area);
 
     render_header(app, frame, header);
-    render_chat(app, frame, chat);
+    // In TwoPane with live panels, split a right-hand panel column off the chat area (FR-012); with
+    // no panels (US1) chat keeps the full width, so the US1 layout is untouched.
+    if app.layout_mode == LayoutMode::TwoPane && !app.panels.is_empty() {
+        let panel_w = (chat.width / 3)
+            .clamp(30, 50)
+            .min(chat.width.saturating_sub(20));
+        let [chat_area, panel_area] =
+            Layout::horizontal([Constraint::Min(20), Constraint::Length(panel_w)]).areas(chat);
+        render_chat(app, frame, chat_area);
+        render_panels(app, frame, panel_area);
+    } else {
+        render_chat(app, frame, chat);
+    }
     render_input(app, frame, input);
     render_footer(frame, footer);
 
@@ -108,6 +120,33 @@ fn render_chat(app: &App, frame: &mut Frame<'_>, area: Rect) {
             .scroll((top, 0)),
         area,
     );
+}
+
+/// Render the right-hand panel column (008-grid-tui, US2 T028): each live panel a bordered block
+/// titled with its id, stacked in insertion order and given an equal share of the column height. The
+/// panel's widget is drawn richly (truecolor) into the block's inner rect via `buffer_render`, which
+/// clips any overflow to the region (FR-012).
+fn render_panels(app: &App, frame: &mut Frame<'_>, area: Rect) {
+    let n = app.panels.len() as u16;
+    if n == 0 {
+        return;
+    }
+    // Equal vertical slices; `Layout` distributes any remainder across the top chunks.
+    let slices = Layout::vertical(vec![Constraint::Ratio(1, n as u32); n as usize]).split(area);
+    for ((id, spec), rect) in app.panels.iter().zip(slices.iter()) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(dim_style())
+            .title(Span::styled(
+                format!(" {id} "),
+                role_style(ThemeRole::Accent),
+            ));
+        let inner = block.inner(*rect);
+        frame.render_widget(block, *rect);
+        if inner.width > 0 && inner.height > 0 {
+            crate::viz::buffer_render::render_into(spec, inner, frame.buffer_mut());
+        }
+    }
 }
 
 /// Flatten the chat into styled, wrapped lines (the virtualization unit). Inline widgets render as
@@ -210,6 +249,7 @@ fn center(area: Rect, w: u16, h: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_spec::RenderSpec;
     use crate::tui::chat::{ChatMessage, Role};
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
@@ -262,5 +302,57 @@ mod tests {
         let out = render(&app, 80, 20);
         assert!(out.contains("keybindings"), "help title missing:\n{out}");
         assert!(out.contains("quit"), "help body missing:\n{out}");
+    }
+
+    // --- US2 (T030): a live panel renders beside chat, not over it ------------------------------
+
+    #[test]
+    fn panel_renders_beside_chat_in_two_pane() {
+        // TwoPane needs ≥120 cols; a panel then splits off a right-hand column (FR-012).
+        let mut app = App::new(120, 24);
+        app.chat.push(ChatMessage::text(Role::User, "show metrics"));
+        app.panels.upsert(
+            "metrics",
+            RenderSpec::Table {
+                title: "Latency".into(),
+                headers: vec!["p50".into(), "p99".into()],
+                rows: vec![crate::render_spec::Row {
+                    cells: vec!["12ms".into(), "88ms".into()],
+                    color: None,
+                }],
+            },
+        );
+        let out = render(&app, 120, 24);
+        assert!(out.contains("metrics"), "panel title missing:\n{out}");
+        assert!(out.contains("Latency"), "panel content missing:\n{out}");
+        assert!(
+            out.contains("you  show metrics"),
+            "chat still present beside the panel:\n{out}"
+        );
+    }
+
+    #[test]
+    fn panel_column_appears_only_when_populated() {
+        // Same app, same size: the right-hand column exists only once a panel is upserted, so a US1
+        // session (no panels) renders exactly as before — chat keeps the full width.
+        let base = || {
+            let mut a = App::new(120, 24);
+            a.chat.push(ChatMessage::text(Role::Assistant, "hi"));
+            a
+        };
+        let empty = render(&base(), 120, 24);
+        assert!(
+            !empty.contains("metrics"),
+            "no panel title when empty:\n{empty}"
+        );
+
+        let mut with = base();
+        with.panels.upsert("metrics", RenderSpec::Separator);
+        let populated = render(&with, 120, 24);
+        assert!(
+            populated.contains("metrics"),
+            "panel appears once populated:\n{populated}"
+        );
+        assert_ne!(empty, populated, "the panel column changes the layout");
     }
 }
