@@ -263,15 +263,7 @@ pub fn snapshot_render(panel: &mut Panel, area: Rect, buf: &Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let mut snap = Buffer::empty(area);
-    for y in area.y..area.bottom() {
-        for x in area.x..area.right() {
-            if buf.area.contains(ratatui::layout::Position::new(x, y)) {
-                snap[(x, y)] = buf[(x, y)].clone();
-            }
-        }
-    }
-    panel.fx.prev = Some(snap);
+    panel.fx.prev = Some(effects::capture(area, buf));
 }
 
 #[cfg(test)]

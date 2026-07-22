@@ -13,6 +13,7 @@ pub mod effects;
 pub mod frontend;
 pub mod input;
 pub mod message;
+pub mod overlay;
 pub mod panels;
 pub mod term;
 pub mod theme_bridge;
@@ -92,10 +93,14 @@ pub async fn run(
 
     // The Elm loop: draw, then wait for the next thing that changes the model.
     while !app.should_quit {
-        app.panels.prune(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        app.panels.prune(now);
+        // The overlay's TTL and its phase changes fire here rather than on a keypress, so a takeover
+        // expires on time in a session nobody is touching (FR-017).
+        app.advance_overlay(now);
         // Publish the drawable regions so the render tool can reject widgets this screen can't show.
         crate::viz::viewport::set(view::viewport_for(&app));
-        app.tick_clock(std::time::Instant::now());
+        app.tick_clock(now);
         terminal.draw(|f| view::view(&mut app, f))?;
 
         // A submitted line starts a model turn; drive it to completion while still pumping the UI.
@@ -231,9 +236,11 @@ async fn run_turn(
     let mut turn_done = false;
 
     loop {
-        app.panels.prune(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        app.panels.prune(now);
+        app.advance_overlay(now);
         crate::viz::viewport::set(view::viewport_for(app));
-        app.tick_clock(std::time::Instant::now());
+        app.tick_clock(now);
         terminal.draw(|f| view::view(app, f))?;
         let period = tick_interval(app).unwrap_or(SPINNER_TICK).min(SPINNER_TICK);
         // A mid-turn quit (Ctrl-C / q from chat focus) drops `exchange`, cancelling the call.
@@ -335,6 +342,55 @@ mod scheduler_tests {
         assert!(!app.effects.is_running());
         assert!(tick_interval(&app).is_none());
         assert_eq!(wakeups(&app, Duration::from_secs(60)), 0);
+    }
+
+    #[test]
+    fn a_showing_overlay_costs_one_wakeup_per_second_not_sixty() {
+        // SC-003 / FR-002 state 2: the countdown needs a redraw per second, and that is all it
+        // needs. A 10-second overlay budget of ≤ 15 is the assertion the spec names; holding the
+        // motion state instead would cost 600.
+        let t0 = std::time::Instant::now();
+        let mut app = App::new(120, 24);
+        app.show_overlay(RenderSpec::Separator, Some(10_000), t0);
+        // Past the entrance, with no effects left running.
+        app.advance_overlay(t0 + Duration::from_millis(250));
+        assert_eq!(
+            app.overlay.as_ref().map(|o| o.phase()),
+            Some(crate::tui::overlay::Phase::Showing)
+        );
+        assert!(!app.effects.is_running(), "nothing is animating");
+
+        assert_eq!(tick_interval(&app), Some(Duration::from_secs(1)));
+        assert_eq!(wakeups(&app, Duration::from_secs(10)), 10);
+        assert!(wakeups(&app, Duration::from_secs(10)) <= 15);
+    }
+
+    #[test]
+    fn an_overlay_countdown_still_ticks_with_animations_disabled() {
+        // FR-015: the countdown is information, not motion, so the kill switch does not silence it.
+        let t0 = std::time::Instant::now();
+        let mut app = App::new(120, 24).with_visual(VisualConfig {
+            animations: false,
+            ..VisualConfig::default()
+        });
+        app.show_overlay(RenderSpec::Separator, Some(10_000), t0);
+        app.advance_overlay(t0);
+        assert_eq!(
+            tick_interval(&app),
+            Some(Duration::from_secs(1)),
+            "still 1Hz — but never 60fps, because nothing was registered"
+        );
+        assert!(!app.effects.is_running());
+    }
+
+    #[test]
+    fn the_loop_goes_quiet_again_once_the_overlay_is_gone() {
+        let t0 = std::time::Instant::now();
+        let mut app = App::new(120, 24);
+        app.show_overlay(RenderSpec::Separator, Some(1_000), t0);
+        app.advance_overlay(t0 + Duration::from_millis(1_300));
+        assert!(app.overlay.is_none());
+        assert!(tick_interval(&app).is_none(), "back to fully event-driven");
     }
 
     #[test]

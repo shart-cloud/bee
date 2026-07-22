@@ -17,9 +17,9 @@
 use std::time::Duration;
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Offset, Rect};
+use ratatui::layout::{Offset, Position, Rect};
 use ratatui::style::{Color, Style};
-use tachyonfx::{blit_buffer_region, fx, Effect, EffectManager, Motion};
+use tachyonfx::{blit_buffer_region, fx, Effect, EffectManager, Motion, SimpleRng};
 
 use crate::config::{VisualConfig, VisualLevel};
 use crate::render_spec::{EffectDirection, EffectSpec};
@@ -35,6 +35,9 @@ const GRADIENT_LEN: u16 = 8;
 const RANDOMNESS: u16 = 15;
 /// How far [`EffectSpec::Glow`] lightens before returning.
 const GLOW_AMOUNT: f32 = 0.4;
+/// Fixed seed for the erosion pattern. Fixed rather than random so a fade-out reproduces frame to
+/// frame — an erosion that rerolled each frame would shimmer instead of dissolving.
+const ERODE_SEED: u32 = 0x9E37_79B9;
 
 /// Default entrance transition for a newly created panel (FR-003).
 pub const PANEL_ENTER_MS: u32 = 300;
@@ -220,6 +223,60 @@ pub fn panel_update(prev: Buffer, ctx: &ResolveCtx) -> Option<Effect> {
         ])
         .with_area(ctx.area),
     )
+}
+
+/// The outgoing content erodes away, revealing whatever the frame drew underneath (FR-018).
+///
+/// This is the overlay's fade-out. It is not a dissolve: a dissolve blanks cells, so the chat would
+/// snap back all at once when the effect ended. Here each cell either still shows the departing
+/// content or has already given way to the content beneath it, so the chat returns *through* the
+/// overlay rather than after it.
+///
+/// Routed through the same suppression gate as everything else, so an animation-disabled session
+/// gets `None` and the overlay simply vanishes on the next redraw.
+pub fn erode(prev: Buffer, ctx: &ResolveCtx) -> Option<Effect> {
+    if suppressed(
+        &EffectSpec::DissolveOut {
+            ms: OVERLAY_FADE_MS,
+        },
+        ctx,
+    ) {
+        return None;
+    }
+    let area = ctx.area;
+    Some(
+        fx::effect_fn_buf(prev, OVERLAY_FADE_MS, move |prev, ctx, buf| {
+            // A fresh RNG per frame from a fixed seed, walked in a fixed order: a cell that survived
+            // at 30% has therefore also survived at 20%, so the erosion only ever grows. Reseeding
+            // per frame is what tachyonfx's own `Dissolve` does, for the same reason.
+            let mut rng = SimpleRng::new(ERODE_SEED);
+            let alpha = ctx.alpha();
+            for y in area.y..area.bottom() {
+                for x in area.x..area.right() {
+                    let survives = rng.gen_f32() > alpha;
+                    let pos = Position::new(x, y);
+                    if survives && prev.area.contains(pos) && buf.area.contains(pos) {
+                        buf[pos] = prev[pos].clone();
+                    }
+                }
+            }
+        })
+        .with_area(area),
+    )
+}
+
+/// Copy `area` out of `buf` into a standalone buffer — the snapshot an [`erode`] plays back.
+pub fn capture(area: Rect, buf: &Buffer) -> Buffer {
+    let mut snap = Buffer::empty(area);
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            let pos = Position::new(x, y);
+            if buf.area.contains(pos) {
+                snap[pos] = buf[pos].clone();
+            }
+        }
+    }
+    snap
 }
 
 /// An effect that draws `src` over `area` on every tick for `ms`, changing nothing else.
@@ -745,6 +802,103 @@ mod tests {
             "by the end only the new content remains: {:?}",
             symbols(&shots[3])
         );
+    }
+
+    #[test]
+    fn an_erosion_reveals_the_content_underneath_rather_than_blanking_it() {
+        // FR-018, the overlay's fade-out. A dissolve would blank cells and snap the chat back at
+        // the end; this hands each cell over individually, so the content underneath comes through
+        // the gaps while the departing content is still visible in the rest.
+        let mut departing = Buffer::empty(area());
+        for y in area().y..area().bottom() {
+            for x in area().x..area().right() {
+                departing[(x, y)].set_symbol("O");
+            }
+        }
+        let draw_under = |buf: &mut Buffer| {
+            for y in buf.area.y..buf.area.bottom() {
+                for x in buf.area.x..buf.area.right() {
+                    buf[(x, y)].set_symbol("U");
+                }
+            }
+        };
+
+        let mut e = Effects::new();
+        let c = ctx(on(), true, Origin::Chrome);
+        e.add_keyed("overlay", erode(departing, &c).expect("erosion"));
+
+        let total = OVERLAY_FADE_MS as u64;
+        let shots = Timeline::frames(area()).run(
+            &mut e,
+            &[
+                Duration::ZERO,
+                Duration::from_millis(total / 2),
+                Duration::from_millis(total),
+            ],
+            draw_under,
+        );
+
+        assert!(
+            symbols(&shots[0]).chars().all(|ch| ch == 'O'),
+            "at t=0 the departing content still owns every cell: {:?}",
+            symbols(&shots[0])
+        );
+        let midway = symbols(&shots[1]);
+        assert!(
+            midway.contains('O') && midway.contains('U'),
+            "midway both are on screen at once — that is the reveal: {midway:?}"
+        );
+        assert!(!midway.contains(' '), "no cell is ever blanked: {midway:?}");
+        assert!(
+            symbols(&shots[2]).chars().all(|ch| ch == 'U'),
+            "by the end only the content underneath remains: {:?}",
+            symbols(&shots[2])
+        );
+    }
+
+    #[test]
+    fn an_erosion_only_ever_grows() {
+        // The pattern is reseeded identically each frame, so a cell that has given way stays given
+        // away. Without that the fade would shimmer — cells flicking back and forth.
+        let mut departing = Buffer::empty(area());
+        for y in area().y..area().bottom() {
+            for x in area().x..area().right() {
+                departing[(x, y)].set_symbol("O");
+            }
+        }
+        let mut e = Effects::new();
+        let c = ctx(on(), true, Origin::Chrome);
+        e.add_keyed("overlay", erode(departing, &c).expect("erosion"));
+
+        let shots = Timeline::frames(area()).run(
+            &mut e,
+            &[
+                Duration::from_millis(64),
+                Duration::from_millis(128),
+                Duration::from_millis(192),
+            ],
+            |buf| {
+                for y in buf.area.y..buf.area.bottom() {
+                    for x in buf.area.x..buf.area.right() {
+                        buf[(x, y)].set_symbol("U");
+                    }
+                }
+            },
+        );
+        let remaining: Vec<usize> = shots
+            .iter()
+            .map(|s| symbols(s).chars().filter(|c| *c == 'O').count())
+            .collect();
+        assert!(
+            remaining[0] >= remaining[1] && remaining[1] >= remaining[2],
+            "the departing content must only ever shrink: {remaining:?}"
+        );
+    }
+
+    #[test]
+    fn an_erosion_is_suppressed_with_the_rest_when_motion_is_off() {
+        let c = ctx(motionless(), true, Origin::Chrome);
+        assert!(erode(Buffer::empty(area()), &c).is_none());
     }
 
     #[test]

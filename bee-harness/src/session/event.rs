@@ -31,6 +31,14 @@ pub enum SessionEvent {
     /// A render addressed to a named, persistent panel (`panel_update`, 008-grid-tui US2). The TUI
     /// upserts `spec` into panel `id` beside chat — same id replaces in place (FR-008/009).
     PanelUpdate { id: String, spec: RenderSpec },
+    /// A full-screen takeover (`overlay`, 009-tachyonfx-effects US3). Emitted only when the visual
+    /// gate admitted `RenderTarget::Overlay`, so the TUI never has to re-check the level. `ttl_ms`
+    /// is what the script asked for; the granted lifetime is resolved against the operator's
+    /// configuration when the overlay is constructed.
+    Overlay {
+        spec: RenderSpec,
+        ttl_ms: Option<u32>,
+    },
     /// A panel-lifecycle effect (`panel_op`, 008-grid-tui US2): create/replace with an optional TTL,
     /// remove one panel, or clear them all. The TUI applies it to its panel registry.
     PanelOp(crate::render_spec::PanelOp),

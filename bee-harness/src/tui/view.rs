@@ -53,6 +53,11 @@ pub fn view(app: &mut App, frame: &mut Frame<'_>) {
     } else {
         render_chat(app, frame, chat);
     }
+    // The takeover covers the chat area and nothing else — the header stays readable and the input
+    // line stays live, so the operator can keep typing and submitting throughout (FR-014).
+    if app.overlay.is_some() {
+        render_takeover(app, frame, chat);
+    }
     render_input(app, frame, input);
     render_footer(app, frame, footer);
 
@@ -67,6 +72,42 @@ pub fn view(app: &mut App, frame: &mut Frame<'_>) {
     // Effects transform cells that are already drawn (FR-001), so this is the last thing the frame
     // does: every widget above has painted, and ratatui flushes as soon as we return.
     app.effects.process(app.dt, frame.buffer_mut(), area);
+}
+
+/// The full-screen takeover (009 US3, T038/T039): the agent's widget over the chat area, with the
+/// operator's way out pinned to the bottom row.
+///
+/// The hint is laid out **first** and the content gets what's left, so the escape hatch can never be
+/// the thing that gets clipped (FR-015). An overlay the operator cannot see how to leave is exactly
+/// the failure this feature has to not have.
+///
+/// A dismissing overlay draws no content: the chat below has already rendered, and the fade-out
+/// effect paints the departing overlay back over it, eroding as it goes.
+fn render_takeover(app: &mut App, frame: &mut Frame<'_>, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let now = std::time::Instant::now();
+    let Some(overlay) = &mut app.overlay else {
+        return;
+    };
+
+    if overlay.draws_content() {
+        frame.render_widget(Clear, area);
+        // Hint row first: `Min(0)` lets the content shrink to nothing before the hint gives up a
+        // single row.
+        let [body, hint_row] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+        if body.width > 0 && body.height > 0 {
+            crate::viz::buffer_render::render_into(&overlay.spec, body, frame.buffer_mut());
+        }
+        frame.render_widget(
+            Paragraph::new(Line::styled(overlay.hint(now), dim_style())),
+            hint_row,
+        );
+        overlay.snapshot(area, frame.buffer_mut());
+    }
+    overlay.register(&mut app.effects, area, &app.visual);
 }
 
 /// The single-pane panel overlay (US3 T036): panels stacked in a bordered popup over the chat, so a
@@ -918,6 +959,124 @@ mod tests {
         let vp = viewport_for(&app);
         assert!(vp.panel_cols > 0 && vp.panel_cols <= 120 / 3);
         assert_eq!(vp.inline_cols, 120 - (vp.panel_cols + 2));
+    }
+
+    // --- 009 US3 (T038/T039/T044/T046): the takeover and its escape hatch ----------------------
+
+    fn with_takeover(cols: u16, rows: u16, ttl_ms: Option<u32>) -> App {
+        let mut app = App::new(cols, rows);
+        app.show_overlay(
+            RenderSpec::Text {
+                content: "TAKEOVER-BODY".into(),
+                style: None,
+                bold: false,
+                dim: false,
+            },
+            ttl_ms,
+            std::time::Instant::now(),
+        );
+        app
+    }
+
+    #[test]
+    fn the_takeover_covers_chat_but_never_the_input_line() {
+        // FR-014: the operator keeps typing throughout, so the input border and its contents must
+        // still be on screen with a full-screen overlay up.
+        let mut app = with_takeover(100, 24, Some(30_000));
+        app.input.insert_str("still typing");
+        let out = render(&mut app, 100, 24);
+        assert!(out.contains("TAKEOVER-BODY"), "overlay content:\n{out}");
+        assert!(out.contains("input"), "the input border survives:\n{out}");
+        assert!(out.contains("still typing"), "and so does the text:\n{out}");
+        assert!(out.contains("bee"), "the header is never covered:\n{out}");
+    }
+
+    #[test]
+    fn the_dismiss_hint_sits_in_the_overlays_last_row() {
+        // FR-015. The hint's position is fixed so the operator never has to hunt for it.
+        let mut app = with_takeover(100, 24, Some(12_000));
+        let out = render(&mut app, 100, 24);
+        let lines: Vec<&str> = out.lines().collect();
+        // header(1) + chat(fill) + input(3) + footer(1): the overlay's last row is the one directly
+        // above the input block.
+        let hint_row = lines.len() - 5;
+        assert!(
+            lines[hint_row].contains("Esc to dismiss"),
+            "hint not in the overlay's last row (row {hint_row}):\n{out}"
+        );
+        assert!(
+            lines[hint_row].contains("auto-dismiss in 12s"),
+            "countdown missing:\n{out}"
+        );
+    }
+
+    #[test]
+    fn the_hint_wins_the_last_row_even_when_the_content_has_no_room() {
+        // The escape hatch must never be the thing that gets clipped, so it is laid out before the
+        // content rather than after it.
+        let mut app = with_takeover(60, 10, Some(5_000));
+        let out = render(&mut app, 60, 10);
+        assert!(out.contains("Esc to dismiss"), "hint dropped:\n{out}");
+    }
+
+    #[test]
+    fn the_hint_is_present_without_color_just_unstyled() {
+        // SC-010's shape for the overlay: `NO_COLOR` removes the dim treatment, never the text.
+        let mut app = with_takeover(100, 24, Some(8_000));
+        let out = render(&mut app, 100, 24);
+        assert!(out.contains("Esc to dismiss"), "{out}");
+    }
+
+    #[test]
+    fn a_dismissed_takeover_gives_the_chat_back() {
+        // SC-006/FR-018: one frame after the dismissal completes, the chat is on screen again.
+        let mut app = with_takeover(100, 24, Some(30_000));
+        app.chat
+            .push(ChatMessage::text(Role::Assistant, "underlying chat"));
+        let covered = render(&mut app, 100, 24);
+        assert!(!covered.contains("underlying chat"), "covered:\n{covered}");
+
+        let now = std::time::Instant::now();
+        app.overlay.as_mut().expect("overlay").dismiss(now);
+        app.advance_overlay(now + std::time::Duration::from_millis(250));
+        assert!(app.overlay.is_none(), "the fade-out finished");
+
+        let restored = render(&mut app, 100, 24);
+        assert!(
+            restored.contains("underlying chat"),
+            "the chat is back:\n{restored}"
+        );
+        assert!(!restored.contains("TAKEOVER-BODY"), "{restored}");
+    }
+
+    #[test]
+    fn an_expired_takeover_is_gone_from_the_buffer() {
+        // SC-007: absent after ttl + the 200ms fade.
+        let t0 = std::time::Instant::now();
+        let mut app = App::new(100, 24);
+        app.show_overlay(
+            RenderSpec::Text {
+                content: "TAKEOVER-BODY".into(),
+                style: None,
+                bold: false,
+                dim: false,
+            },
+            Some(1_000),
+            t0,
+        );
+        app.advance_overlay(t0 + std::time::Duration::from_millis(1_250));
+        assert!(app.overlay.is_none(), "expired and faded out");
+        let out = render(&mut app, 100, 24);
+        assert!(!out.contains("TAKEOVER-BODY"), "{out}");
+    }
+
+    #[test]
+    fn a_zero_height_chat_area_makes_the_takeover_a_no_op() {
+        // Spec edge case: no room is not a crash. Below the hard floor the layout shows the
+        // too-small message and the overlay never gets an area at all.
+        let mut app = with_takeover(30, 8, Some(5_000));
+        let out = render(&mut app, 30, 8);
+        assert!(out.contains("terminal too small"), "{out}");
     }
 
     #[test]

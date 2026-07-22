@@ -13,8 +13,10 @@ use super::chat::{ChatMessage, Role};
 use super::effects::Effects;
 use super::input::InputState;
 use super::message::Message;
+use super::overlay::Overlay;
 use super::panels::PanelRegistry;
 use crate::config::VisualConfig;
+use crate::render_spec::RenderSpec;
 use crate::session::SessionEvent;
 
 /// Which region has keyboard focus. (Panels focus arrives with US2.)
@@ -93,6 +95,10 @@ pub struct App {
     /// effects pass. Passed as state rather than read from a clock inside `view` so a test can
     /// render a deterministic frame at any point on an effect's timeline.
     pub dt: Duration,
+    /// The full-screen takeover, if one is up (009 US3). The `Option` is the whole of FR-020's
+    /// at-most-one rule: a replacement is queued *inside* the overlay it replaces, so there is no
+    /// second field where a stacked overlay could live.
+    pub overlay: Option<Overlay>,
     /// When the last frame was drawn, for computing [`App::dt`].
     last_frame: Option<Instant>,
     /// Redraws caused by a periodic tick rather than by an event (009 SC-003). Event-driven draws
@@ -123,6 +129,7 @@ impl App {
             effects: Effects::new(),
             visual: VisualConfig::default(),
             dt: Duration::ZERO,
+            overlay: None,
             last_frame: None,
             periodic_redraws: 0,
         }
@@ -145,11 +152,48 @@ impl App {
         self.last_frame = Some(now);
     }
 
-    /// Whether a full-screen overlay is on screen. Always false until US3 (T037) gives `App` the
-    /// overlay field; the scheduler's countdown state is written against this from the start so the
-    /// state machine doesn't have to be retrofitted later (FR-002).
+    /// Whether a full-screen overlay is on screen — the scheduler's countdown state (FR-002).
     pub fn overlay_active(&self) -> bool {
-        false
+        self.overlay.is_some()
+    }
+
+    /// Advance the overlay's state machine, dropping it once its fade-out has finished.
+    ///
+    /// Called from the event loop before each draw, so a TTL fires on the next frame rather than
+    /// waiting for a keypress.
+    pub fn advance_overlay(&mut self, now: Instant) {
+        if let Some(o) = self.overlay.take() {
+            self.overlay = o.advance(now);
+        }
+    }
+
+    /// Show `spec` full-screen, replacing any overlay already up (FR-020).
+    ///
+    /// A replacement never stacks and never overlaps: the one on screen begins its fade-out and the
+    /// newcomer waits for it to finish.
+    pub fn show_overlay(&mut self, spec: RenderSpec, ttl_ms: Option<u32>, now: Instant) {
+        let next = Overlay::new(spec, ttl_ms, &self.visual, now);
+        match &mut self.overlay {
+            Some(current) => current.replace_with(next, now),
+            None => self.overlay = Some(next),
+        }
+    }
+
+    /// Drop every running transition after a resize (008's resize strategy, 009 spec Edge Cases).
+    ///
+    /// Effects are pinned to the `Rect` they were registered with, and every snapshot was captured
+    /// at the old size, so after a resize both describe a screen that no longer exists. Cancelling
+    /// them means the next frame draws final content at the new geometry — the alternative, letting
+    /// them play on against stale coordinates, paints over the wrong cells.
+    pub fn invalidate_effects(&mut self) {
+        if let Some(o) = &mut self.overlay {
+            o.invalidate(&mut self.effects);
+        }
+        for panel in self.panels.iter_mut() {
+            self.effects.cancel(panel.id.clone());
+            panel.fx.prev = None;
+            panel.pending = None;
+        }
     }
 
     /// Take the pending outgoing user message, if any (the loop sends it to the model).
@@ -227,6 +271,11 @@ impl App {
             self.chat.push(ChatMessage::text(Role::User, text.clone()));
             self.outbox = Some(text);
             self.scroll_to_bottom();
+            // Submitting does not dismiss the overlay (US3 §6) — it arms the dismissal, so the
+            // model's reply is what ends it (FR-019).
+            if let Some(o) = &mut self.overlay {
+                o.mark_superseded();
+            }
         }
     }
 }
@@ -238,6 +287,7 @@ pub fn update(app: &mut App, msg: Message) {
         Message::Resize(cols, rows) => {
             app.size = (cols, rows);
             app.layout_mode = LayoutMode::from_size(cols, rows);
+            app.invalidate_effects();
         }
         Message::Paste(s) => app.input.insert_str(&s),
         Message::Tick | Message::Suspend | Message::Resume => {}
@@ -253,6 +303,21 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             app.help_open = false;
         }
         return;
+    }
+    // An overlay is the most intrusive thing on screen, so Esc reaches it before focus dispatch —
+    // the operator escapes a takeover from either focus, with one key, always (FR-016). It sits
+    // *below* the help swallow (help is the more modal surface) and *above* the reserved Ctrl keys,
+    // which keep their terminal meaning regardless.
+    //
+    // `q` is deliberately not bound: it keeps meaning quit in chat focus, so no key's
+    // destructiveness depends on whether an overlay happens to be showing (research R6).
+    if key.code == KeyCode::Esc {
+        if let Some(o) = &mut app.overlay {
+            o.dismiss(Instant::now());
+            // Return before focus dispatch, so typed input survives the dismiss. A second Esc then
+            // clears it as usual (US3 §2).
+            return;
+        }
     }
     // Reserved keys keep their terminal meaning in every focus (FR-017, contracts/keybindings.md).
     // Raw mode delivers them as key events rather than signals, so we re-create the semantics.
@@ -341,6 +406,16 @@ fn handle_chat_key(app: &mut App, key: KeyEvent) {
 fn handle_session(app: &mut App, ev: SessionEvent) {
     match ev {
         SessionEvent::AssistantDelta(s) => {
+            // FR-019: the model's reply to a message the operator sent *since* the overlay appeared
+            // dismisses it — the conversation has moved past what the overlay was showing. Prose
+            // from the same turn that created it does not: an overlay is usually rendered by a tool
+            // call whose explanation is still being written, and dismissing on that would make every
+            // takeover vanish the instant the model finished describing it.
+            if let Some(o) = &mut app.overlay {
+                if o.superseded() {
+                    o.dismiss(Instant::now());
+                }
+            }
             // Append to the currently-open assistant message, or start a new one.
             if let Some(last) = app.chat.last_mut() {
                 if last.is_open_assistant() {
@@ -366,6 +441,9 @@ fn handle_session(app: &mut App, ev: SessionEvent) {
             app.chat.push(ChatMessage::widget(spec));
             app.autoscroll();
         }
+        // A full-screen takeover (009 US3). It reached here only because the visual gate admitted
+        // it — below `visual_level = takeover` this event is never emitted at all.
+        SessionEvent::Overlay { spec, ttl_ms } => app.show_overlay(spec, ttl_ms, Instant::now()),
         // A targeted render: upsert into the panel column, never the chat flow (FR-008/009). Same id
         // replaces in place; the chat still shows the tool-result summary line separately.
         SessionEvent::PanelUpdate { id, spec } => app.panels.upsert(id, spec),
@@ -691,5 +769,190 @@ mod tests {
         );
         assert_eq!(a.chat.len(), 1, "inline render appends a chat widget");
         assert!(a.panels.is_empty(), "inline render never touches panels");
+    }
+    // --- 009 US3: the takeover the operator can always escape -----------------------------------
+
+    fn takeover(a: &mut App, ttl_ms: Option<u32>) {
+        update(
+            a,
+            Message::session(SessionEvent::Overlay {
+                spec: text_spec("chart"),
+                ttl_ms,
+            }),
+        );
+    }
+
+    #[test]
+    fn esc_dismisses_the_takeover_and_leaves_typed_text_alone() {
+        // FR-016 / US3 §2. The operator escaping a takeover must not also lose the sentence they
+        // were in the middle of writing — that would make Esc a key you hesitate over.
+        let mut a = app();
+        type_str(&mut a, "half a thought");
+        takeover(&mut a, None);
+        assert!(a.overlay_active());
+
+        update(&mut a, Message::key(KeyCode::Esc));
+        assert_eq!(a.input.text(), "half a thought", "the text survives");
+        assert_eq!(
+            a.overlay.as_ref().map(|o| o.phase()),
+            Some(crate::tui::overlay::Phase::Dismissing),
+            "one keypress starts the fade-out"
+        );
+
+        // The second Esc does what Esc always did.
+        a.overlay = None;
+        update(&mut a, Message::key(KeyCode::Esc));
+        assert!(a.input.is_empty(), "and then clears the input as usual");
+    }
+
+    #[test]
+    fn esc_dismisses_from_chat_focus_too() {
+        let mut a = app();
+        takeover(&mut a, None);
+        update(&mut a, Message::key(KeyCode::Tab)); // chat focus
+        update(&mut a, Message::key(KeyCode::Esc));
+        assert_eq!(
+            a.overlay.as_ref().map(|o| o.phase()),
+            Some(crate::tui::overlay::Phase::Dismissing)
+        );
+    }
+
+    #[test]
+    fn esc_with_no_takeover_still_clears_input_and_still_hides_panels() {
+        // A regression guard on 008: adding a higher-precedence Esc must not change what Esc does
+        // when there is no overlay to dismiss.
+        let mut a = app();
+        type_str(&mut a, "text");
+        update(&mut a, Message::key(KeyCode::Esc));
+        assert!(a.input.is_empty());
+
+        let mut b = App::new(80, 24);
+        b.panels.upsert("m", text_spec("x"));
+        b.panels_visible = true;
+        update(&mut b, Message::key(KeyCode::Tab));
+        update(&mut b, Message::key(KeyCode::Esc));
+        assert!(!b.panels_visible);
+    }
+
+    #[test]
+    fn help_outranks_the_takeover_because_it_is_the_more_modal_surface() {
+        let mut a = app();
+        takeover(&mut a, None);
+        a.help_open = true;
+        update(&mut a, Message::key(KeyCode::Esc));
+        assert!(!a.help_open, "help closes first");
+        assert_eq!(
+            a.overlay.as_ref().map(|o| o.phase()),
+            Some(crate::tui::overlay::Phase::Entering),
+            "the takeover is untouched"
+        );
+    }
+
+    #[test]
+    fn q_is_not_a_dismiss_key() {
+        // Research R6: `q` keeps meaning quit in chat focus, so no key's destructiveness depends on
+        // whether an overlay happens to be showing.
+        let mut a = app();
+        takeover(&mut a, None);
+        update(&mut a, Message::key(KeyCode::Tab)); // chat focus
+        update(&mut a, Message::char('q'));
+        assert!(a.should_quit, "q still quits");
+    }
+
+    #[test]
+    fn submitting_keeps_the_takeover_and_the_models_reply_ends_it() {
+        // US3 §6 and FR-019 are the two halves of one rule: the operator can keep working while an
+        // overlay is up, and the conversation moving on is what retires it.
+        let mut a = app();
+        takeover(&mut a, None);
+        type_str(&mut a, "what about q99?");
+        update(&mut a, Message::key(KeyCode::Enter));
+        assert_eq!(
+            a.overlay.as_ref().map(|o| o.phase()),
+            Some(crate::tui::overlay::Phase::Entering),
+            "submitting does not dismiss it"
+        );
+
+        update(
+            &mut a,
+            Message::session(SessionEvent::AssistantDelta("looking".into())),
+        );
+        assert_eq!(
+            a.overlay.as_ref().map(|o| o.phase()),
+            Some(crate::tui::overlay::Phase::Dismissing),
+            "the reply to that message does"
+        );
+    }
+
+    #[test]
+    fn same_turn_prose_leaves_the_takeover_alone() {
+        // An overlay is rendered by a tool call whose explanation is still being written. Dismissing
+        // on that prose would make every takeover vanish the instant it was described.
+        let mut a = app();
+        takeover(&mut a, None);
+        update(
+            &mut a,
+            Message::session(SessionEvent::AssistantDelta("here is the chart".into())),
+        );
+        assert_eq!(
+            a.overlay.as_ref().map(|o| o.phase()),
+            Some(crate::tui::overlay::Phase::Entering)
+        );
+    }
+
+    #[test]
+    fn a_second_takeover_replaces_the_first_rather_than_stacking() {
+        // FR-020, enforced structurally: `App` holds one `Option`, so there is nowhere for a second
+        // overlay to live except queued inside the first.
+        let mut a = app();
+        takeover(&mut a, None);
+        takeover(&mut a, Some(5_000));
+        assert_eq!(
+            a.overlay.as_ref().map(|o| o.phase()),
+            Some(crate::tui::overlay::Phase::Dismissing),
+            "the first one is on its way out"
+        );
+    }
+
+    #[test]
+    fn the_chat_scroll_position_survives_the_whole_takeover_cycle() {
+        // FR-018: the chat comes back exactly as the operator left it. Nothing in the overlay path
+        // touches `scroll`, and this is the test that keeps it that way.
+        let mut a = app();
+        for i in 0..40 {
+            a.push_line(Role::Assistant, format!("line {i}"));
+        }
+        update(&mut a, Message::key(KeyCode::Tab));
+        update(&mut a, Message::key(KeyCode::Up));
+        update(&mut a, Message::key(KeyCode::Up));
+        let scrolled = a.scroll;
+        assert!(scrolled > 0, "scrolled up from the tail");
+
+        takeover(&mut a, Some(1_000));
+        assert_eq!(a.scroll, scrolled, "unchanged while the overlay is up");
+        update(&mut a, Message::key(KeyCode::Esc));
+        a.overlay = None;
+        assert_eq!(a.scroll, scrolled, "and unchanged after it leaves");
+    }
+
+    #[test]
+    fn a_resize_cancels_transitions_rather_than_playing_them_at_stale_coordinates() {
+        // Spec edge case. An effect is pinned to the Rect it was registered with, so after a resize
+        // it would paint over the wrong cells.
+        let mut a = app();
+        a.panels.upsert("m", text_spec("x"));
+        let area = ratatui::layout::Rect::new(0, 0, 20, 5);
+        crate::tui::effects::apply(
+            &mut a.effects,
+            Some("m"),
+            &crate::tui::effects::panel_enter_spec(),
+            &crate::tui::effects::ResolveCtx::agent(a.visual, area),
+        );
+        assert!(a.effects.is_running());
+
+        update(&mut a, Message::Resize(100, 30));
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        a.effects.process(Duration::from_millis(16), &mut buf, area);
+        assert!(!a.effects.is_running(), "no transition outlives the resize");
     }
 }
