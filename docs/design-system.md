@@ -144,6 +144,61 @@ a role; if it needs a mark, it needs a glyph from the vocabulary.
 
 ---
 
+## Motion & visual permissions (009-tachyonfx-effects)
+
+Effects are **decoration**. Nothing about them may change what a render *means*, and no tool call
+may fail because of one — a suppressed effect renders the final content immediately.
+
+### Three independent axes
+
+They compose freely: a session can have full color, full takeover rights, and zero motion.
+
+| Axis | Off switch | Governs | Reaches bee's own chrome? |
+|---|---|---|---|
+| **Color** | `NO_COLOR=1` | the four color effects (fade, pulse, glow) | yes — but text effects keep moving |
+| **Motion** | `--no-animation`, `BEE_NO_ANIMATION` | *all* motion | **yes** — this is the operator's switch |
+| **Screen** | `--visual-level`, `BEE_VISUAL_LEVEL` | how much screen the **agent** may claim | **no** — the level governs the agent only |
+
+`BEE_NO_ANIMATION` is presence-is-truth, like `NO_COLOR`: `BEE_NO_ANIMATION=0` still disables. That
+is surprising read alone and consistent with the convention bee already implements.
+
+With motion off, nothing is ever registered — so the render loop cannot enter its 60fps state. That
+is structural, not a rule each call site remembers: everything routes through one resolver.
+
+### Visual levels
+
+`--visual-level` takes `none`, `panels` (default), `panels-wide`, or `takeover`. It is a **ceiling**,
+not a mode: a request above it is **downgraded, never refused**, and the tool result tells the model
+what happened so it can adapt next turn. Erroring instead would teach the model to stop rendering.
+An unrecognized value is a startup error — a policy that cannot be compiled is refused, never
+silently weakened.
+
+| Level | Panels | Panel width | Takeover |
+|---|---|---|---|
+| `none` | ✗ (renders inline) | — | ✗ |
+| `panels` *(default)* | ✓ | ⌊w/3⌋ | ✗ |
+| `panels-wide` | ✓ | ⌊w/2⌋ | ✗ |
+| `takeover` | ✓ | ⌊w/2⌋ | ✓ |
+
+### Takeover keys
+
+A full-screen takeover always carries its own way out, in its bottom row: ``Esc`` to dismiss ·
+auto-dismiss in {N}s. It expires on its own (`takeover_ttl_secs`, default 30, max 120), it never
+covers the input line, and the operator can keep typing and submitting throughout.
+
+`Esc` dismisses from either focus and **leaves typed text intact** — a second `Esc` clears the input
+as usual. `q` is deliberately **not** bound to dismiss: it keeps meaning quit in chat focus, so no
+key's destructiveness depends on whether an overlay happens to be showing.
+
+### Chrome vs agent
+
+bee's own UI moves with the same twelve-verb vocabulary it gives the agent — there is no second,
+privileged effect language. But chrome registers *unkeyed*, and cancellation works by key, so no
+panel the agent can name will ever cancel or replace it. The agent picks its own effects; it does
+not get to pick bee's.
+
+---
+
 ## Checklist for new TUI work
 
 - [ ] Colors come from a `Role`, not a literal SGR/hex.
@@ -154,3 +209,6 @@ a role; if it needs a mark, it needs a glyph from the vocabulary.
 - [ ] Fixed column order; chrome doesn't reflow between frames.
 - [ ] Full-screen work restores the terminal on **every** exit path (quit / Ctrl-C / Ctrl-Z / panic).
 - [ ] Anything drawn in a panel is also reachable on a narrow terminal (the `p` overlay).
+- [ ] Motion is decoration: with `BEE_NO_ANIMATION` set, the same content is on screen immediately.
+- [ ] Any new effect goes through `tui::effects::resolve` — never registered at a call site directly.
+- [ ] New chrome effects register **unkeyed**, so the agent cannot address them.

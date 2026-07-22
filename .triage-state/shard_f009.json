@@ -1,0 +1,19 @@
+{
+  "id": "f009",
+  "verdict": "false_positive",
+  "vote_breakdown": {
+    "true_positive": 1,
+    "false_positive": 2,
+    "cannot_verify": 0
+  },
+  "confidence": 9,
+  "exclusion_rule": 3,
+  "refute_reasons": [
+    "intentional_behavior"
+  ],
+  "first_links": [
+    "bee-harness/src/episode.rs:597",
+    "bee-harness/src/batch.rs:145"
+  ],
+  "rationale": "Skill directories are deliberately authorized as readable from trusted operator-declared skill roots (bee-harness/src/episode.rs:745-754; bee-harness/src/scenario.rs:70-79). The most-specific rule behavior is intentional, and malicious skill frontmatter cannot select a different directory."
+}

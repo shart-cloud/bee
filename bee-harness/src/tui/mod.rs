@@ -9,9 +9,11 @@
 
 pub mod app;
 pub mod chat;
+pub mod effects;
 pub mod frontend;
 pub mod input;
 pub mod message;
+pub mod overlay;
 pub mod panels;
 pub mod term;
 pub mod theme_bridge;
@@ -37,6 +39,10 @@ use app::{update, App};
 use chat::{ChatMessage, Role};
 use message::Message;
 use term::{message_from_event, Tui};
+
+/// How often the "working…" indicator repaints during a turn. A turn always ticks at least this
+/// often even with no effects running, because the spinner has to move.
+const SPINNER_TICK: Duration = Duration::from_millis(120);
 
 /// Run the full-screen TUI front-end to completion (008-grid-tui, US1 T018).
 ///
@@ -66,7 +72,10 @@ pub async fn run(
     let mut terminal = term::init();
     let mut restore_guard = term::RestoreGuard::terminal();
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-    let mut app = App::new(cols, rows);
+    let mut app = App::new(cols, rows).with_visual(config.visual);
+    // bee's own opening: the header fades up and the footer slides in behind it (US5 §1, FR-026).
+    app.chrome_cues
+        .extend([effects::Chrome::Header, effects::Chrome::Footer]);
 
     // Greeting, mirroring the inline REPL's info banner — plus the resting-pose mascot when enabled,
     // which also exercises the sprite→Buffer rasterizer (T008) on the full-screen path.
@@ -74,6 +83,9 @@ pub async fn run(
         app.chat.push(ChatMessage::widget(RenderSpec::Sprite {
             spec: crate::viz::bee::sprite(),
         }));
+        // It evolves out of block glyphs rather than popping in (US5 §2). Gated on the existing
+        // `BEE_MASCOT` opt-in, because a session that asked for no mascot gets no mascot animation.
+        app.chrome_cues.push(effects::Chrome::Mascot);
     }
     app.chat.push(ChatMessage::text(
         Role::System,
@@ -87,10 +99,15 @@ pub async fn run(
 
     // The Elm loop: draw, then wait for the next thing that changes the model.
     while !app.should_quit {
-        app.panels.prune(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        app.panels.prune(now);
+        // The overlay's TTL and its phase changes fire here rather than on a keypress, so a takeover
+        // expires on time in a session nobody is touching (FR-017).
+        app.advance_overlay(now);
         // Publish the drawable regions so the render tool can reject widgets this screen can't show.
         crate::viz::viewport::set(view::viewport_for(&app));
-        terminal.draw(|f| view::view(&app, f))?;
+        app.tick_clock(now);
+        terminal.draw(|f| view::view(&mut app, f))?;
 
         // A submitted line starts a model turn; drive it to completion while still pumping the UI.
         if let Some(text) = app.take_outbox() {
@@ -112,16 +129,18 @@ pub async fn run(
             continue;
         }
 
-        // Idle: block on a single terminal event, apply it, loop back to redraw. When a panel carries
-        // a TTL we also wake periodically so it expires on time instead of lingering until the next
-        // keypress; with no expiring panels this stays a pure blocking wait (no idle CPU).
-        let next = if app.panels.has_expiring() {
-            tokio::select! {
+        // Idle: block on a single terminal event, apply it, loop back to redraw — unless the
+        // scheduler says this session owes periodic wakeups (motion, an overlay countdown, or a
+        // panel TTL). With none of those this stays a pure blocking wait (no idle CPU).
+        let next = match tick_interval(&app) {
+            Some(period) => tokio::select! {
                 ev = events.next() => ev,
-                _ = tokio::time::sleep(Duration::from_millis(250)) => continue,
-            }
-        } else {
-            events.next().await
+                _ = tokio::time::sleep(period) => {
+                    app.periodic_redraws += 1;
+                    continue;
+                }
+            },
+            None => events.next().await,
         };
         match next {
             Some(Ok(ev)) => {
@@ -142,6 +161,30 @@ pub async fn run(
     term::restore();
     restore_guard.disarm();
     Ok(())
+}
+
+/// How long the loop may sleep before it must redraw on its own — the scheduler of FR-002, as a
+/// pure function of the model so its wakeup budget is testable without a terminal.
+///
+/// The three states, in the order the spec fixes:
+///
+/// 1. **Motion** — effects are running: ~60fps, because that is what an animation costs.
+/// 2. **Countdown** — no effects but an overlay is up: 1Hz, enough to tick the dismiss countdown and
+///    fire the TTL. A 120s overlay must cost ~120 wakeups, not ~7200.
+/// 3. **Idle** — `None`: fully event-driven, zero periodic redraws (SC-003).
+///
+/// The panel-TTL wake from 008 sits below all three: it is not a render state, just the coarse poll
+/// that expires timed panels, and it exists only while a panel actually carries a TTL.
+fn tick_interval(app: &App) -> Option<Duration> {
+    if app.effects.is_running() {
+        Some(Duration::from_millis(16))
+    } else if app.overlay_active() {
+        Some(Duration::from_secs(1))
+    } else if app.panels.has_expiring() {
+        Some(Duration::from_millis(250))
+    } else {
+        None
+    }
 }
 
 /// Act on the side-effect intents the (pure) reducer surfaced: copy a yanked message via OSC 52, and
@@ -194,15 +237,18 @@ async fn run_turn(
     tokio::pin!(exchange);
 
     // The tick exists only for the duration of a turn — the "on-demand" tick (T018): it paces the
-    // "working…" indicator's redraws and idles completely between turns. (The first tick fires
-    // immediately, which just forces one extra harmless redraw.)
-    let mut tick = tokio::time::interval(Duration::from_millis(120));
+    // "working…" indicator's redraws and idles completely between turns. While effects are running
+    // it tightens to the scheduler's 16ms so animations advance smoothly mid-turn (FR-002).
     let mut turn_done = false;
 
     loop {
-        app.panels.prune(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        app.panels.prune(now);
+        app.advance_overlay(now);
         crate::viz::viewport::set(view::viewport_for(app));
+        app.tick_clock(now);
         terminal.draw(|f| view::view(app, f))?;
+        let period = tick_interval(app).unwrap_or(SPINNER_TICK).min(SPINNER_TICK);
         // A mid-turn quit (Ctrl-C / q from chat focus) drops `exchange`, cancelling the call.
         if app.should_quit {
             return Ok(());
@@ -230,7 +276,7 @@ async fn run_turn(
                 }
                 Some(Err(_)) | None => app.should_quit = true,
             },
-            _ = tick.tick() => {}
+            _ = tokio::time::sleep(period) => app.periodic_redraws += 1,
         }
 
         // Once the turn has ended and its trailing events are drained, one final redraw + return.
@@ -238,5 +284,139 @@ async fn run_turn(
             terminal.draw(|f| view::view(app, f))?;
             return Ok(());
         }
+    }
+}
+
+#[cfg(test)]
+mod scheduler_tests {
+    use super::*;
+    use crate::config::VisualConfig;
+    use crate::render_spec::RenderSpec;
+    use crate::tui::effects::{self, Origin, ResolveCtx};
+    use ratatui::layout::Rect;
+
+    /// How many periodic wakeups this session costs over `window` — zero when the loop is purely
+    /// event-driven. The scheduler's decision *is* the wakeup budget, so measuring it here measures
+    /// SC-003 without standing up a terminal and a tokio runtime.
+    fn wakeups(app: &App, window: Duration) -> u128 {
+        match tick_interval(app) {
+            Some(period) => window.as_nanos() / period.as_nanos(),
+            None => 0,
+        }
+    }
+
+    #[test]
+    fn an_idle_session_never_wakes_up_on_its_own() {
+        // SC-003: no effects, no overlay, no expiring panel — nothing to redraw for.
+        let mut app = App::new(120, 24);
+        app.panels.upsert("m", RenderSpec::Separator);
+        assert!(tick_interval(&app).is_none());
+        assert_eq!(wakeups(&app, Duration::from_secs(60)), 0);
+    }
+
+    #[test]
+    fn running_effects_put_the_loop_in_its_60fps_state() {
+        let mut app = App::new(120, 24);
+        let ctx = ResolveCtx::agent(app.visual, Rect::new(0, 0, 20, 5));
+        assert!(effects::apply(
+            &mut app.effects,
+            Some("m"),
+            &effects::panel_enter_spec(),
+            &ctx
+        ));
+        assert_eq!(tick_interval(&app), Some(Duration::from_millis(16)));
+    }
+
+    #[test]
+    fn a_motionless_session_can_never_reach_the_60fps_state() {
+        // FR-006c, structurally: with animations off nothing registers, so `is_running()` is false
+        // forever and state 1 is unreachable no matter what the agent asks for.
+        let mut app = App::new(120, 24).with_visual(VisualConfig {
+            animations: false,
+            ..VisualConfig::default()
+        });
+        let ctx = ResolveCtx::agent(app.visual, Rect::new(0, 0, 20, 5));
+        for origin in [Origin::Agent, Origin::Chrome] {
+            let ctx = ResolveCtx { origin, ..ctx };
+            assert!(!effects::apply(
+                &mut app.effects,
+                Some("m"),
+                &effects::panel_enter_spec(),
+                &ctx
+            ));
+        }
+        assert!(!app.effects.is_running());
+        assert!(tick_interval(&app).is_none());
+        assert_eq!(wakeups(&app, Duration::from_secs(60)), 0);
+    }
+
+    #[test]
+    fn a_showing_overlay_costs_one_wakeup_per_second_not_sixty() {
+        // SC-003 / FR-002 state 2: the countdown needs a redraw per second, and that is all it
+        // needs. A 10-second overlay budget of ≤ 15 is the assertion the spec names; holding the
+        // motion state instead would cost 600.
+        let t0 = std::time::Instant::now();
+        let mut app = App::new(120, 24);
+        app.show_overlay(RenderSpec::Separator, Some(10_000), t0);
+        // Past the entrance, with no effects left running.
+        app.advance_overlay(t0 + Duration::from_millis(250));
+        assert_eq!(
+            app.overlay.as_ref().map(|o| o.phase()),
+            Some(crate::tui::overlay::Phase::Showing)
+        );
+        assert!(!app.effects.is_running(), "nothing is animating");
+
+        assert_eq!(tick_interval(&app), Some(Duration::from_secs(1)));
+        assert_eq!(wakeups(&app, Duration::from_secs(10)), 10);
+        assert!(wakeups(&app, Duration::from_secs(10)) <= 15);
+    }
+
+    #[test]
+    fn an_overlay_countdown_still_ticks_with_animations_disabled() {
+        // FR-015: the countdown is information, not motion, so the kill switch does not silence it.
+        let t0 = std::time::Instant::now();
+        let mut app = App::new(120, 24).with_visual(VisualConfig {
+            animations: false,
+            ..VisualConfig::default()
+        });
+        app.show_overlay(RenderSpec::Separator, Some(10_000), t0);
+        app.advance_overlay(t0);
+        assert_eq!(
+            tick_interval(&app),
+            Some(Duration::from_secs(1)),
+            "still 1Hz — but never 60fps, because nothing was registered"
+        );
+        assert!(!app.effects.is_running());
+    }
+
+    #[test]
+    fn the_loop_goes_quiet_again_once_the_overlay_is_gone() {
+        let t0 = std::time::Instant::now();
+        let mut app = App::new(120, 24);
+        app.show_overlay(RenderSpec::Separator, Some(1_000), t0);
+        app.advance_overlay(t0 + Duration::from_millis(1_300));
+        assert!(app.overlay.is_none());
+        assert!(tick_interval(&app).is_none(), "back to fully event-driven");
+    }
+
+    #[test]
+    fn a_timed_panel_polls_coarsely_and_stops_once_it_expires() {
+        // 008's TTL wake is not a render state — it's the coarse poll that expires panels, and it
+        // lives below all three of FR-002's states.
+        let mut app = App::new(120, 24);
+        app.panels.apply(crate::render_spec::PanelOp::Upsert {
+            id: "flash".into(),
+            spec: RenderSpec::Separator,
+            ttl_ms: Some(50),
+            effect: None,
+        });
+        assert_eq!(tick_interval(&app), Some(Duration::from_millis(250)));
+
+        app.panels
+            .prune(std::time::Instant::now() + Duration::from_millis(100));
+        assert!(
+            tick_interval(&app).is_none(),
+            "the poll retires with the panel"
+        );
     }
 }

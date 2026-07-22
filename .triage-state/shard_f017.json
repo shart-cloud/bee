@@ -1,0 +1,18 @@
+{
+  "id": "f017",
+  "verdict": "true_positive",
+  "vote_breakdown": {
+    "true_positive": 2,
+    "false_positive": 1,
+    "cannot_verify": 0
+  },
+  "confidence": 8.5,
+  "exclusion_rule": 12,
+  "refute_reasons": [
+    "not_actionable"
+  ],
+  "first_links": [
+    "bee-harness/src/episode.rs:337"
+  ],
+  "rationale": "After each call, run_loop drains all cgroup events and assigns them to the current ToolCall without a pre-call watermark or call identifier (bee-harness/src/episode.rs:323-338,444-448; bee-harness/src/sandbox.rs:210-235). A background child can therefore cause delayed events to be attributed to a later call and influence reactive escalation."
+}

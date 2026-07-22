@@ -9,6 +9,10 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod effect_spec;
+
+pub use effect_spec::{clamp_ms, EffectDirection, EffectSpec};
+
 /// One bar of a [`RenderSpec::BarChart`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Bar {
@@ -75,6 +79,38 @@ pub struct GridCell {
     pub content: RenderSpec,
 }
 
+/// A widget plus the transition the agent asked for (009-tachyonfx-effects, FR-022).
+///
+/// The pair exists because a [`RenderSpec`] is content and an [`EffectSpec`] is motion, and 008's
+/// transcripts must keep deserializing byte-identically — so the effect rides *beside* the spec
+/// rather than inside it. `effect: None` means "use the default transition for this target", never
+/// "no animation": suppressing motion is the kill switch's job, not the absence of a request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Renderable {
+    pub spec: RenderSpec,
+    pub effect: Option<EffectSpec>,
+}
+
+impl Renderable {
+    /// A widget with no agent-requested transition — the default entrance applies.
+    pub fn plain(spec: RenderSpec) -> Self {
+        Renderable { spec, effect: None }
+    }
+
+    /// Attach (or replace) the requested transition. Last write wins, matching every other
+    /// builder setter on the drawing API.
+    pub fn with_effect(mut self, effect: EffectSpec) -> Self {
+        self.effect = Some(effect);
+        self
+    }
+}
+
+impl From<RenderSpec> for Renderable {
+    fn from(spec: RenderSpec) -> Self {
+        Renderable::plain(spec)
+    }
+}
+
 /// A layout direction — maps to a ratatui `Direction` at render time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -93,6 +129,18 @@ pub enum RenderTarget {
     Inline,
     /// A named, persistent, model-owned panel; re-rendering the same `id` replaces it in place.
     Panel { id: String },
+    /// A full-screen overlay covering the chat area (009-tachyonfx-effects, FR-013a). Requires
+    /// `visual_level = "takeover"`; below that the visual gate downgrades it to a panel, and at
+    /// `none` to inline. The target is carried explicitly rather than inferred from a widget
+    /// property or a magic panel id, so the gate can act before any state mutates.
+    ///
+    /// `ttl_ms` is what the *script* asked for; the lifetime actually granted is
+    /// `min(requested, configured)`, resolved once at construction
+    /// (`visual_gate::resolve_ttl`). `None` means "use the configured lifetime".
+    Overlay {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl_ms: Option<u32>,
+    },
 }
 
 impl RenderTarget {
@@ -118,11 +166,31 @@ pub enum PanelOp {
         spec: RenderSpec,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ttl_ms: Option<u64>,
+        /// An agent-requested transition (009, FR-022). `None` means "use the default transition
+        /// for this target" — **not** "no animation". Suppressing animation is the motion switch's
+        /// job, never the absence of an effect. Skipped when absent so 008 transcripts round-trip
+        /// byte-identically.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effect: Option<EffectSpec>,
     },
     /// Remove panel `id` if it exists; a no-op when it doesn't.
     Remove { id: String },
     /// Remove every panel.
     Clear,
+}
+
+/// A full-screen takeover request (009-tachyonfx-effects, FR-013a) — what `render_fullscreen` and
+/// `render_fullscreen_ttl` produce. At most one survives a script (last writer wins, like the inline
+/// commit), which is how FR-020's "no stacking" starts being true before the TUI ever sees it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OverlayRequest {
+    pub spec: RenderSpec,
+    /// Requested lifetime. `None` uses the configured default. The configured maximum is a hard cap:
+    /// a longer request is clamped down, a shorter one is honored (FR-021).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<EffectSpec>,
 }
 
 /// A pixel-art sprite (003-visual-render, Slice 2, FR-028): a `width × height` grid of RGB pixels,

@@ -75,6 +75,10 @@ pub struct ReplConfig {
     /// Discovered skills (006-skills), shared with the `skill` tool. Backs the `/skill` command and
     /// the system-prompt nudge. Defaults to an empty registry (no skills, no `/skill`).
     pub skills: Arc<crate::skills::SkillRegistry>,
+    /// The three presentation axes (009): how much screen the agent may claim, whether anything
+    /// animates, and how long a takeover may live. Resolved once at startup from CLI > env >
+    /// scenario > default.
+    pub visual: crate::config::VisualConfig,
 }
 
 impl Default for ReplConfig {
@@ -92,6 +96,7 @@ impl Default for ReplConfig {
             mcp_summary: None,
             refresh_tools: None,
             skills: Arc::new(crate::skills::SkillRegistry::default()),
+            visual: crate::config::VisualConfig::default(),
         }
     }
 }
@@ -134,6 +139,12 @@ pub trait ReplOutput: Send + Sync {
         for line in spec.to_ascii().lines() {
             self.info(line);
         }
+    }
+    /// A full-screen takeover (009-tachyonfx-effects, FR-013a). Defaults to drawing inline: the
+    /// inline REPL scrolls and has no surface to take over, so a takeover there is just a widget in
+    /// the flow (009 spec, Edge Cases). The full-screen TUI's `SessionSink` overrides this.
+    fn overlay(&self, spec: &RenderSpec, _ttl_ms: Option<u32>) {
+        self.render_widget(spec);
     }
     /// A render addressed to a named, persistent panel (008-grid-tui, FR-008). Defaults to drawing
     /// inline via [`ReplOutput::render_widget`] — the inline REPL has no panel column, so targeted
@@ -555,6 +566,12 @@ pub async fn run_exchange(
                 match &result.render_target {
                     // Legacy results routed panels via `render_target`; honor them for back-compat.
                     crate::render_spec::RenderTarget::Panel { id } => output.panel_update(id, spec),
+                    // A takeover the gate admitted. `ReplOutput::overlay` defaults to drawing it
+                    // inline, which is the inline REPL's honest degrade — it scrolls, so it has no
+                    // surface to take over. The full-screen front-end overrides it.
+                    crate::render_spec::RenderTarget::Overlay { ttl_ms } => {
+                        output.overlay(spec, *ttl_ms)
+                    }
                     crate::render_spec::RenderTarget::Inline => output.render_widget(spec),
                 }
             }

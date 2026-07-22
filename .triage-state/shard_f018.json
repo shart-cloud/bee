@@ -1,0 +1,19 @@
+{
+  "id": "f018",
+  "verdict": "false_positive",
+  "vote_breakdown": {
+    "true_positive": 1,
+    "false_positive": 2,
+    "cannot_verify": 0
+  },
+  "confidence": 8,
+  "exclusion_rule": 16,
+  "refute_reasons": [
+    "implausible_trigger"
+  ],
+  "first_links": [
+    "bee-harness/src/sandbox.rs:168",
+    "bee-harness/src/sandbox.rs:178"
+  ],
+  "rationale": "There is a pathname check/use gap (bee-userspace/src/spawn.rs:40-80), but model-controlled bash always launches fixed sh and other executable paths are trusted configuration. No realistic untrusted pathname replacement was established under this boundary; the majority applied theoretical-TOCTOU rule 16."
+}

@@ -65,6 +65,16 @@ struct Args {
     /// Force the inline REPL, overriding `--tui`.
     #[arg(long)]
     no_tui: bool,
+    /// How much screen the agent may claim (009): `none`, `panels` (default), `panels-wide`, or
+    /// `takeover`. A ceiling, not a mode — a request above it is downgraded, never refused. Overrides
+    /// `BEE_VISUAL_LEVEL`. An unrecognized value is a startup error, never a fallback.
+    #[arg(long)]
+    visual_level: Option<String>,
+    /// Disable all motion — agent effects and bee's own chrome alike (009). The render loop then
+    /// never enters its 60fps state. Also settable with `BEE_NO_ANIMATION` (presence is enough,
+    /// like `NO_COLOR`).
+    #[arg(long)]
+    no_animation: bool,
 }
 
 #[tokio::main]
@@ -76,6 +86,23 @@ async fn main() -> ExitCode {
     if let Err(e) = set_non_dumpable() {
         eprintln!("bee-repl: warning: could not set non-dumpable: {e}");
     }
+
+    // Resolve the three presentation axes and publish them before anything else can run: the render tool
+    // reads the level process-globally (it has no session handle), and the gate must be in place
+    // before the first script evaluates. An unparseable value fails startup rather than falling back
+    // to a wider ceiling than the operator asked for (Constitution I).
+    let visual = match bee_harness::config::VisualConfig::resolve(
+        args.visual_level.as_deref(),
+        args.no_animation,
+        None,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("bee-repl: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    bee_harness::visual_gate::set(visual);
 
     // Resolve + install the color theme (005-themes) before anything renders: --theme > BEE_THEME >
     // config file > honeycomb. An unknown name warns and falls back rather than failing (FR-052).
@@ -216,6 +243,7 @@ async fn main() -> ExitCode {
         #[cfg(feature = "mcp")]
         refresh_tools: mcp_refresh,
         skills: skills.clone(),
+        visual,
         ..ReplConfig::default()
     };
 
@@ -225,6 +253,11 @@ async fn main() -> ExitCode {
     println!("  policy: {policy_label}");
     println!("  tools:  {}", tools.join(", "));
     println!("  theme:  {}", bee_harness::viz::theme::active_theme().name);
+    println!(
+        "  visual: {} (animations {})",
+        visual.level.as_str(),
+        if visual.animations { "on" } else { "off" }
+    );
     if !skills.is_empty() {
         println!(
             "  skills: {} ({} agent-loadable)",

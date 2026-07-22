@@ -1,0 +1,16 @@
+{
+  "id": "f008",
+  "verdict": "true_positive",
+  "vote_breakdown": {
+    "true_positive": 3,
+    "false_positive": 0,
+    "cannot_verify": 0
+  },
+  "confidence": 10,
+  "exclusion_rule": null,
+  "refute_reasons": [],
+  "first_links": [
+    "bee-harness/src/episode.rs:597"
+  ],
+  "rationale": "run_episode resolves grants for every discovered skill before invocation (bee-harness/src/episode.rs:596-608; bee-harness/src/skills/grant.rs:147-183). Hidden or uninvoked malicious project skills can therefore globally register tools, and tool-only requests are outside the policy ceiling."
+}

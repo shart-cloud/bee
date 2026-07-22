@@ -1,0 +1,12 @@
+# Throwaway provider config for the 008 full-screen TUI live test (US1 + US2).
+# The key is read from ANTHROPIC_API_KEY at startup — never written here or into any transcript.
+[provider]
+provider    = "anthropic"
+model       = "claude-opus-4-8"        # or claude-sonnet-5 / claude-haiku-4-5
+api_key_env = "ANTHROPIC_API_KEY"
+max_tokens  = 8192
+prompt_caching = true
+
+# Optional: let the model reason before acting (helps it build richer panels).
+# thinking = "adaptive"
+# effort   = "medium"

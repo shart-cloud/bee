@@ -1,0 +1,17 @@
+{
+  "id": "f023",
+  "verdict": "true_positive",
+  "vote_breakdown": {
+    "true_positive": 3,
+    "false_positive": 0,
+    "cannot_verify": 0
+  },
+  "confidence": 9,
+  "exclusion_rule": null,
+  "refute_reasons": [],
+  "first_links": [
+    "bee-harness/src/tools/render.rs:111",
+    "bee-harness/src/tools/render.rs:72"
+  ],
+  "rationale": "Model-controlled Rhai reaches layout add, whose conversion deep-clones existing child trees before storage (bee-harness/src/tools/render.rs:101-111; bee-harness/src/render_api.rs:205-210,483-489). Repeated reuse doubles native Rust-owned structures, while structural validation occurs only at final render after allocation (bee-harness/src/render_api.rs:596-603)."
+}

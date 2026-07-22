@@ -1,0 +1,16 @@
+{
+  "id": "f027",
+  "verdict": "true_positive",
+  "vote_breakdown": {
+    "true_positive": 3,
+    "false_positive": 0,
+    "cannot_verify": 0
+  },
+  "confidence": 8.7,
+  "exclusion_rule": null,
+  "refute_reasons": [],
+  "first_links": [
+    "bee-harness/src/episode.rs:770"
+  ],
+  "rationale": "Ordinary exec entries resolve once but store only mutable path bytes, and the backend rejects inode pinning (bee-core/src/compiler.rs:102-112; bee-userspace/src/plan.rs:186-215). The LSM permits whatever file currently occupies the matching pathname, so a writable allowlisted executable can be replaced persistently with attacker-controlled content."
+}

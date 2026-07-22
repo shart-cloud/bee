@@ -1,0 +1,1092 @@
+{
+  "triage_completed": true,
+  "triage_context": {
+    "mode": "interactive",
+    "environment": "CLI/agent harness; operator configuration is trusted, but repositories, models, skills, tool output, and MCP responses may be malicious.",
+    "threat_model": [
+      "Confused-deputy privilege escalation causing unauthorized host access, command execution, secret exposure, or network egress."
+    ],
+    "scoring": "Derived HIGH/MEDIUM/LOW from preconditions",
+    "noise_tolerance": "precision",
+    "votes_per_finding": 3,
+    "repo": "/home/jg/git/bee"
+  },
+  "summary": {
+    "input_count": 27,
+    "duplicates": 0,
+    "false_positives": 9,
+    "true_positives": 18,
+    "needs_manual_test": 2,
+    "by_severity": {
+      "HIGH": 6,
+      "MEDIUM": 11,
+      "LOW": 1
+    }
+  },
+  "findings": [
+    {
+      "id": "f008",
+      "source": "VULN-FINDINGS.json#7",
+      "title": "Every discovered skill receives capability grants before any skill is invoked",
+      "file": "bee-harness/src/episode.rs",
+      "line": 502,
+      "category": "capability-grant-without-invocation",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 10,
+      "severity": "HIGH",
+      "severity_label": "HIGH",
+      "severity_alignment": 3,
+      "preconditions": [
+        "A configured skill root includes an attacker-controlled skill with a tool request",
+        "An attacker-controlled model invokes the registered tool"
+      ],
+      "access_level": "unauthenticated_remote",
+      "threat_match": "Unauthorized command/tool authority",
+      "rationale": "run_episode resolves grants for every discovered skill before invocation (bee-harness/src/episode.rs:596-608; bee-harness/src/skills/grant.rs:147-183). Hidden or uninvoked malicious project skills can therefore globally register tools, and tool-only requests are outside the policy ceiling.\n\nTwo realistic conditions yield MEDIUM, raised to HIGH because the defect directly grants unauthorized command/tool authority.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "bee-harness/src/episode.rs:597"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (9/9 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f012",
+      "source": "VULN-FINDINGS.json#11",
+      "title": "Background descendants survive scope teardown and become unsandboxed when the engine detaches",
+      "file": "bee-userspace/src/cgroup.rs",
+      "line": 42,
+      "category": "auth-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 10,
+      "severity": "HIGH",
+      "severity_label": "HIGH",
+      "severity_alignment": 3,
+      "preconditions": [
+        "An attacker-controlled tool daemonizes a descendant and redirects inherited pipes",
+        "The episode ends while the descendant remains alive"
+      ],
+      "access_level": "unauthenticated_remote",
+      "threat_match": "Sandbox escape and unauthorized command execution",
+      "rationale": "Tool execution tracks only the direct child, while teardown merely removes the cgroup and ignores a populated-cgroup failure (bee-harness/src/tools/exec.rs:38-55; bee-userspace/src/cgroup.rs:41-44; bee-harness/src/sandbox.rs:240-249). Dropping Engine then detaches enforcement, leaving a daemonized descendant alive.\n\nTwo realistic conditions yield MEDIUM, raised to HIGH for a direct enforcement escape.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "bee-userspace/src/lib.rs:329",
+        "bee-harness/src/sandbox.rs:244"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f020",
+      "source": "VULN-FINDINGS.json#19",
+      "title": "Stdio MCP servers inherit host credentials outside a small name-based denylist",
+      "file": "bee-harness/src/mcp/transport.rs",
+      "line": 42,
+      "category": "credential-boundary-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 10,
+      "severity": "HIGH",
+      "severity_label": "HIGH",
+      "severity_alignment": 3,
+      "preconditions": [
+        "Trusted configuration launches a malicious or compromised stdio MCP",
+        "The harness has a useful ambient credential outside the strip list"
+      ],
+      "access_level": "authenticated",
+      "threat_match": "Secret exposure",
+      "rationale": "spawn_stdio creates an ordinary inherited-environment command (bee-harness/src/mcp/bridge.rs:291-301; bee-harness/src/mcp/transport.rs:40-48). The sandbox removes only a small list of provider and configured token names and never env_clear's, so a malicious MCP child receives unrelated cloud, Git, proxy, and agent credentials.\n\nTwo realistic preconditions yield MEDIUM, raised to HIGH for direct secret exposure.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "bee-harness/src/mcp/bridge.rs:296"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f014",
+      "source": "VULN-FINDINGS.json#13",
+      "title": "Sandboxed tools inherit the privileged launcher's UID and BPF/cgroup capabilities",
+      "file": "bee-userspace/src/spawn.rs",
+      "line": 92,
+      "category": "privilege-escalation",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.7,
+      "severity": "HIGH",
+      "severity_label": "HIGH",
+      "severity_alignment": 4,
+      "preconditions": [
+        "Bee is launched with root or equivalent enforcement capabilities",
+        "An attacker-controlled source reaches a process-backed tool"
+      ],
+      "access_level": "unauthenticated_remote",
+      "threat_match": "Privilege escalation and unauthorized command execution",
+      "rationale": "Model-controlled tool execution reaches hardened_command in the enforced sandbox (bee-harness/src/tools/bash.rs:43-52; bee-harness/src/sandbox.rs:164-190). Its pre-exec hardening disables dumps but never drops UID/GID/capabilities or sets no_new_privs (bee-userspace/src/spawn.rs:92-97; bee-hardening/src/lib.rs:29-32), so a privileged loader spawns privileged tools.\n\nTwo conditions yield MEDIUM, raised to HIGH for the exact privileged confused-deputy threat.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "bee-harness/src/sandbox.rs:178",
+        "bee-harness/src/sandbox.rs:168"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f022",
+      "source": "VULN-FINDINGS.json#21",
+      "title": "Tool grants are not bounded by the capability ceiling",
+      "file": "bee-harness/src/skills/grant.rs",
+      "line": 142,
+      "category": "tool-authority-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.7,
+      "severity": "HIGH",
+      "severity_label": "HIGH",
+      "severity_alignment": 3,
+      "preconditions": [
+        "A malicious skill requests a recognized security-relevant tool absent from the base registry",
+        "Grant resolution uses AllowWithinCeiling or receives approval"
+      ],
+      "access_level": "authenticated",
+      "threat_match": "Unauthorized command execution",
+      "rationale": "The ceiling derivation covers only filesystem Policy, while requested tools are appended after approval (bee-harness/src/skills/grant.rs:152-182,195-207). Episode setup uses AllowWithinCeiling and registers those tools before the loop, so a malicious tool-only skill can add bash or write_file outside the operator's tool set.\n\nTwo realistic conditions yield MEDIUM, raised to HIGH for confused-deputy command authority.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "bee-harness/src/episode.rs:743",
+        "bee-harness/src/episode.rs:597"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f007",
+      "source": "VULN-FINDINGS.json#6",
+      "title": "Repository-controlled workdir paths are written on the trusted host before sandboxing",
+      "file": "bee-harness/src/episode.rs",
+      "line": 424,
+      "category": "arbitrary-host-write",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9,
+      "severity": "HIGH",
+      "severity_label": "HIGH",
+      "severity_alignment": 1,
+      "preconditions": [
+        "A trusted relative materialization target crosses a repository-controlled symlink",
+        "The escaped host target is writable by the launcher"
+      ],
+      "access_level": "unauthenticated_remote",
+      "threat_match": "Unauthorized host access",
+      "rationale": "materialize_workdir performs unanchored host writes before sandbox construction (bee-harness/src/episode.rs:518-538,577-619). Although scenario paths are trusted config, an untrusted repository can pre-place a symlink beneath a trusted relative target, so the winning votes found a reachable host-write escape.\n\nTwo conditions yield MEDIUM, raised to HIGH for direct unauthorized host access; only the repository-symlink variant survives the trusted-config boundary.",
+      "vote_breakdown": {
+        "true_positive": 2,
+        "false_positive": 1,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "implausible_trigger"
+      ],
+      "exclusion_rule": 8,
+      "first_links": [
+        "bee-harness/src/episode.rs:577"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (9/9 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f001",
+      "source": "VULN-FINDINGS.json#0",
+      "title": "Removing all child write grants disables the parent's default-deny write boundary",
+      "file": "bee-core/src/attenuation.rs",
+      "line": 62,
+      "category": "capability-widening",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 10.0,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": -3,
+      "preconditions": [
+        "Enforcement mode with a parent write grant",
+        "Attacker-controlled child policy removes all filesystem grants",
+        "Operator launches the derived child",
+        "A same-UID writable host path exists outside the grant"
+      ],
+      "access_level": "local",
+      "threat_match": "Unauthorized host access",
+      "rationale": "check_filesystem iterates only child entries, so an empty child succeeds (bee-core/src/attenuation.rs:63). The live CLI compiles the derived child directly (bee-cli/src/main.rs:169-184). Planning leaves FLAG_FS_WRITE_DEFAULT_DENY unset without a child write rule (bee-userspace/src/plan.rs:48), and unmatched writes are then allowed (bee-ebpf/src/main.rs:331); the parent boundary does not survive.\n\nMultiple local preconditions yield LOW, raised once to MEDIUM for direct unauthorized host access; claimed HIGH is inflated.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "bee-cli/src/main.rs:104",
+        "bee-cli/src/main.rs:169",
+        "bee-core/src/attenuation.rs:54"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f002",
+      "source": "VULN-FINDINGS.json#1",
+      "title": "An empty child executable allowlist turns restricted execution into unrestricted execution",
+      "file": "bee-core/src/attenuation.rs",
+      "line": 159,
+      "category": "capability-widening",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 10.0,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": -3,
+      "preconditions": [
+        "Enforcement mode with a parent exec allowlist",
+        "Attacker controls a child policy with an empty exec list",
+        "Operator launches the derived child",
+        "A disallowed executable is accessible"
+      ],
+      "access_level": "local",
+      "threat_match": "Unauthorized command execution",
+      "rationale": "The production child path passes the child through parent.derive at bee-cli/src/main.rs:169. check_exec iterates only child entries (bee-core/src/attenuation.rs:160-174), so an empty child succeeds; compilation/planning omit EXEC_ALLOW (bee-core/src/compiler.rs:102-113; bee-userspace/src/plan.rs:61-64), and the LSM permits all execution when the map entry is absent (bee-ebpf/src/main.rs:200-204).\n\nLocal delegated-policy control and an accessible binary yield LOW, raised to MEDIUM for direct command execution.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "bee-cli/src/main.rs:169",
+        "bee-cli/src/main.rs:104"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f003",
+      "source": "VULN-FINDINGS.json#2",
+      "title": "An empty child network allowlist disables egress enforcement",
+      "file": "bee-core/src/attenuation.rs",
+      "line": 177,
+      "category": "capability-widening",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 10.0,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": -3,
+      "preconditions": [
+        "Enforcement mode with a parent network allowlist",
+        "Attacker controls an empty child network list",
+        "Operator launches the derived child",
+        "A disallowed destination is reachable"
+      ],
+      "access_level": "local",
+      "threat_match": "Unauthorized network egress",
+      "rationale": "check_network vacuously accepts an empty child list (bee-core/src/attenuation.rs:177; confirmed by bee-core/tests/attenuation.rs:95). Compilation produces no network rules, planning leaves FLAG_NET_ENFORCED unset (bee-userspace/src/plan.rs:45), and socket_connect permits every connection when that flag is absent (bee-ebpf/src/main.rs:99). The production path invokes derive at bee-cli/src/main.rs:169.\n\nLocal scoped execution and delegated-policy control yield LOW, raised to MEDIUM for direct network egress.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "bee-cli/src/main.rs:104",
+        "bee-cli/src/main.rs:169"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f005",
+      "source": "VULN-FINDINGS.json#4",
+      "title": "Path rules can be bypassed by relinking or renaming denied files",
+      "file": "bee-ebpf/src/main.rs",
+      "line": 142,
+      "category": "filesystem-policy-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 10.0,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": -3,
+      "preconditions": [
+        "Enforced pathname policy",
+        "Attacker controls a same-UID scoped process",
+        "Hardlink or rename is permitted",
+        "Target DAC permissions permit access"
+      ],
+      "access_level": "local",
+      "threat_match": "Unauthorized host access or secret exposure",
+      "rationale": "The loader attaches only socket_connect, file_open, and bprm_check_security (bee-userspace/src/loader.rs:14), leaving link and rename operations uncovered. file_open authorizes only the rendered path (bee-ebpf/src/main.rs:169-180), so a permitted hardlink alias is evaluated under its allowed name rather than the protected source path; README.md:72 acknowledges this gap.\n\nFilesystem and permission prerequisites yield LOW, raised to MEDIUM for host access or secret exposure.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "bee-userspace/src/loader.rs:14",
+        "bee-ebpf/src/main.rs:142"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f004",
+      "source": "VULN-FINDINGS.json#3",
+      "title": "UDP sendto bypasses the network allowlist",
+      "file": "bee-ebpf/src/main.rs",
+      "line": 92,
+      "category": "network-policy-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.7,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": -2,
+      "preconditions": [
+        "Enforced scope with a network allowlist",
+        "Attacker controls a scoped process",
+        "Process uses unconnected UDP",
+        "A disallowed UDP destination is reachable"
+      ],
+      "access_level": "local",
+      "threat_match": "Unauthorized network egress",
+      "rationale": "The loader attaches socket_connect but no socket_sendmsg or packet-egress hook (bee-userspace/src/loader.rs:14-23). NET_ALLOW is consulted only in socket_connect (bee-ebpf/src/main.rs:92-129), while the design explicitly defers connectionless sendto filtering (specs/001-ebpf-agent-sandbox/research.md:189), leaving a concrete bypass for an untrusted scoped process.\n\nLocal sandbox execution and reachable UDP yield LOW, raised to MEDIUM for direct egress; HIGH is inflated.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "bee-userspace/src/loader.rs:14",
+        "bee-userspace/src/loader.rs:23",
+        "bee-harness/src/episode.rs:324"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f015",
+      "source": "VULN-FINDINGS.json#14",
+      "title": "Full audit ring silently discards enforcement records without marking transcripts incomplete",
+      "file": "bee-ebpf/src/main.rs",
+      "line": 383,
+      "category": "audit-integrity",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.5,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": 2,
+      "preconditions": [
+        "An attacker-controlled tool floods enough denials to fill the audit ring",
+        "The event to hide occurs after saturation and before drain"
+      ],
+      "access_level": "unauthenticated_remote",
+      "threat_match": null,
+      "rationale": "Denied operations emit audit records into a bounded 256-KiB ring, but reservation failure silently drops the record without a loss marker (bee-ebpf/src/main.rs:88-90,382-415). Synchronous episodes drain after attacker-controlled tool completion (bee-harness/src/episode.rs:323-338), so a denial flood can make transcripts silently incomplete.\n\nTwo realistic conditions derive MEDIUM; silent audit loss does not directly match the stated authority threats.",
+      "vote_breakdown": {
+        "true_positive": 2,
+        "false_positive": 1,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "not_actionable"
+      ],
+      "exclusion_rule": 13,
+      "first_links": [
+        "bee-ebpf/src/main.rs:134",
+        "bee-ebpf/src/main.rs:185"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f023",
+      "source": "VULN-FINDINGS.json#22",
+      "title": "Rhai layout cloning permits exponential in-process memory amplification before validation",
+      "file": "bee-harness/src/render_api.rs",
+      "line": 486,
+      "category": "algorithmic-complexity",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "needs_manual_test",
+      "confidence": 9,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": 2,
+      "preconditions": [
+        "The render tool is enabled",
+        "An untrusted model submits an amplifying Rhai script"
+      ],
+      "access_level": "authenticated",
+      "threat_match": null,
+      "rationale": "Model-controlled Rhai reaches layout add, whose conversion deep-clones existing child trees before storage (bee-harness/src/tools/render.rs:101-111; bee-harness/src/render_api.rs:205-210,483-489). Repeated reuse doubles native Rust-owned structures, while structural validation occurs only at final render after allocation (bee-harness/src/render_api.rs:596-603).\n\nTwo preconditions derive MEDIUM, but a human PoC is needed to confirm material amplification under Rhai operation and copy semantics.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "bee-harness/src/tools/render.rs:111",
+        "bee-harness/src/tools/render.rs:72"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (3/3 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f021",
+      "source": "VULN-FINDINGS.json#20",
+      "title": "Lazy skill-body reads can be redirected to arbitrary host files after discovery",
+      "file": "bee-harness/src/skills.rs",
+      "line": 109,
+      "category": "symlink-toctou-host-read",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": -2,
+      "preconditions": [
+        "A repository-controlled skill is discovered by mutable path",
+        "The attacker can replace that path after discovery",
+        "The skill is later invoked",
+        "A sensitive target is readable and observable"
+      ],
+      "access_level": "authenticated",
+      "threat_match": "Unauthorized host access and secret exposure",
+      "rationale": "Discovery follows links and stores a mutable SKILL.md pathname, while model invocation later reopens it with host authority (bee-harness/src/skills.rs:109-114,184-190,269-274; bee-harness/src/tools/skill.rs:109-111). A writable project entry can be replaced by a symlink before invocation to disclose an arbitrary host-readable file.\n\nFour preconditions yield LOW, raised to MEDIUM for host read and secret exposure; claimed HIGH is inflated.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "bee-harness/src/tools/skill.rs:109"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f006",
+      "source": "VULN-FINDINGS.json#5",
+      "title": "Unresolvable long paths fail open for file and executable policy",
+      "file": "bee-ebpf/src/main.rs",
+      "line": 172,
+      "category": "fail-open-enforcement",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.0,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": -3,
+      "preconditions": [
+        "Active filesystem or exec enforcement",
+        "Attacker controls a scoped process",
+        "A rendered path can exceed 4096 bytes",
+        "Target DAC permissions permit the operation",
+        "bpf_d_path fails on that path"
+      ],
+      "access_level": "local",
+      "threat_match": "Unauthorized host access or command execution",
+      "rationale": "Both file_open and bprm_check_security use a fixed 4096-byte buffer and return allow when bpf_d_path fails (bee-common/src/lib.rs:20-21; bee-ebpf/src/main.rs:169-174,222-225). No depth restriction or fallback identity check closes the path for model-controlled scoped children reached through bee-harness/src/tools/bash.rs:43-48.\n\nSeveral local path and filesystem prerequisites yield LOW, raised to MEDIUM for the matched host-access/exec threat.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "bee-harness/src/tools/bash.rs:48",
+        "bee-ebpf/src/main.rs:172",
+        "bee-ebpf/src/main.rs:171"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f027",
+      "source": "VULN-FINDINGS.json#26",
+      "title": "Executable authorization is bound only to a mutable path",
+      "file": "bee-core/src/compiler.rs",
+      "line": 108,
+      "category": "exec-identity-toctou",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 8.7,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": 2,
+      "preconditions": [
+        "An ordinary path-only exec rule is used",
+        "The attacker can replace the allowlisted executable or parent entry",
+        "Replacement occurs after compilation before invocation"
+      ],
+      "access_level": "authenticated",
+      "threat_match": "Unauthorized command execution",
+      "rationale": "Ordinary exec entries resolve once but store only mutable path bytes, and the backend rejects inode pinning (bee-core/src/compiler.rs:102-112; bee-userspace/src/plan.rs:186-215). The LSM permits whatever file currently occupies the matching pathname, so a writable allowlisted executable can be replaced persistently with attacker-controlled content.\n\nThree preconditions yield LOW, raised to MEDIUM for unauthorized command execution.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "bee-harness/src/episode.rs:770"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f024",
+      "source": "VULN-FINDINGS.json#23",
+      "title": "Scope teardown leaves BPF rules keyed by reusable cgroup inode IDs",
+      "file": "bee-userspace/src/lib.rs",
+      "line": 223,
+      "category": "cgroup-policy-confusion",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "needs_manual_test",
+      "confidence": 8,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": 2,
+      "preconditions": [
+        "The enforcing BPF backend is active",
+        "An earlier scope installs rules and tears down",
+        "The kernel reuses its cgroup ID",
+        "The new scope does not overwrite every stale key"
+      ],
+      "access_level": "authenticated",
+      "threat_match": "Unauthorized network egress",
+      "rationale": "Scope teardown removes only the cgroup directory and does not delete SCOPES, FS, EXEC, or NET map entries (bee-userspace/src/lib.rs:118-169,327-330). Concurrent teardown occurs while the shared Engine remains alive, so cgroup-ID reuse can misapply stale policy without a generation check.\n\nFour preconditions yield LOW, raised to MEDIUM for unauthorized egress; runtime testing is needed to demonstrate practical ID reuse.",
+      "vote_breakdown": {
+        "true_positive": 2,
+        "false_positive": 1,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "implausible_trigger"
+      ],
+      "exclusion_rule": 16,
+      "first_links": [
+        "bee-harness/src/sandbox.rs:244",
+        "bee-harness/src/concurrent.rs:214"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f017",
+      "source": "VULN-FINDINGS.json#16",
+      "title": "Drain-window correlation attributes unrelated or late audit events to the current tool call",
+      "file": "bee-harness/src/episode.rs",
+      "line": 295,
+      "category": "audit-misattribution",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 8.5,
+      "severity": "LOW",
+      "severity_label": "LOW",
+      "severity_alignment": -2,
+      "preconditions": [
+        "An earlier tool leaves a background descendant",
+        "It emits after the earlier drain and before a later drain",
+        "A later call consumes the undifferentiated event"
+      ],
+      "access_level": "unauthenticated_remote",
+      "threat_match": null,
+      "rationale": "After each call, run_loop drains all cgroup events and assigns them to the current ToolCall without a pre-call watermark or call identifier (bee-harness/src/episode.rs:323-338,444-448; bee-harness/src/sandbox.rs:210-235). A background child can therefore cause delayed events to be attributed to a later call and influence reactive escalation.\n\nThree sequencing conditions force LOW and attribution corruption alone does not directly match the stated authority threats.",
+      "vote_breakdown": {
+        "true_positive": 2,
+        "false_positive": 1,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "not_actionable"
+      ],
+      "exclusion_rule": 12,
+      "first_links": [
+        "bee-harness/src/episode.rs:337"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (9/9 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f009",
+      "source": "VULN-FINDINGS.json#8",
+      "title": "Skill directories are made readable after the ceiling proof",
+      "file": "bee-harness/src/episode.rs",
+      "line": 614,
+      "category": "attenuation-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 9,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "Skill directories are deliberately authorized as readable from trusted operator-declared skill roots (bee-harness/src/episode.rs:745-754; bee-harness/src/scenario.rs:70-79). The most-specific rule behavior is intentional, and malicious skill frontmatter cannot select a different directory.",
+      "vote_breakdown": {
+        "true_positive": 1,
+        "false_positive": 2,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "intentional_behavior"
+      ],
+      "exclusion_rule": 3,
+      "first_links": [
+        "bee-harness/src/episode.rs:597",
+        "bee-harness/src/batch.rs:145"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f010",
+      "source": "VULN-FINDINGS.json#9",
+      "title": "MCP Bearer tokens are sent over unrestricted plaintext HTTP endpoints",
+      "file": "bee-harness/src/mcp/bridge.rs",
+      "line": 338,
+      "category": "cleartext-credential-exposure",
+      "claimed_severity": "HIGH",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 8.7,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "The bridge can attach a token to HTTP (bee-harness/src/mcp/bridge.rs:326-345), but URL and token_env come only from trusted MCP configuration. No malicious model or MCP response can select the configured transport endpoint, so rule 8 applies.",
+      "vote_breakdown": {
+        "true_positive": 0,
+        "false_positive": 3,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "implausible_trigger"
+      ],
+      "exclusion_rule": 8,
+      "first_links": [
+        "bee-harness/src/mcp/bridge.rs:156",
+        "bee-harness/src/episode.rs:670"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f011",
+      "source": "VULN-FINDINGS.json#10",
+      "title": "Custom URL parsing disagrees with the HTTP client on backslash authority boundaries",
+      "file": "bee-harness/src/mcp/policy.rs",
+      "line": 78,
+      "category": "ssrf-allowlist-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 9,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "The parser mismatch is plausible in isolation (bee-harness/src/mcp/policy.rs:78-90), but the URL comes only from the trusted configured server list (bee-harness/src/mcp/bridge.rs:147-159). No untrusted runtime source can supply the crafted URL.",
+      "vote_breakdown": {
+        "true_positive": 0,
+        "false_positive": 3,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "implausible_trigger"
+      ],
+      "exclusion_rule": 8,
+      "first_links": [
+        "bee-harness/src/mcp/bridge.rs:332"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f013",
+      "source": "VULN-FINDINGS.json#12",
+      "title": "Executable entries are encoded as subtree prefixes instead of exact paths",
+      "file": "bee-userspace/src/plan.rs",
+      "line": 210,
+      "category": "exec-allowlist-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 8.5,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "Exec subtree encoding is deliberate (bee-userspace/src/plan.rs:186-215) and the design specifies exact-plus-subtree semantics for executable directories (specs/001-ebpf-agent-sandbox/research.md:160-172). For a normal resolved executable, descendants cannot coexist while it remains a regular file; the majority treated this as intended behavior.",
+      "vote_breakdown": {
+        "true_positive": 1,
+        "false_positive": 2,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "intentional_behavior"
+      ],
+      "exclusion_rule": 3,
+      "first_links": [
+        "bee-userspace/src/plan.rs:37"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f016",
+      "source": "VULN-FINDINGS.json#15",
+      "title": "Scenario identifiers escape the batch transcript output directory",
+      "file": "bee-harness/src/bin/bee-episode.rs",
+      "line": 334,
+      "category": "path-traversal",
+      "claimed_severity": "MEDIUM",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 10,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "Filename construction is traversal-prone (bee-harness/src/bin/bee-episode.rs:333-336), but scenario_id comes solely from an operator-selected scenario file. Under the trusted-operator-config boundary, no declared untrusted source controls it, so rule 8 applies.",
+      "vote_breakdown": {
+        "true_positive": 1,
+        "false_positive": 2,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "implausible_trigger"
+      ],
+      "exclusion_rule": 8,
+      "first_links": [
+        "bee-harness/src/bin/bee-episode.rs:310"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f018",
+      "source": "VULN-FINDINGS.json#17",
+      "title": "Privileged-executable refusal races pathname replacement before exec",
+      "file": "bee-userspace/src/spawn.rs",
+      "line": 75,
+      "category": "toctou",
+      "claimed_severity": "MEDIUM",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 8,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "There is a pathname check/use gap (bee-userspace/src/spawn.rs:40-80), but model-controlled bash always launches fixed sh and other executable paths are trusted configuration. No realistic untrusted pathname replacement was established under this boundary; the majority applied theoretical-TOCTOU rule 16.",
+      "vote_breakdown": {
+        "true_positive": 1,
+        "false_positive": 2,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "implausible_trigger"
+      ],
+      "exclusion_rule": 16,
+      "first_links": [
+        "bee-harness/src/sandbox.rs:168",
+        "bee-harness/src/sandbox.rs:178"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f019",
+      "source": "VULN-FINDINGS.json#18",
+      "title": "Provider configuration can select any host environment secret and send it to an arbitrary endpoint",
+      "file": "bee-harness/src/config.rs",
+      "line": 79,
+      "category": "secret-exfiltration",
+      "claimed_severity": "HIGH",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 9.7,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "The provider file is explicitly selected by the trusted operator, and its purpose is to pair a named environment key with the configured endpoint (bee-harness/src/bin/bee-episode.rs:188-211; bee-harness/src/provider/rig_model.rs:172-183). Exploitation requires malicious trusted provider configuration, excluded by rule 8.",
+      "vote_breakdown": {
+        "true_positive": 0,
+        "false_positive": 3,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "implausible_trigger",
+        "intentional_behavior"
+      ],
+      "exclusion_rule": 8,
+      "first_links": [
+        "bee-harness/src/bin/bee-episode.rs:195"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f025",
+      "source": "VULN-FINDINGS.json#24",
+      "title": "Every concurrent episode's audit records carry the same false scope identifier",
+      "file": "bee-harness/src/concurrent.rs",
+      "line": 114,
+      "category": "audit-misattribution",
+      "claimed_severity": "LOW",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 9.7,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "Events do share the bee-concurrent label, but authoritative isolation and routing use kernel cgroup_id and each sandbox rechecks it (bee-userspace/src/audit_demux.rs:110-118; bee-harness/src/sandbox.rs:224-235). The transcript carries scenario identity separately, leaving only low-impact metadata inaccuracy.",
+      "vote_breakdown": {
+        "true_positive": 0,
+        "false_positive": 3,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "not_actionable"
+      ],
+      "exclusion_rule": 12,
+      "first_links": [
+        "bee-harness/src/concurrent.rs:114"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f026",
+      "source": "VULN-FINDINGS.json#25",
+      "title": "Default non-enforcement builds execute model-requested tools directly on the host",
+      "file": "bee-harness/src/episode.rs",
+      "line": 523,
+      "category": "sandbox-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 9.3,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "The non-enforce branch deliberately constructs Sandbox::Host and repository documentation explicitly describes it as host/testing mode (bee-harness/src/episode.rs:613-620; bee-harness/README.md:12-20). Selecting that build is an operator deployment choice, not a bypass of the enforce backend.",
+      "vote_breakdown": {
+        "true_positive": 0,
+        "false_positive": 3,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "intentional_behavior"
+      ],
+      "exclusion_rule": 3,
+      "first_links": [
+        "bee-harness/src/bin/bee-episode.rs:226",
+        "bee-harness/src/episode.rs:577"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    }
+  ]
+}

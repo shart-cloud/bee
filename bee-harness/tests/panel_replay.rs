@@ -123,6 +123,7 @@ fn replay_applies_remove_and_clear_not_just_upserts() {
         id: id.into(),
         spec: text(v),
         ttl_ms: None,
+        effect: None,
     };
     let t = transcript(vec![
         turn(
@@ -173,6 +174,7 @@ fn ttl_panels_replay_with_their_last_content() {
                 id: "flash".into(),
                 spec: text("brief"),
                 ttl_ms: Some(50),
+                effect: None,
             }],
         )],
     )]);

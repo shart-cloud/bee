@@ -1,0 +1,18 @@
+{
+  "id": "f016",
+  "verdict": "false_positive",
+  "vote_breakdown": {
+    "true_positive": 1,
+    "false_positive": 2,
+    "cannot_verify": 0
+  },
+  "confidence": 10,
+  "exclusion_rule": 8,
+  "refute_reasons": [
+    "implausible_trigger"
+  ],
+  "first_links": [
+    "bee-harness/src/bin/bee-episode.rs:310"
+  ],
+  "rationale": "Filename construction is traversal-prone (bee-harness/src/bin/bee-episode.rs:333-336), but scenario_id comes solely from an operator-selected scenario file. Under the trusted-operator-config boundary, no declared untrusted source controls it, so rule 8 applies."
+}

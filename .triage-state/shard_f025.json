@@ -1,0 +1,18 @@
+{
+  "id": "f025",
+  "verdict": "false_positive",
+  "vote_breakdown": {
+    "true_positive": 0,
+    "false_positive": 3,
+    "cannot_verify": 0
+  },
+  "confidence": 9.7,
+  "exclusion_rule": 12,
+  "refute_reasons": [
+    "not_actionable"
+  ],
+  "first_links": [
+    "bee-harness/src/concurrent.rs:114"
+  ],
+  "rationale": "Events do share the bee-concurrent label, but authoritative isolation and routing use kernel cgroup_id and each sandbox rechecks it (bee-userspace/src/audit_demux.rs:110-118; bee-harness/src/sandbox.rs:224-235). The transcript carries scenario identity separately, leaving only low-impact metadata inaccuracy."
+}

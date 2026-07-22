@@ -14,12 +14,18 @@ use ratatui::Frame;
 
 use super::app::{App, Focus, LayoutMode, TurnState};
 use super::chat::{Body, Role};
+use super::effects::{self, Chrome};
+use super::panels::{self, PanelArea};
 use super::theme_bridge::{dim_style, role_style, role_style_bold};
 use crate::render_spec::RenderSpec;
 use crate::viz::theme::Role as ThemeRole;
 
 /// Draw the whole UI for the current model state.
-pub fn view(app: &App, frame: &mut Frame<'_>) {
+///
+/// Takes `&mut App` because the frame is where the effects pipeline lives (009 FR-001): panel
+/// transitions can only be registered once the layout has assigned each panel a `Rect`, and the
+/// effects pass mutates the buffer after every widget has drawn into it.
+pub fn view(app: &mut App, frame: &mut Frame<'_>) {
     let area = frame.area();
 
     if app.layout_mode == LayoutMode::TooSmall {
@@ -40,18 +46,33 @@ pub fn view(app: &App, frame: &mut Frame<'_>) {
     // In TwoPane with live panels, split a right-hand panel column off the chat area (FR-012); with
     // no panels (US1) chat keeps the full width, so the US1 layout is untouched.
     if app.layout_mode == LayoutMode::TwoPane && !app.panels.is_empty() {
-        let panel_w = (chat.width / 3)
-            .clamp(30, 50)
-            .min(chat.width.saturating_sub(20));
+        let panel_w = panel_column_width(chat.width, app.visual.level);
         let [chat_area, panel_area] =
             Layout::horizontal([Constraint::Min(20), Constraint::Length(panel_w)]).areas(chat);
         render_chat(app, frame, chat_area);
         render_panels(app, frame, panel_area);
+        // The column's first appearance is a *layout* change — the chat pane giving up width — so it
+        // gets its own arrival, distinct from the entrance of the panel inside it (FR-026).
+        if !app.column_shown {
+            app.column_shown = true;
+            effects::column_appear(&mut app.effects, panel_area, app.visual);
+        }
     } else {
         render_chat(app, frame, chat);
+        // Once the column is gone the next one arrives fresh, rather than sliding in silently.
+        app.column_shown = false;
+    }
+    // The takeover covers the chat area and nothing else — the header stays readable and the input
+    // line stays live, so the operator can keep typing and submitting throughout (FR-014).
+    if app.overlay.is_some() {
+        render_takeover(app, frame, chat);
     }
     render_input(app, frame, input);
     render_footer(app, frame, footer);
+
+    // Chrome cues, now that the layout has assigned every region (US5, FR-026). Drained here rather
+    // than queued forever: a cue describes a moment, and a moment that has passed is not owed.
+    play_chrome(app, header, chat, footer);
 
     // Single-pane layouts have no panel column, so `p` overlays the panels above chat (US3 T036).
     if app.overlay_open() {
@@ -60,11 +81,73 @@ pub fn view(app: &App, frame: &mut Frame<'_>) {
     if app.help_open {
         render_help(frame, area);
     }
+
+    // Effects transform cells that are already drawn (FR-001), so this is the last thing the frame
+    // does: every widget above has painted, and ratatui flushes as soon as we return.
+    app.effects.process(app.dt, frame.buffer_mut(), area);
+}
+
+/// Play the chrome cues the model queued, against the regions this frame laid out (US5, FR-026).
+///
+/// Every one registers unkeyed with `Origin::Chrome`, so the agent can neither trigger nor cancel
+/// bee's own UI — but the motion switch silences all of it, because that axis belongs to the
+/// operator (FR-006b/FR-006d).
+fn play_chrome(app: &mut App, header: Rect, chat: Rect, footer: Rect) {
+    if app.chrome_cues.is_empty() {
+        return;
+    }
+    let visual = app.visual;
+    for cue in std::mem::take(&mut app.chrome_cues) {
+        let area = match cue {
+            Chrome::Header => header,
+            Chrome::Footer => footer,
+            // The verdict and the tool-result flash belong to the conversation, so they play over
+            // the chat area — which is where the line the operator is looking for just appeared.
+            Chrome::ToolResult | Chrome::EpisodePass | Chrome::EpisodeFail | Chrome::Mascot => chat,
+        };
+        effects::chrome(&mut app.effects, cue, area, visual);
+    }
+}
+
+/// The full-screen takeover (009 US3, T038/T039): the agent's widget over the chat area, with the
+/// operator's way out pinned to the bottom row.
+///
+/// The hint is laid out **first** and the content gets what's left, so the escape hatch can never be
+/// the thing that gets clipped (FR-015). An overlay the operator cannot see how to leave is exactly
+/// the failure this feature has to not have.
+///
+/// A dismissing overlay draws no content: the chat below has already rendered, and the fade-out
+/// effect paints the departing overlay back over it, eroding as it goes.
+fn render_takeover(app: &mut App, frame: &mut Frame<'_>, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let now = std::time::Instant::now();
+    let Some(overlay) = &mut app.overlay else {
+        return;
+    };
+
+    if overlay.draws_content() {
+        frame.render_widget(Clear, area);
+        // Hint row first: `Min(0)` lets the content shrink to nothing before the hint gives up a
+        // single row.
+        let [body, hint_row] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+        if body.width > 0 && body.height > 0 {
+            crate::viz::buffer_render::render_into(&overlay.spec, body, frame.buffer_mut());
+        }
+        frame.render_widget(
+            Paragraph::new(Line::styled(overlay.hint(now), dim_style())),
+            hint_row,
+        );
+        overlay.snapshot(area, frame.buffer_mut());
+    }
+    overlay.register(&mut app.effects, area, &app.visual);
 }
 
 /// The single-pane panel overlay (US3 T036): panels stacked in a bordered popup over the chat, so a
 /// narrow terminal can still see model-owned output. Toggled with `p`, closed with `p`/`Esc`.
-fn render_panel_overlay(app: &App, frame: &mut Frame<'_>, area: Rect) {
+fn render_panel_overlay(app: &mut App, frame: &mut Frame<'_>, area: Rect) {
     let w = area.width.saturating_sub(4).clamp(20, 72);
     let h = area.height.saturating_sub(4).max(5);
     let popup = center(area, w, h);
@@ -290,6 +373,21 @@ fn chat_items(app: &App, width: u16) -> Vec<Item<'_>> {
 /// Smallest useful panel: top border + one content row + bottom border.
 const MIN_PANEL_ROWS: u16 = 3;
 
+/// How wide the panel column may be: 008's own sizing, narrowed by the visual level's cap (FR-011).
+///
+/// `min(level_cap, 008_cap)` per contracts/visual-levels.md — the level narrows the budget, it never
+/// widens it. 008's own "this widget needs at least N columns" script error still fires afterward on
+/// whatever budget survives; the cap changes how much room there is, not whether the check runs.
+///
+/// Note that 008's 50-column ceiling binds before either level cap on any terminal wide enough for a
+/// two-pane layout (≥120 cols ⇒ ⌊w/3⌋ ≥ 40, and the base is clamped to 50), so `panels-wide` widens
+/// nothing there today. It is not dead: it still separates the tiers on narrower surfaces, and it is
+/// the tier that admits `Overlay` requests one step below takeover.
+pub(crate) fn panel_column_width(cols: u16, level: crate::config::VisualLevel) -> u16 {
+    let base = (cols / 3).clamp(30, 50).min(cols.saturating_sub(20));
+    base.min(crate::visual_gate::panel_width_cap(level, cols))
+}
+
 /// The drawable regions this layout offers, published for the render tool's fit checks
 /// (008-grid-tui). Derived with the *same* constants `view` lays out with, so the tool can never
 /// accept a widget this renderer would then have to mangle.
@@ -300,12 +398,11 @@ pub fn viewport_for(app: &App) -> crate::viz::viewport::Viewport {
     let two_pane = app.layout_mode == LayoutMode::TwoPane && !app.panels.is_empty();
 
     let (inline_cols, panel_w) = if two_pane {
-        let pw = (cols / 3).clamp(30, 50).min(cols.saturating_sub(20));
+        let pw = panel_column_width(cols, app.visual.level);
         (cols.saturating_sub(pw), pw)
     } else if app.layout_mode == LayoutMode::TwoPane {
         // No panels yet, but a column *would* be carved out as soon as one appears.
-        let pw = (cols / 3).clamp(30, 50).min(cols.saturating_sub(20));
-        (cols, pw)
+        (cols, panel_column_width(cols, app.visual.level))
     } else {
         (cols, 0)
     };
@@ -328,8 +425,16 @@ pub fn viewport_for(app: &App) -> crate::viz::viewport::Viewport {
     }
 }
 
-fn render_panels(app: &App, frame: &mut Frame<'_>, area: Rect) {
-    if app.panels.is_empty() || area.height == 0 {
+/// Draw the panel column, then let each panel claim the transition it owes (009 T018/T019).
+///
+/// Registration happens here rather than at upsert time because a transition needs the panel's
+/// `Rect`, which only exists after this function has laid the column out. The outgoing snapshot for
+/// the *next* update is taken from this frame's buffer on the way out.
+fn render_panels(app: &mut App, frame: &mut Frame<'_>, area: Rect) {
+    // A zero-width column is what `visual_level = none` produces (its cap is 0). Panels should never
+    // reach the TUI at that level — the gate routes them inline — but drawing into no space is a
+    // no-op either way, so this stays a guard rather than an assertion.
+    if app.panels.is_empty() || area.height == 0 || area.width == 0 {
         return;
     }
     // Size each panel to its *content* (border + natural widget height) rather than splitting the
@@ -339,6 +444,9 @@ fn render_panels(app: &App, frame: &mut Frame<'_>, area: Rect) {
     let inner_w = area.width.saturating_sub(2).max(1);
     let mut y = area.y;
     let mut shown = 0usize;
+    // Where each panel landed, so the transition pass below can register against the real Rect
+    // without re-deriving the greedy layout.
+    let mut placed: Vec<(String, PanelArea)> = Vec::new();
 
     for (id, spec) in app.panels.iter() {
         let remaining = area.bottom().saturating_sub(y);
@@ -364,8 +472,20 @@ fn render_panels(app: &App, frame: &mut Frame<'_>, area: Rect) {
         if inner.width > 0 && inner.height > 0 {
             crate::viz::buffer_render::render_into(spec, inner, frame.buffer_mut());
         }
+        placed.push((id.to_string(), PanelArea { outer: rect, inner }));
         y += h;
         shown += 1;
+    }
+
+    // Now that every panel has a Rect: register whatever transition it owes, then snapshot the
+    // content it just drew as the outgoing half of its *next* update (FR-003, FR-004).
+    let visual = app.visual;
+    for (id, at) in placed {
+        let Some(panel) = app.panels.get_mut(&id) else {
+            continue;
+        };
+        panels::register_transition(panel, &mut app.effects, at, visual);
+        panels::snapshot_render(panel, at.inner, frame.buffer_mut());
     }
 
     // Tell the truth about anything that didn't fit, and point at the way to reclaim space.
@@ -462,9 +582,30 @@ mod tests {
 
     // Render the view onto a fixed-size headless backend and return its symbols as text. Symbols are
     // color-independent, so these snapshots are deterministic without touching NO_COLOR (research D12).
-    fn render(app: &App, w: u16, h: u16) -> String {
+    fn render(app: &mut App, w: u16, h: u16) -> String {
         let mut term = Terminal::new(TestBackend::new(w, h)).expect("test backend");
         term.draw(|f| view(app, f)).expect("draw");
+        symbols(term.backend().buffer())
+    }
+
+    /// Render, then keep rendering until every transition has finished — the frame an operator
+    /// actually reads. Content assertions use this: mid-animation a `stretch` or an `evolve` is
+    /// *supposed* to be holding glyphs back, so asserting on frame 1 would be asserting on the
+    /// moment before the UI has said anything.
+    fn render_settled(app: &mut App, w: u16, h: u16) -> String {
+        let mut term = Terminal::new(TestBackend::new(w, h)).expect("test backend");
+        term.draw(|f| view(app, f)).expect("draw");
+        for _ in 0..120 {
+            if !app.effects.is_running() {
+                break;
+            }
+            app.dt = std::time::Duration::from_millis(16);
+            term.draw(|f| view(app, f)).expect("draw");
+        }
+        assert!(
+            !app.effects.is_running(),
+            "the UI never settled — an effect is running longer than two seconds"
+        );
         symbols(term.backend().buffer())
     }
 
@@ -485,7 +626,7 @@ mod tests {
         app.chat.push(ChatMessage::text(Role::User, "hello bee"));
         app.chat
             .push(ChatMessage::text(Role::Assistant, "hi there"));
-        let out = render(&app, 80, 20);
+        let out = render(&mut app, 80, 20);
         assert!(out.contains("bee"), "header missing:\n{out}");
         assert!(out.contains("you  hello bee"), "user line missing:\n{out}");
         assert!(out.contains("hi there"), "assistant line missing:\n{out}");
@@ -495,8 +636,8 @@ mod tests {
 
     #[test]
     fn too_small_terminal_shows_a_message_not_a_broken_layout() {
-        let app = App::new(30, 8); // below the 40×10 floor
-        let out = render(&app, 30, 8);
+        let mut app = App::new(30, 8); // below the 40×10 floor
+        let out = render(&mut app, 30, 8);
         assert!(out.contains("terminal too small"), "got:\n{out}");
     }
 
@@ -504,7 +645,7 @@ mod tests {
     fn help_overlay_lists_keybindings() {
         let mut app = App::new(80, 20);
         app.help_open = true;
-        let out = render(&app, 80, 20);
+        let out = render(&mut app, 80, 20);
         assert!(out.contains("keybindings"), "help title missing:\n{out}");
         assert!(out.contains("quit"), "help body missing:\n{out}");
     }
@@ -527,7 +668,7 @@ mod tests {
                 }],
             },
         );
-        let out = render(&app, 120, 24);
+        let out = render_settled(&mut app, 120, 24);
         assert!(out.contains("metrics"), "panel title missing:\n{out}");
         assert!(out.contains("Latency"), "panel content missing:\n{out}");
         assert!(
@@ -545,7 +686,7 @@ mod tests {
         app.chat.push(ChatMessage::widget(RenderSpec::Sprite {
             spec: crate::viz::bee::sprite(),
         }));
-        let out = render(&app, 80, 24);
+        let out = render(&mut app, 80, 24);
         assert!(
             !out.contains("[sprite"),
             "sprite must rasterize, not print its ASCII placeholder:\n{out}"
@@ -582,7 +723,7 @@ mod tests {
         }));
         app.chat
             .push(ChatMessage::text(Role::Assistant, "THE NEWEST LINE"));
-        let out = render(&app, 80, 20);
+        let out = render(&mut app, 80, 20);
         assert!(
             out.contains("THE NEWEST LINE"),
             "newest message must be visible at the bottom:\n{out}"
@@ -607,7 +748,7 @@ mod tests {
                 },
             );
         }
-        let out = render(&app, 120, 24);
+        let out = render_settled(&mut app, 120, 24);
         assert!(out.contains("more"), "overflow note missing:\n{out}");
         assert!(
             out.contains("remove_panel") || out.contains("clear_panels"),
@@ -634,14 +775,14 @@ mod tests {
         );
         assert_eq!(app.layout_mode, LayoutMode::SinglePane);
 
-        let closed = render(&app, 80, 24);
+        let closed = render(&mut app, 80, 24);
         assert!(
             !closed.contains("CPU 82%"),
             "panel hidden while the overlay is closed:\n{closed}"
         );
 
         app.panels_visible = true;
-        let open = render(&app, 80, 24);
+        let open = render(&mut app, 80, 24);
         assert!(
             open.contains("CPU 82%"),
             "overlay reveals the panel:\n{open}"
@@ -681,7 +822,7 @@ mod tests {
                 dim: false,
             },
         );
-        let out = render(&app, 120, 24);
+        let out = render_settled(&mut app, 120, 24);
         for expected in [
             "bee",
             "you  hello bee",
@@ -697,15 +838,15 @@ mod tests {
     #[test]
     fn the_footer_advertises_yank_always_and_p_only_when_the_overlay_is_the_way_in() {
         // Wide + no panels: no reason to mention `p`.
-        let wide = App::new(120, 24);
-        let out = render(&wide, 120, 24);
+        let mut wide = App::new(120, 24);
+        let out = render(&mut wide, 120, 24);
         assert!(out.contains("y yank"), "yank hint missing:\n{out}");
         assert!(!out.contains("p panels"), "no overlay to advertise:\n{out}");
 
         // Narrow + panels: the overlay is the only way to see them, so `p` is advertised.
         let mut narrow = App::new(80, 24);
         narrow.panels.upsert("m", RenderSpec::Separator);
-        let out = render(&narrow, 80, 24);
+        let out = render(&mut narrow, 80, 24);
         assert!(out.contains("p panels"), "overlay hint missing:\n{out}");
     }
 
@@ -714,7 +855,7 @@ mod tests {
         // It sheds low-priority hints rather than getting cut off; quit must always survive.
         let mut app = App::new(50, 20);
         app.panels.upsert("m", RenderSpec::Separator);
-        let out = render(&app, 50, 20);
+        let out = render(&mut app, 50, 20);
         let footer = out.lines().last().unwrap_or_default();
         assert!(
             footer.contains("q quit"),
@@ -735,7 +876,7 @@ mod tests {
             a.chat.push(ChatMessage::text(Role::Assistant, "hi"));
             a
         };
-        let empty = render(&base(), 120, 24);
+        let empty = render_settled(&mut base(), 120, 24);
         assert!(
             !empty.contains("metrics"),
             "no panel title when empty:\n{empty}"
@@ -743,11 +884,268 @@ mod tests {
 
         let mut with = base();
         with.panels.upsert("metrics", RenderSpec::Separator);
-        let populated = render(&with, 120, 24);
+        let populated = render_settled(&mut with, 120, 24);
         assert!(
             populated.contains("metrics"),
             "panel appears once populated:\n{populated}"
         );
         assert_ne!(empty, populated, "the panel column changes the layout");
+    }
+
+    // --- 009 US1 (T018/T020): the render path is what puts effects on screen ---------------------
+
+    #[test]
+    fn drawing_a_new_panel_registers_its_entrance_and_snapshots_what_it_drew() {
+        // The whole US1 loop through the real renderer: layout assigns the panel a Rect, the
+        // transition is registered against it, and the drawn content is kept as the outgoing half of
+        // the next update.
+        let mut app = App::new(120, 24);
+        app.panels.upsert("metrics", RenderSpec::Separator);
+        assert!(!app.effects.is_running(), "nothing animates before a frame");
+
+        render(&mut app, 120, 24);
+        assert!(app.effects.is_running(), "the panel entered");
+        let panel = app.panels.get_mut("metrics").expect("panel");
+        assert!(panel.pending.is_none(), "the transition was consumed");
+        assert!(
+            panel.fx.prev.is_some(),
+            "the drawn content is the next update's outgoing half"
+        );
+    }
+
+    // --- 009 US2 (T030/T034/T035): the level bounds what the agent gets ------------------------
+
+    fn with_level(level: crate::config::VisualLevel) -> crate::config::VisualConfig {
+        crate::config::VisualConfig {
+            level,
+            ..crate::config::VisualConfig::default()
+        }
+    }
+
+    #[test]
+    fn the_panel_column_never_exceeds_the_levels_share_of_the_screen() {
+        // SC-005, measured on the real Rect the layout hands the column. `panels` is a third,
+        // `panels-wide` a half — and 008's own sizing still narrows it further where it is stricter.
+        for cols in [120u16, 160, 200] {
+            let third = cols / 3;
+            let half = cols / 2;
+            assert!(
+                panel_column_width(cols, crate::config::VisualLevel::Panels) <= third,
+                "panels exceeded a third at {cols} cols"
+            );
+            assert!(
+                panel_column_width(cols, crate::config::VisualLevel::PanelsWide) <= half,
+                "panels-wide exceeded a half at {cols} cols"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wider_level_is_never_narrower_than_a_stricter_one() {
+        // The tiers are a ceiling, so they must be monotonic. On a two-pane terminal 008's own
+        // 50-column ceiling binds before either level cap, which is why these are `<=` and why
+        // `panels-wide` widens nothing at these sizes — it separates the tiers on narrower
+        // surfaces, and it is the tier one step below takeover.
+        for cols in [120u16, 160, 200] {
+            let strict = panel_column_width(cols, crate::config::VisualLevel::Panels);
+            let wide = panel_column_width(cols, crate::config::VisualLevel::PanelsWide);
+            assert!(strict <= wide, "tiers inverted at {cols} cols");
+        }
+        assert_eq!(
+            panel_column_width(80, crate::config::VisualLevel::Panels),
+            26,
+            "below 008's clamp the level cap is what binds"
+        );
+        assert_eq!(
+            panel_column_width(80, crate::config::VisualLevel::PanelsWide),
+            30
+        );
+    }
+
+    #[test]
+    fn level_none_leaves_no_column_for_the_agent_at_all() {
+        // FR-010: the gate routes panels inline before they ever reach the TUI, and even if one
+        // arrived anyway there is no width for it to occupy.
+        assert_eq!(panel_column_width(120, crate::config::VisualLevel::None), 0);
+        let mut app = App::new(120, 24).with_visual(with_level(crate::config::VisualLevel::None));
+        app.panels.upsert("metrics", RenderSpec::Separator);
+        let out = render(&mut app, 120, 24);
+        assert!(
+            !out.contains("metrics"),
+            "no panel column at level none:\n{out}"
+        );
+        assert_eq!(
+            viewport_for(&app).panel_cols,
+            0,
+            "and the render tool is told so"
+        );
+    }
+
+    #[test]
+    fn level_none_strips_agent_effects_while_chrome_keeps_moving() {
+        // FR-006d / FR-024 / T031: the level governs the agent. Motion is a separate axis, so
+        // bee's own chrome is untouched by it.
+        let visual = with_level(crate::config::VisualLevel::None);
+        let area = Rect::new(0, 0, 20, 5);
+        let spec = crate::tui::effects::panel_enter_spec();
+        assert!(
+            crate::tui::effects::resolve(
+                &spec,
+                &crate::tui::effects::ResolveCtx::agent(visual, area)
+            )
+            .is_none(),
+            "an agent effect is stripped entirely"
+        );
+        assert!(
+            crate::tui::effects::resolve(
+                &spec,
+                &crate::tui::effects::ResolveCtx::chrome(visual, area)
+            )
+            .is_some(),
+            "chrome is bee's own UI, not the agent's"
+        );
+    }
+
+    #[test]
+    fn the_published_viewport_reflects_the_level_so_the_tool_sizes_to_it() {
+        // The render tool checks widgets against `panel_cols`; if that were the un-capped width the
+        // tool would accept a widget the renderer then had to mangle.
+        let mut app = App::new(120, 24).with_visual(with_level(crate::config::VisualLevel::Panels));
+        app.panels.upsert("m", RenderSpec::Separator);
+        let vp = viewport_for(&app);
+        assert!(vp.panel_cols > 0 && vp.panel_cols <= 120 / 3);
+        assert_eq!(vp.inline_cols, 120 - (vp.panel_cols + 2));
+    }
+
+    // --- 009 US3 (T038/T039/T044/T046): the takeover and its escape hatch ----------------------
+
+    fn with_takeover(cols: u16, rows: u16, ttl_ms: Option<u32>) -> App {
+        let mut app = App::new(cols, rows);
+        app.show_overlay(
+            RenderSpec::Text {
+                content: "TAKEOVER-BODY".into(),
+                style: None,
+                bold: false,
+                dim: false,
+            },
+            ttl_ms,
+            std::time::Instant::now(),
+        );
+        app
+    }
+
+    #[test]
+    fn the_takeover_covers_chat_but_never_the_input_line() {
+        // FR-014: the operator keeps typing throughout, so the input border and its contents must
+        // still be on screen with a full-screen overlay up.
+        let mut app = with_takeover(100, 24, Some(30_000));
+        app.input.insert_str("still typing");
+        let out = render(&mut app, 100, 24);
+        assert!(out.contains("TAKEOVER-BODY"), "overlay content:\n{out}");
+        assert!(out.contains("input"), "the input border survives:\n{out}");
+        assert!(out.contains("still typing"), "and so does the text:\n{out}");
+        assert!(out.contains("bee"), "the header is never covered:\n{out}");
+    }
+
+    #[test]
+    fn the_dismiss_hint_sits_in_the_overlays_last_row() {
+        // FR-015. The hint's position is fixed so the operator never has to hunt for it.
+        let mut app = with_takeover(100, 24, Some(12_000));
+        let out = render(&mut app, 100, 24);
+        let lines: Vec<&str> = out.lines().collect();
+        // header(1) + chat(fill) + input(3) + footer(1): the overlay's last row is the one directly
+        // above the input block.
+        let hint_row = lines.len() - 5;
+        assert!(
+            lines[hint_row].contains("Esc to dismiss"),
+            "hint not in the overlay's last row (row {hint_row}):\n{out}"
+        );
+        assert!(
+            lines[hint_row].contains("auto-dismiss in 12s"),
+            "countdown missing:\n{out}"
+        );
+    }
+
+    #[test]
+    fn the_hint_wins_the_last_row_even_when_the_content_has_no_room() {
+        // The escape hatch must never be the thing that gets clipped, so it is laid out before the
+        // content rather than after it.
+        let mut app = with_takeover(60, 10, Some(5_000));
+        let out = render(&mut app, 60, 10);
+        assert!(out.contains("Esc to dismiss"), "hint dropped:\n{out}");
+    }
+
+    #[test]
+    fn the_hint_is_present_without_color_just_unstyled() {
+        // SC-010's shape for the overlay: `NO_COLOR` removes the dim treatment, never the text.
+        let mut app = with_takeover(100, 24, Some(8_000));
+        let out = render(&mut app, 100, 24);
+        assert!(out.contains("Esc to dismiss"), "{out}");
+    }
+
+    #[test]
+    fn a_dismissed_takeover_gives_the_chat_back() {
+        // SC-006/FR-018: one frame after the dismissal completes, the chat is on screen again.
+        let mut app = with_takeover(100, 24, Some(30_000));
+        app.chat
+            .push(ChatMessage::text(Role::Assistant, "underlying chat"));
+        let covered = render(&mut app, 100, 24);
+        assert!(!covered.contains("underlying chat"), "covered:\n{covered}");
+
+        let now = std::time::Instant::now();
+        app.overlay.as_mut().expect("overlay").dismiss(now);
+        app.advance_overlay(now + std::time::Duration::from_millis(250));
+        assert!(app.overlay.is_none(), "the fade-out finished");
+
+        let restored = render(&mut app, 100, 24);
+        assert!(
+            restored.contains("underlying chat"),
+            "the chat is back:\n{restored}"
+        );
+        assert!(!restored.contains("TAKEOVER-BODY"), "{restored}");
+    }
+
+    #[test]
+    fn an_expired_takeover_is_gone_from_the_buffer() {
+        // SC-007: absent after ttl + the 200ms fade.
+        let t0 = std::time::Instant::now();
+        let mut app = App::new(100, 24);
+        app.show_overlay(
+            RenderSpec::Text {
+                content: "TAKEOVER-BODY".into(),
+                style: None,
+                bold: false,
+                dim: false,
+            },
+            Some(1_000),
+            t0,
+        );
+        app.advance_overlay(t0 + std::time::Duration::from_millis(1_250));
+        assert!(app.overlay.is_none(), "expired and faded out");
+        let out = render(&mut app, 100, 24);
+        assert!(!out.contains("TAKEOVER-BODY"), "{out}");
+    }
+
+    #[test]
+    fn a_zero_height_chat_area_makes_the_takeover_a_no_op() {
+        // Spec edge case: no room is not a crash. Below the hard floor the layout shows the
+        // too-small message and the overlay never gets an area at all.
+        let mut app = with_takeover(30, 8, Some(5_000));
+        let out = render(&mut app, 30, 8);
+        assert!(out.contains("terminal too small"), "{out}");
+    }
+
+    #[test]
+    fn a_motionless_session_draws_panels_with_no_effect_at_all() {
+        // FR-006c end to end: same frame, same panel, nothing registered — so the loop has nothing
+        // to advance and the operator sees final content immediately.
+        let mut app = App::new(120, 24).with_visual(crate::config::VisualConfig {
+            animations: false,
+            ..crate::config::VisualConfig::default()
+        });
+        app.panels.upsert("metrics", RenderSpec::Separator);
+        let out = render(&mut app, 120, 24);
+        assert!(!app.effects.is_running(), "no motion may be registered");
+        assert!(out.contains("metrics"), "the panel is on screen regardless");
     }
 }

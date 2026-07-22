@@ -80,6 +80,12 @@ impl ReplOutput for SessionSink {
     fn busy_stop(&self) {
         self.emit(SessionEvent::TurnDone);
     }
+    fn overlay(&self, spec: &RenderSpec, ttl_ms: Option<u32>) {
+        self.emit(SessionEvent::Overlay {
+            spec: spec.clone(),
+            ttl_ms,
+        });
+    }
     fn render_widget(&self, spec: &RenderSpec) {
         self.emit(SessionEvent::RenderWidget { spec: spec.clone() });
     }

@@ -1,0 +1,17 @@
+{
+  "id": "f012",
+  "verdict": "true_positive",
+  "vote_breakdown": {
+    "true_positive": 3,
+    "false_positive": 0,
+    "cannot_verify": 0
+  },
+  "confidence": 10,
+  "exclusion_rule": null,
+  "refute_reasons": [],
+  "first_links": [
+    "bee-userspace/src/lib.rs:329",
+    "bee-harness/src/sandbox.rs:244"
+  ],
+  "rationale": "Tool execution tracks only the direct child, while teardown merely removes the cgroup and ignores a populated-cgroup failure (bee-harness/src/tools/exec.rs:38-55; bee-userspace/src/cgroup.rs:41-44; bee-harness/src/sandbox.rs:240-249). Dropping Engine then detaches enforcement, leaving a daemonized descendant alive."
+}

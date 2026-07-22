@@ -1,0 +1,19 @@
+{
+  "id": "f010",
+  "verdict": "false_positive",
+  "vote_breakdown": {
+    "true_positive": 0,
+    "false_positive": 3,
+    "cannot_verify": 0
+  },
+  "confidence": 8.7,
+  "exclusion_rule": 8,
+  "refute_reasons": [
+    "implausible_trigger"
+  ],
+  "first_links": [
+    "bee-harness/src/mcp/bridge.rs:156",
+    "bee-harness/src/episode.rs:670"
+  ],
+  "rationale": "The bridge can attach a token to HTTP (bee-harness/src/mcp/bridge.rs:326-345), but URL and token_env come only from trusted MCP configuration. No malicious model or MCP response can select the configured transport endpoint, so rule 8 applies."
+}

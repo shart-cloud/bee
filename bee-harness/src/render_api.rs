@@ -11,9 +11,12 @@ use std::sync::{Arc, Mutex};
 use rhai::{Array, Dynamic, Engine, EvalAltResult};
 
 use crate::render_spec::{
-    AnimationSpec, Bar, Direction, Dot, DotState, GridCell, PanelOp, Point, RenderSpec, Row,
-    Series, SpriteSpec,
+    AnimationSpec, Bar, Direction, Dot, DotState, EffectSpec, GridCell, PanelOp, Point, RenderSpec,
+    Renderable, Row, Series, SpriteSpec,
 };
+use crate::visual_gate;
+
+pub mod effect_api;
 
 /// Max layout-nesting depth. A `Grid` counts as one level (like a vsplit/hsplit), so 4 keeps a
 /// grid-of-splits legal (grid-tui, M1 — was 3 pre-grid).
@@ -41,6 +44,12 @@ pub struct RenderContext {
 struct CtxInner {
     /// The last `render()` widget — the inline commit (last writer wins, as it always has).
     inline: Option<RenderSpec>,
+    /// The transition the agent attached to that widget (009 FR-022), if any.
+    inline_effect: Option<EffectSpec>,
+    /// A full-screen takeover request (009 FR-013a). Carried separately from `inline` because the
+    /// visual gate has to see the *target* before any state mutates — inferring it from a widget
+    /// property or a magic panel id would put the decision after the fact.
+    overlay: Option<(RenderSpec, Option<u32>, Option<EffectSpec>)>,
     /// Ordered panel effects from `render_to` / `remove_panel` / `clear_panels`. A script may address
     /// several panels in one call, so this is a list, not a single commit.
     panel_ops: Vec<PanelOp>,
@@ -51,6 +60,10 @@ struct CtxInner {
 #[derive(Debug, Default, Clone)]
 pub struct RenderOutcome {
     pub inline: Option<RenderSpec>,
+    /// The transition attached to the inline widget (009 FR-022).
+    pub inline_effect: Option<EffectSpec>,
+    /// A full-screen takeover: the widget, the requested TTL, and its transition (009 FR-013a).
+    pub overlay: Option<(RenderSpec, Option<u32>, Option<EffectSpec>)>,
     pub panel_ops: Vec<PanelOp>,
     /// Total commit calls (`render`/`render_to`), for the "earlier render discarded" note.
     pub render_calls: u32,
@@ -59,7 +72,7 @@ pub struct RenderOutcome {
 impl RenderOutcome {
     /// True when the script drew nothing at all (no inline widget, no panel effect).
     pub fn is_empty(&self) -> bool {
-        self.inline.is_none() && self.panel_ops.is_empty()
+        self.inline.is_none() && self.panel_ops.is_empty() && self.overlay.is_none()
     }
 }
 
@@ -68,9 +81,15 @@ impl RenderContext {
     pub fn reset(&self) {
         *self.inner.lock().expect("render ctx") = CtxInner::default();
     }
-    fn commit_inline(&self, spec: RenderSpec) {
+    fn commit_inline(&self, r: Renderable) {
         let mut g = self.inner.lock().expect("render ctx");
-        g.inline = Some(spec);
+        g.inline = Some(r.spec);
+        g.inline_effect = r.effect;
+        g.render_calls += 1;
+    }
+    fn commit_overlay(&self, r: Renderable, ttl_ms: Option<u32>) {
+        let mut g = self.inner.lock().expect("render ctx");
+        g.overlay = Some((r.spec, ttl_ms, r.effect));
         g.render_calls += 1;
     }
     fn push_op(&self, op: PanelOp) {
@@ -85,6 +104,8 @@ impl RenderContext {
         let mut g = self.inner.lock().expect("render ctx");
         RenderOutcome {
             inline: g.inline.take(),
+            inline_effect: g.inline_effect.take(),
+            overlay: g.overlay.take(),
             panel_ops: std::mem::take(&mut g.panel_ops),
             render_calls: g.render_calls,
         }
@@ -178,6 +199,16 @@ fn check_fits(spec: &RenderSpec, panel_id: Option<&str>) -> Result<(), Box<EvalA
 /// Validate a panel id (contracts/rhai-panel-api.md): 1–32 chars of `[a-z0-9_-]`. A bad id is a
 /// fail-closed script error, matching the drawing API's error style.
 fn validate_panel_id(id: &str) -> Result<(), Box<EvalAltResult>> {
+    // `takeover` is the id an over-ambitious `render_fullscreen` is downgraded onto (research R7).
+    // A script that writes to it directly would be able to forge or clobber a downgraded takeover,
+    // so it is reserved — the error names the verb the script actually wanted.
+    if id == visual_gate::TAKEOVER_PANEL_ID {
+        return Err(format!(
+            "render_to: panel id {id:?} is reserved for downgraded full-screen renders. \
+             Use render_fullscreen(widget) to request a takeover, or pick another id."
+        )
+        .into());
+    }
     if id.is_empty() || id.len() > 32 {
         return Err(format!("render_to: panel id must be 1–32 chars (got {})", id.len()).into());
     }
@@ -212,6 +243,9 @@ pub struct ChartBuilder {
     x_label: Option<String>,
     y_label: Option<String>,
     color: Option<String>,
+    /// The transition the agent attached with `widget.effect(e)` (009 FR-022).
+    /// `None` means the default transition for the target, never "no animation".
+    effect: Option<EffectSpec>,
 }
 
 impl ChartBuilder {
@@ -225,6 +259,7 @@ impl ChartBuilder {
             x_label: None,
             y_label: None,
             color: None,
+            effect: None,
         }
     }
     fn to_spec(&self) -> RenderSpec {
@@ -267,6 +302,9 @@ pub struct TableBuilder {
     title: String,
     headers: Vec<String>,
     rows: Vec<Row>,
+    /// The transition the agent attached with `widget.effect(e)` (009 FR-022).
+    /// `None` means the default transition for the target, never "no animation".
+    effect: Option<EffectSpec>,
 }
 
 impl TableBuilder {
@@ -286,6 +324,9 @@ pub struct GaugeBuilder {
     value: f64,
     label: Option<String>,
     color: Option<String>,
+    /// The transition the agent attached with `widget.effect(e)` (009 FR-022).
+    /// `None` means the default transition for the target, never "no animation".
+    effect: Option<EffectSpec>,
 }
 
 impl GaugeBuilder {
@@ -304,6 +345,9 @@ impl GaugeBuilder {
 pub struct DotGridBuilder {
     title: String,
     dots: Vec<Dot>,
+    /// The transition the agent attached with `widget.effect(e)` (009 FR-022).
+    /// `None` means the default transition for the target, never "no animation".
+    effect: Option<EffectSpec>,
 }
 
 impl DotGridBuilder {
@@ -322,6 +366,9 @@ pub struct TextBuilder {
     style: Option<String>,
     bold: bool,
     dim: bool,
+    /// The transition the agent attached with `widget.effect(e)` (009 FR-022).
+    /// `None` means the default transition for the target, never "no animation".
+    effect: Option<EffectSpec>,
 }
 
 impl TextBuilder {
@@ -340,6 +387,9 @@ impl TextBuilder {
 pub struct LayoutBuilder {
     direction: Direction,
     children: Vec<RenderSpec>,
+    /// The transition the agent attached with `widget.effect(e)` (009 FR-022).
+    /// `None` means the default transition for the target, never "no animation".
+    effect: Option<EffectSpec>,
 }
 
 impl LayoutBuilder {
@@ -361,6 +411,9 @@ pub struct GridBuilder {
     row_weights: Vec<u16>,
     gap: Option<u16>,
     cells: Vec<GridCell>,
+    /// The transition the agent attached with `widget.effect(e)` (009 FR-022).
+    /// `None` means the default transition for the target, never "no animation".
+    effect: Option<EffectSpec>,
 }
 
 impl GridBuilder {
@@ -438,6 +491,9 @@ pub struct SpriteBuilder {
     height: u16,
     palette: HashMap<char, Option<(u8, u8, u8)>>,
     pixels: Vec<Option<(u8, u8, u8)>>,
+    /// The transition the agent attached with `widget.effect(e)` (009 FR-022).
+    /// `None` means the default transition for the target, never "no animation".
+    effect: Option<EffectSpec>,
 }
 
 impl SpriteBuilder {
@@ -457,6 +513,9 @@ pub struct AnimationBuilder {
     frames: Vec<SpriteSpec>,
     bounce: bool,
     cycles: u32,
+    /// The transition the agent attached with `widget.effect(e)` (009 FR-022).
+    /// `None` means the default transition for the target, never "no animation".
+    effect: Option<EffectSpec>,
 }
 
 impl AnimationBuilder {
@@ -511,39 +570,86 @@ fn array_to_u16(a: Array) -> Vec<u16> {
 }
 
 /// Turn any builder/`RenderSpec` `Dynamic` into a [`RenderSpec`], or a script error.
+/// Convert a Rhai value into its spec, discarding any attached transition. For the commit verbs,
+/// which need both, use [`dynamic_to_renderable`].
 fn dynamic_to_spec(d: Dynamic) -> Result<RenderSpec, Box<EvalAltResult>> {
+    dynamic_to_renderable(d).map(|r| r.spec)
+}
+
+/// Convert a Rhai value into the widget **and** the transition the agent attached to it (FR-022).
+///
+/// One dispatch for both, so a widget type can never be renderable but effect-blind — adding a
+/// builder means adding it here once, not in two places that can disagree.
+fn dynamic_to_renderable(d: Dynamic) -> Result<Renderable, Box<EvalAltResult>> {
+    // A bare `RenderSpec` (`separator()`, `ascii_art(...)`) has nowhere to hold an effect, so
+    // `effect()` wraps it into a `Renderable` instead — handled first, above the builders.
+    if d.is::<Renderable>() {
+        return Ok(d.cast::<Renderable>());
+    }
     if d.is::<RenderSpec>() {
-        return Ok(d.cast::<RenderSpec>());
+        return Ok(Renderable::plain(d.cast::<RenderSpec>()));
     }
     if d.is::<ChartBuilder>() {
-        return Ok(d.cast::<ChartBuilder>().to_spec());
+        let b = d.cast::<ChartBuilder>();
+        return Ok(Renderable {
+            spec: b.to_spec(),
+            effect: b.effect,
+        });
     }
     if d.is::<TableBuilder>() {
-        return Ok(d.cast::<TableBuilder>().to_spec());
+        let b = d.cast::<TableBuilder>();
+        return Ok(Renderable {
+            spec: b.to_spec(),
+            effect: b.effect,
+        });
     }
     if d.is::<GaugeBuilder>() {
-        return Ok(d.cast::<GaugeBuilder>().to_spec());
+        let b = d.cast::<GaugeBuilder>();
+        return Ok(Renderable {
+            spec: b.to_spec(),
+            effect: b.effect,
+        });
     }
     if d.is::<DotGridBuilder>() {
-        return Ok(d.cast::<DotGridBuilder>().to_spec());
+        let b = d.cast::<DotGridBuilder>();
+        return Ok(Renderable {
+            spec: b.to_spec(),
+            effect: b.effect,
+        });
     }
     if d.is::<TextBuilder>() {
-        return Ok(d.cast::<TextBuilder>().to_spec());
+        let b = d.cast::<TextBuilder>();
+        return Ok(Renderable {
+            spec: b.to_spec(),
+            effect: b.effect,
+        });
     }
     if d.is::<LayoutBuilder>() {
-        return Ok(d.cast::<LayoutBuilder>().to_spec());
+        let b = d.cast::<LayoutBuilder>();
+        return Ok(Renderable {
+            spec: b.to_spec(),
+            effect: b.effect,
+        });
     }
     if d.is::<GridBuilder>() {
-        return Ok(d.cast::<GridBuilder>().to_spec());
+        let b = d.cast::<GridBuilder>();
+        return Ok(Renderable {
+            spec: b.to_spec(),
+            effect: b.effect,
+        });
     }
     if d.is::<SpriteBuilder>() {
-        return Ok(RenderSpec::Sprite {
-            spec: d.cast::<SpriteBuilder>().to_spec(),
+        let b = d.cast::<SpriteBuilder>();
+        return Ok(Renderable {
+            spec: RenderSpec::Sprite { spec: b.to_spec() },
+            effect: b.effect,
         });
     }
     if d.is::<AnimationBuilder>() {
-        return Ok(RenderSpec::Animation {
-            spec: d.cast::<AnimationBuilder>().to_spec(),
+        let b = d.cast::<AnimationBuilder>();
+        return Ok(Renderable {
+            spec: RenderSpec::Animation { spec: b.to_spec() },
+            effect: b.effect,
         });
     }
     Err("render: value is not a renderable widget".into())
@@ -583,6 +689,7 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
     engine.register_type_with_name::<TextBuilder>("Text");
     engine.register_type_with_name::<LayoutBuilder>("Layout");
     engine.register_type_with_name::<RenderSpec>("Widget");
+    engine.register_type_with_name::<Renderable>("Widget");
 
     // --- Charts ---
     engine.register_fn("bar_chart", |title: String| {
@@ -622,6 +729,7 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
         title,
         headers: Vec::new(),
         rows: Vec::new(),
+        effect: None,
     });
     engine.register_fn("header", |t: &mut TableBuilder, cols: Array| {
         t.headers = array_to_strings(cols);
@@ -648,6 +756,7 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
         value: value.clamp(0.0, 1.0),
         label: None,
         color: None,
+        effect: None,
     });
     engine.register_fn("label", |g: &mut GaugeBuilder, s: String| g.label = Some(s));
     engine.register_fn("color", |g: &mut GaugeBuilder, name: String| {
@@ -656,6 +765,7 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
     engine.register_fn("dots", |title: String| DotGridBuilder {
         title,
         dots: Vec::new(),
+        effect: None,
     });
     engine.register_fn("pass", |d: &mut DotGridBuilder, label: String| {
         d.dots.push(Dot {
@@ -682,27 +792,33 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
         style: None,
         bold: false,
         dim: false,
+        effect: None,
     });
     engine.register_fn("style", |t: &mut TextBuilder, name: String| {
         t.style = Some(name)
     });
     engine.register_fn("bold", |t: &mut TextBuilder| t.bold = true);
     engine.register_fn("dim", |t: &mut TextBuilder| t.dim = true);
-    engine.register_fn("ascii_art", |lines: Array| -> RenderSpec {
+    engine.register_fn("ascii_art", |lines: Array| -> Renderable {
         RenderSpec::AsciiArt {
             lines: array_to_strings(lines),
         }
+        .into()
     });
-    engine.register_fn("separator", || -> RenderSpec { RenderSpec::Separator });
+    engine.register_fn("separator", || -> Renderable {
+        Renderable::plain(RenderSpec::Separator)
+    });
 
     // --- Layout & composition ---
     engine.register_fn("vsplit", || LayoutBuilder {
         direction: Direction::Vertical,
         children: Vec::new(),
+        effect: None,
     });
     engine.register_fn("hsplit", || LayoutBuilder {
         direction: Direction::Horizontal,
         children: Vec::new(),
+        effect: None,
     });
     engine.register_fn(
         "add",
@@ -728,6 +844,7 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
                 row_weights: Vec::new(),
                 gap: None,
                 cells: Vec::new(),
+                effect: None,
             })
         },
     );
@@ -798,6 +915,7 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
                 height: h as u16,
                 palette: pal.map,
                 pixels: vec![None; (w * h) as usize],
+                effect: None,
             })
         },
     );
@@ -837,6 +955,7 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
         frames: Vec::new(),
         bounce: false,
         cycles: 1,
+        effect: None,
     });
     engine.register_fn(
         "add",
@@ -858,15 +977,17 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
     engine.register_fn("cycles", |a: &mut AnimationBuilder, n: i64| {
         a.cycles = n.max(0) as u32
     });
-    engine.register_fn("bee_sprite", || -> RenderSpec {
+    engine.register_fn("bee_sprite", || -> Renderable {
         RenderSpec::Sprite {
             spec: crate::viz::bee::sprite(),
         }
+        .into()
     });
-    engine.register_fn("bee_animation", || -> RenderSpec {
+    engine.register_fn("bee_animation", || -> Renderable {
         RenderSpec::Animation {
             spec: crate::viz::bee::animation(),
         }
+        .into()
     });
 
     // --- Commit + panel lifecycle ---
@@ -878,10 +999,10 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
     engine.register_fn(
         "render",
         move |widget: Dynamic| -> Result<(), Box<EvalAltResult>> {
-            let spec = dynamic_to_spec(widget)?;
-            validate(&spec)?;
-            check_fits(&spec, None)?;
-            inline_ctx.commit_inline(spec);
+            let r = dynamic_to_renderable(widget)?;
+            validate(&r.spec)?;
+            check_fits(&r.spec, None)?;
+            inline_ctx.commit_inline(r);
             Ok(())
         },
     );
@@ -890,13 +1011,14 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
         "render_to",
         move |panel_id: String, widget: Dynamic| -> Result<(), Box<EvalAltResult>> {
             validate_panel_id(&panel_id)?;
-            let spec = dynamic_to_spec(widget)?;
-            validate(&spec)?;
-            check_fits(&spec, Some(&panel_id))?;
+            let r = dynamic_to_renderable(widget)?;
+            validate(&r.spec)?;
+            check_fits(&r.spec, Some(&panel_id))?;
             to_ctx.push_op(PanelOp::Upsert {
                 id: panel_id,
-                spec,
+                spec: r.spec,
                 ttl_ms: None,
+                effect: r.effect,
             });
             Ok(())
         },
@@ -906,21 +1028,23 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
         "render_to_ttl",
         move |panel_id: String, widget: Dynamic, ttl_ms: i64| -> Result<(), Box<EvalAltResult>> {
             validate_panel_id(&panel_id)?;
-            let spec = dynamic_to_spec(widget)?;
-            validate(&spec)?;
+            let r = dynamic_to_renderable(widget)?;
+            validate(&r.spec)?;
             if ttl_ms <= 0 {
                 return Err("render_to_ttl: ttl_ms must be > 0".into());
             }
-            check_fits(&spec, Some(&panel_id))?;
+            check_fits(&r.spec, Some(&panel_id))?;
             ttl_ctx.push_op(PanelOp::Upsert {
                 id: panel_id,
-                spec,
+                spec: r.spec,
                 // Clamp to a day so a typo can't pin a panel effectively forever.
                 ttl_ms: Some((ttl_ms as u64).min(24 * 60 * 60 * 1000)),
+                effect: r.effect,
             });
             Ok(())
         },
     );
+    let overlay_ctx = ctx.clone();
     let rm_ctx = ctx.clone();
     engine.register_fn(
         "remove_panel",
@@ -933,7 +1057,71 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
     engine.register_fn("clear_panels", move || {
         ctx.push_op(PanelOp::Clear);
     });
+
+    // --- 009 US4: transitions and the takeover verbs ------------------------------------------
+    effect_api::register(engine);
+
+    // `widget.effect(e)` per builder type: Rhai dispatches method syntax on the receiver's concrete
+    // type, so this is one registration each rather than one generic one. Every widget type is
+    // listed, because "any widget" is the contract (FR-022).
+    macro_rules! attach_effect {
+        ($($t:ty),+ $(,)?) => {
+            $(engine.register_fn("effect", |b: &mut $t, e: EffectSpec| {
+                b.effect = Some(e);
+            });)+
+        };
+    }
+    attach_effect!(
+        ChartBuilder,
+        TableBuilder,
+        GaugeBuilder,
+        DotGridBuilder,
+        TextBuilder,
+        LayoutBuilder,
+        GridBuilder,
+        SpriteBuilder,
+        AnimationBuilder,
+    );
+    // `separator()`, `ascii_art()` and the mascot helpers have no builder, so they return a
+    // `Renderable` — which is exactly a spec plus an effect slot. That is why every widget-producing
+    // function on this surface returns something `effect()` can attach to.
+    engine.register_fn("effect", |w: &mut Renderable, e: EffectSpec| {
+        w.effect = Some(e);
+    });
+
+    let fs_ctx = overlay_ctx.clone();
+    engine.register_fn(
+        "render_fullscreen",
+        move |widget: Dynamic| -> Result<(), Box<EvalAltResult>> {
+            let r = dynamic_to_renderable(widget)?;
+            validate(&r.spec)?;
+            // Deliberately no `check_fits`: a takeover gets the whole chat area, which is the
+            // roomiest surface there is. If it does not fit there, nothing would have helped.
+            fs_ctx.commit_overlay(r, None);
+            Ok(())
+        },
+    );
+    engine.register_fn(
+        "render_fullscreen_ttl",
+        move |widget: Dynamic, ttl_ms: i64| -> Result<(), Box<EvalAltResult>> {
+            let r = dynamic_to_renderable(widget)?;
+            validate(&r.spec)?;
+            // A non-positive lifetime is a script error, matching `render_to_ttl`. An over-long one
+            // is not: the configured ceiling clamps it silently, because that is the operator's
+            // decision rather than the script's mistake (FR-021).
+            if ttl_ms <= 0 {
+                return Err("render_fullscreen_ttl: ttl_ms must be > 0".into());
+            }
+            overlay_ctx.commit_overlay(r, Some(ttl_ms.min(u32::MAX as i64) as u32));
+            Ok(())
+        },
+    );
 }
+
+/// Serializes tests that publish the process-global viewport. Shared with `effect_api`'s tests,
+/// which run scripts through the same fit check against the same global.
+#[cfg(test)]
+pub(crate) static VP_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -1031,7 +1219,6 @@ mod tests {
     //
     // These publish process-global viewport state, so they share one mutex and reset afterwards.
     use crate::viz::viewport::{self, Viewport};
-    static VP_LOCK: Mutex<()> = Mutex::new(());
 
     /// Run `script` with `vp` published, always restoring the unconstrained default.
     fn run_with_viewport(vp: Viewport, script: &str) -> Result<RenderOutcome, String> {

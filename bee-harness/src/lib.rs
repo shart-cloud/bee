@@ -41,6 +41,9 @@ pub mod transcript;
 // Full-screen TUI front-end (008-grid-tui, M3–M4). Only compiled with `--features tui`.
 #[cfg(feature = "tui")]
 pub mod tui;
+// The visual permission gate (009). Ungated: the render tool, which is where the gate runs, exists
+// in every build.
+pub mod visual_gate;
 pub mod viz;
 
 pub use batch::{run_batch, BatchConfig, BatchError, BatchResult};
