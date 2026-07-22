@@ -31,7 +31,7 @@ a kill switch across established call sites is the exact failure mode FR-006c ex
 - [X] T001 In `bee-harness/Cargo.toml`, bump `ratatui` `0.29` → `0.30` and `crossterm` `0.28` → `0.29`; leave `rustyline` pinned at `17`; leave the `tui` feature list unchanged (`"ratatui/crossterm"`, **no** `crossterm_0_28` — it cannot hold the version, research R2/D1). Manifest-only: no source file changes are expected.
 - [X] T002 Verify the Phase 0 gate: `cargo check -p bee-harness --features tui` (0 errors, 0 warnings), `cargo check -p bee-harness` (headless), `cargo test -p bee-harness --features tui` (**291 passed, 0 failed, 28 suites**), and `cargo tree -p bee-harness --features tui -d | grep crossterm` returning **no output**. Any behavior change means Phase 0 grows before Phase 2 starts (depends on T001).
 - [X] T003 [P] Add `tachyonfx = { version = "0.25", default-features = false, optional = true }` to `bee-harness/Cargo.toml` and add `"dep:tachyonfx"` to the `tui` feature list, keeping it out of the headless build (SC-009, Constitution V) (depends on T002).
-- [ ] T004 [P] Scaffold empty modules with stubs and register them: `bee-harness/src/render_spec/effect_spec.rs` and `bee-harness/src/render_api/effect_api.rs` (both **ungated**, headless-compiling), plus `bee-harness/src/tui/{effects,overlay,visual_gate}.rs` (all behind the `tui` feature), wired into `render_spec.rs`, `render_api.rs`, and `tui/mod.rs`.
+- [~] T004 [P] Scaffold empty modules with stubs and register them: `bee-harness/src/render_spec/effect_spec.rs` and `bee-harness/src/render_api/effect_api.rs` (both **ungated**, headless-compiling), plus `bee-harness/src/tui/{effects,overlay,visual_gate}.rs` (all behind the `tui` feature), wired into `render_spec.rs`, `render_api.rs`, and `tui/mod.rs`. **PARTIAL**: `render_spec/effect_spec.rs` and `tui/effects.rs` exist and are registered. `render_api/effect_api.rs`, `tui/overlay.rs`, `tui/visual_gate.rs` are created in their own phases rather than stubbed up front — an empty module that compiles is not obviously better than no module.
 
 **Checkpoint**: ratatui 0.30 + crossterm 0.29 green on the existing suite; tachyonfx available behind `tui`; module skeleton in place.
 
@@ -55,7 +55,13 @@ user story routes through.
 - [X] T013 Establish the resolver chokepoint `fn resolve(spec: &EffectSpec, ctx: &ResolveCtx) -> Option<tachyonfx::Effect>` in `bee-harness/src/tui/effects.rs`, with `ResolveCtx` carrying the active theme, target `Rect`, and the three presentation axes. Return `None` (meaning "render final content, register nothing") when animations are disabled, when the area is 0×0, or when `visual_level == None`; per-variant `None` under `NO_COLOR` for the four color variants. Variant→tachyonfx mapping arrives in T016 (FR-006b, FR-006d, FR-024, research R5) (depends on T003, T005, T010).
 - [X] T014 Own a `tachyonfx::EffectManager<String>` in `bee-harness/src/tui/effects.rs` and expose `is_running()`, `add(key, fx)` routed through `unique(key, fx)`, and `process(dt, buf, area)` over `process_effects` (FR-001, FR-005, research R4) (depends on T013).
 
-**Checkpoint**: serde layer compiles headless with no tachyonfx; all three config axes parse and fail closed; the one chokepoint every effect must pass through exists.
+**Checkpoint**: serde layer compiles headless with no tachyonfx; all three config axes parse and fail closed; the one chokepoint every effect must pass through exists. ✅ **REACHED** — 319 tui / 242 headless tests, clippy clean, fmt clean, `tachyonfx` absent from `bee-core`, `bee-common`, and the headless `bee-harness` build.
+
+> **Implementation stopped here.** Phases 1–2 are complete, tested, and committed
+> (`1d34c95`, `566f48c`). Phase 3 begins the integration work described below — it changes
+> `view()`'s signature to take `&mut App`, reworks the fixed 120ms tick in `tui/mod.rs` into the
+> three-state scheduler, and threads `Effects` through `App`. That is a coherent chunk of work best
+> started fresh rather than half-wired.
 
 ---
 
