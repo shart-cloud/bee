@@ -321,3 +321,431 @@ thinking    = "adaptive"
         assert!(matches!(err, ConfigError::Invalid(_)), "got: {err:?}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Visual presentation (009-tachyonfx-effects)
+// ---------------------------------------------------------------------------
+
+/// How much of the screen the **agent** may claim (009, FR-007; contracts/visual-levels.md).
+///
+/// The variant order *is* the permission order, and `Ord` is derived from it, so gate checks are
+/// comparisons (`level >= VisualLevel::Takeover`) rather than match arms that must each be got
+/// right. Deny-by-default falls out of `Default` being the restricted-but-useful middle
+/// (Constitution I).
+///
+/// This axis is independent of color (`NO_COLOR`) and of motion ([`VisualConfig::animations`]).
+/// In particular it governs the *agent*, never bee's own chrome: at [`VisualLevel::None`] the
+/// harness still animates its own UI (FR-006d).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VisualLevel {
+    /// No panels, no overlays. `render` output flows inline in chat only.
+    None,
+    /// Side panels, capped at a third of the width. The default.
+    #[default]
+    Panels,
+    /// Panels may grow to half the width.
+    PanelsWide,
+    /// Full-screen overlays are permitted, in addition to panels.
+    Takeover,
+}
+
+impl VisualLevel {
+    /// Parse a configured value. Unknown input is a **hard error**, never a fallback to the default:
+    /// a policy that cannot be compiled is refused rather than silently weakened (Constitution I).
+    pub fn parse(s: &str) -> Result<Self, ConfigError> {
+        match s {
+            "none" => Ok(Self::None),
+            "panels" => Ok(Self::Panels),
+            "panels-wide" => Ok(Self::PanelsWide),
+            "takeover" => Ok(Self::Takeover),
+            other => Err(ConfigError::Invalid(format!(
+                "unknown visual_level {other:?} (want one of: none, panels, panels-wide, takeover)"
+            ))),
+        }
+    }
+
+    /// Whether a full-screen overlay is permitted at this level (FR-013).
+    pub fn allows_takeover(self) -> bool {
+        self >= VisualLevel::Takeover
+    }
+
+    /// Whether named panels are permitted at this level.
+    pub fn allows_panels(self) -> bool {
+        self >= VisualLevel::Panels
+    }
+
+    /// The panel width cap as a fraction of the terminal width, as `(numerator, denominator)`
+    /// (FR-011, FR-012). `None` at [`VisualLevel::None`], where no panel is drawn at all.
+    pub fn panel_width_fraction(self) -> Option<(u16, u16)> {
+        match self {
+            Self::None => None,
+            Self::Panels => Some((1, 3)),
+            Self::PanelsWide | Self::Takeover => Some((1, 2)),
+        }
+    }
+}
+
+/// Default takeover lifetime in seconds (FR-017): long enough to read a visualization, short enough
+/// not to be annoying. The operator can always dismiss earlier.
+pub const DEFAULT_TAKEOVER_TTL_SECS: u32 = 30;
+/// Hard ceiling on the configured takeover lifetime (FR-017). Above this a config is a mistake worth
+/// surfacing rather than clamping — unlike an *agent* request, which clamps silently (FR-021).
+pub const MAX_TAKEOVER_TTL_SECS: u32 = 120;
+
+/// The `[harness]` table of a scenario file — the declarative half of the visual configuration
+/// (Constitution IV: policy-as-data, reviewable in a diff).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct HarnessSection {
+    #[serde(default)]
+    pub visual_level: Option<String>,
+    /// `false` disables all motion — agent effects *and* harness chrome (FR-006a).
+    #[serde(default)]
+    pub animations: Option<bool>,
+    #[serde(default)]
+    pub takeover_ttl_secs: Option<u32>,
+}
+
+/// The three resolved presentation axes (009). They are independent and compose freely: a session
+/// may have full color, full takeover rights, and zero motion (contracts/motion-control.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisualConfig {
+    /// How much screen the agent may claim.
+    pub level: VisualLevel,
+    /// Whether anything animates at all. `false` makes every effect an instant no-op and keeps the
+    /// render loop out of its 60fps state entirely (FR-006b/c).
+    pub animations: bool,
+    /// Resolved takeover lifetime; a hard cap on what a script may request (FR-021).
+    pub takeover_ttl_secs: u32,
+}
+
+impl Default for VisualConfig {
+    fn default() -> Self {
+        VisualConfig {
+            level: VisualLevel::default(),
+            animations: true,
+            takeover_ttl_secs: DEFAULT_TAKEOVER_TTL_SECS,
+        }
+    }
+}
+
+impl VisualConfig {
+    /// Resolve all three axes with **CLI > env > scenario > default** precedence (FR-008, FR-006a).
+    ///
+    /// `cli_level` is `--visual-level`; `cli_no_animation` is the `--no-animation` flag (a flag, so
+    /// it can only turn motion *off*, never back on). Env reads `BEE_VISUAL_LEVEL` and
+    /// `BEE_NO_ANIMATION`; the latter is presence-is-truth like `NO_COLOR`
+    /// (`viz::palette::is_color_enabled`), so `BEE_NO_ANIMATION=0` still disables. Surprising in
+    /// isolation, but consistent with the convention bee already implements.
+    pub fn resolve(
+        cli_level: Option<&str>,
+        cli_no_animation: bool,
+        scenario: Option<&HarnessSection>,
+    ) -> Result<Self, ConfigError> {
+        let env_level = std::env::var("BEE_VISUAL_LEVEL").ok();
+        Self::resolve_with(
+            cli_level,
+            cli_no_animation,
+            env_level.as_deref(),
+            std::env::var_os("BEE_NO_ANIMATION").is_some(),
+            scenario,
+        )
+    }
+
+    /// The pure core of [`Self::resolve`], with the environment passed in rather than read.
+    ///
+    /// Precedence and fail-closed behavior are the parts worth testing, and testing them through
+    /// the real environment would mean mutating process-global state from parallel test threads.
+    /// Injecting it keeps those tests deterministic and keeps `set_var` (unsafe in recent editions)
+    /// out of the crate entirely.
+    pub fn resolve_with(
+        cli_level: Option<&str>,
+        cli_no_animation: bool,
+        env_level: Option<&str>,
+        env_no_animation: bool,
+        scenario: Option<&HarnessSection>,
+    ) -> Result<Self, ConfigError> {
+        let level = match (
+            cli_level,
+            env_level,
+            scenario.and_then(|h| h.visual_level.as_deref()),
+        ) {
+            (Some(s), _, _) | (None, Some(s), _) | (None, None, Some(s)) => VisualLevel::parse(s)?,
+            (None, None, None) => VisualLevel::default(),
+        };
+
+        // Motion is off if *any* source says so: the CLI flag, the env var's presence, or an
+        // explicit `animations = false`. Accessibility settings should be sticky — a scenario must
+        // not be able to switch motion back on for an operator who asked for a still screen.
+        let animations = !cli_no_animation
+            && !env_no_animation
+            && scenario.and_then(|h| h.animations).unwrap_or(true);
+
+        let takeover_ttl_secs = scenario
+            .and_then(|h| h.takeover_ttl_secs)
+            .unwrap_or(DEFAULT_TAKEOVER_TTL_SECS);
+        if takeover_ttl_secs == 0 || takeover_ttl_secs > MAX_TAKEOVER_TTL_SECS {
+            return Err(ConfigError::Invalid(format!(
+                "takeover_ttl_secs must be 1..={MAX_TAKEOVER_TTL_SECS} (got {takeover_ttl_secs})"
+            )));
+        }
+
+        Ok(VisualConfig {
+            level,
+            animations,
+            takeover_ttl_secs,
+        })
+    }
+
+    /// Clamp a script-requested takeover lifetime to the configured maximum (FR-021). A shorter
+    /// request is honored as given; a longer one is clamped down rather than refused.
+    pub fn clamp_takeover_ttl(&self, requested_ms: Option<u64>) -> std::time::Duration {
+        let max_ms = u64::from(self.takeover_ttl_secs) * 1000;
+        std::time::Duration::from_millis(requested_ms.map_or(max_ms, |ms| ms.min(max_ms)))
+    }
+}
+
+#[cfg(test)]
+mod visual_tests {
+    use super::*;
+
+    fn section(level: Option<&str>, animations: Option<bool>, ttl: Option<u32>) -> HarnessSection {
+        HarnessSection {
+            visual_level: level.map(str::to_string),
+            animations,
+            takeover_ttl_secs: ttl,
+        }
+    }
+
+    fn resolve(
+        cli: Option<&str>,
+        cli_no_anim: bool,
+        env: Option<&str>,
+        env_no_anim: bool,
+        s: Option<&HarnessSection>,
+    ) -> Result<VisualConfig, ConfigError> {
+        VisualConfig::resolve_with(cli, cli_no_anim, env, env_no_anim, s)
+    }
+
+    #[test]
+    fn defaults_are_panels_animated_and_thirty_seconds() {
+        let c = resolve(None, false, None, false, None).expect("defaults resolve");
+        assert_eq!(
+            c.level,
+            VisualLevel::Panels,
+            "default is the restricted tier"
+        );
+        assert!(c.animations);
+        assert_eq!(c.takeover_ttl_secs, DEFAULT_TAKEOVER_TTL_SECS);
+    }
+
+    #[test]
+    fn level_precedence_is_cli_then_env_then_scenario() {
+        let s = section(Some("none"), None, None);
+        // Scenario alone.
+        assert_eq!(
+            resolve(None, false, None, false, Some(&s)).unwrap().level,
+            VisualLevel::None
+        );
+        // Env beats scenario.
+        assert_eq!(
+            resolve(None, false, Some("panels-wide"), false, Some(&s))
+                .unwrap()
+                .level,
+            VisualLevel::PanelsWide
+        );
+        // CLI beats both.
+        assert_eq!(
+            resolve(
+                Some("takeover"),
+                false,
+                Some("panels-wide"),
+                false,
+                Some(&s)
+            )
+            .unwrap()
+            .level,
+            VisualLevel::Takeover
+        );
+    }
+
+    #[test]
+    fn an_unknown_level_is_a_hard_error_not_a_fallback() {
+        // Constitution I: a policy that cannot be compiled is refused, never silently weakened to
+        // the default — and never silently falls through to the next source.
+        for src in [
+            resolve(Some("bogus"), false, None, false, None),
+            resolve(None, false, Some("bogus"), false, None),
+            resolve(
+                None,
+                false,
+                None,
+                false,
+                Some(&section(Some("bogus"), None, None)),
+            ),
+        ] {
+            let err = src.expect_err("unknown level must error");
+            assert!(
+                err.to_string().contains("unknown visual_level"),
+                "unhelpful error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn motion_is_off_if_any_source_says_so_and_a_scenario_cannot_switch_it_back_on() {
+        assert!(
+            !resolve(None, true, None, false, None).unwrap().animations,
+            "CLI flag"
+        );
+        assert!(
+            !resolve(None, false, None, true, None).unwrap().animations,
+            "env var"
+        );
+        assert!(
+            !resolve(
+                None,
+                false,
+                None,
+                false,
+                Some(&section(None, Some(false), None))
+            )
+            .unwrap()
+            .animations,
+            "scenario"
+        );
+        // An operator who asked for a still screen keeps it, whatever the scenario wants.
+        let loud = section(None, Some(true), None);
+        assert!(
+            !resolve(None, true, None, false, Some(&loud))
+                .unwrap()
+                .animations
+        );
+        assert!(
+            !resolve(None, false, None, true, Some(&loud))
+                .unwrap()
+                .animations
+        );
+    }
+
+    #[test]
+    fn motion_is_independent_of_level() {
+        // FR-006d: visual_level = "none" restricts the *agent*; it does not silence motion, which
+        // is the only switch that reaches harness chrome.
+        let c = resolve(
+            None,
+            false,
+            None,
+            false,
+            Some(&section(Some("none"), None, None)),
+        )
+        .unwrap();
+        assert_eq!(c.level, VisualLevel::None);
+        assert!(c.animations, "level none must not imply motion off");
+        // And the converse: motion off leaves takeover rights intact.
+        let c = resolve(Some("takeover"), true, None, false, None).unwrap();
+        assert!(c.level.allows_takeover());
+        assert!(!c.animations);
+    }
+
+    #[test]
+    fn an_out_of_range_configured_ttl_is_a_hard_error() {
+        // A config asking for 600s is a mistake worth surfacing (unlike an agent request, which
+        // clamps silently — see `clamp_takeover_ttl`).
+        let err = resolve(
+            None,
+            false,
+            None,
+            false,
+            Some(&section(None, None, Some(600))),
+        )
+        .expect_err("600s must error");
+        assert!(err.to_string().contains("takeover_ttl_secs"), "got {err}");
+        assert!(resolve(
+            None,
+            false,
+            None,
+            false,
+            Some(&section(None, None, Some(0)))
+        )
+        .is_err());
+        assert_eq!(
+            resolve(
+                None,
+                false,
+                None,
+                false,
+                Some(&section(None, None, Some(120)))
+            )
+            .unwrap()
+            .takeover_ttl_secs,
+            MAX_TAKEOVER_TTL_SECS,
+            "the maximum itself is allowed"
+        );
+    }
+
+    #[test]
+    fn agent_requested_ttl_clamps_down_but_honors_shorter() {
+        let c = resolve(
+            None,
+            false,
+            None,
+            false,
+            Some(&section(None, None, Some(20))),
+        )
+        .unwrap();
+        assert_eq!(
+            c.clamp_takeover_ttl(Some(90_000)).as_secs(),
+            20,
+            "clamped down"
+        );
+        assert_eq!(
+            c.clamp_takeover_ttl(Some(5_000)).as_millis(),
+            5_000,
+            "shorter honored"
+        );
+        assert_eq!(
+            c.clamp_takeover_ttl(None).as_secs(),
+            20,
+            "default is the cap"
+        );
+    }
+
+    #[test]
+    fn the_tiers_are_ordered_so_gate_checks_are_comparisons() {
+        assert!(VisualLevel::None < VisualLevel::Panels);
+        assert!(VisualLevel::Panels < VisualLevel::PanelsWide);
+        assert!(VisualLevel::PanelsWide < VisualLevel::Takeover);
+        // Levels are a ceiling, not a mode: takeover still allows panels.
+        assert!(VisualLevel::Takeover.allows_panels());
+        assert!(VisualLevel::Takeover.allows_takeover());
+        assert!(VisualLevel::PanelsWide.allows_panels());
+        assert!(!VisualLevel::PanelsWide.allows_takeover());
+        assert!(!VisualLevel::None.allows_panels());
+    }
+
+    #[test]
+    fn width_fractions_match_the_tier_table() {
+        assert_eq!(VisualLevel::None.panel_width_fraction(), None);
+        assert_eq!(VisualLevel::Panels.panel_width_fraction(), Some((1, 3)));
+        assert_eq!(VisualLevel::PanelsWide.panel_width_fraction(), Some((1, 2)));
+        assert_eq!(VisualLevel::Takeover.panel_width_fraction(), Some((1, 2)));
+    }
+
+    #[test]
+    fn the_harness_section_parses_from_scenario_toml() {
+        // Policy-as-data (Constitution IV): the axes are declarative and diff-reviewable.
+        let s: HarnessSection = toml::from_str(
+            r#"
+            visual_level = "takeover"
+            animations = false
+            takeover_ttl_secs = 15
+            "#,
+        )
+        .expect("parse [harness]");
+        let c = resolve(None, false, None, false, Some(&s)).unwrap();
+        assert_eq!(c.level, VisualLevel::Takeover);
+        assert!(!c.animations);
+        assert_eq!(c.takeover_ttl_secs, 15);
+    }
+}

@@ -9,6 +9,7 @@
 
 pub mod app;
 pub mod chat;
+pub mod effects;
 pub mod frontend;
 pub mod input;
 pub mod message;

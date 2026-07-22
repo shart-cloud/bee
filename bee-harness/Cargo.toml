@@ -87,9 +87,13 @@ textwrap = { version = "0.16", optional = true }
 # Terminal effects (009-tachyonfx-effects, bee-harness only — MUST NOT propagate to
 # bee-core/bee-common, SC-009). Optional + `tui`-gated so the headless build never compiles it.
 # `default-features = false` drops the `dsl` parser (and its `anpa` dep): bee builds effects from
-# `EffectSpec` data in Rust, never from tachyonfx's DSL strings. No I/O, no FFI, no `rand` — it
-# carries its own seeded `SimpleRng`, which is what makes the effect snapshots deterministic.
-tachyonfx = { version = "0.25", default-features = false, optional = true }
+# `EffectSpec` data in Rust, never from tachyonfx's DSL strings. `std` is re-enabled explicitly — it
+# is the other half of tachyonfx's default and carries the std interop the harness needs. No I/O, no
+# FFI, no `rand` — tachyonfx carries its own seeded `SimpleRng`, which is what makes the effect
+# snapshots deterministic rather than flaky.
+tachyonfx = { version = "0.25", default-features = false, features = [
+    "std",
+], optional = true }
 
 # MCP client SDK (004-mcp-client, bee-harness only — MUST NOT propagate to bee-core/bee-common,
 # NFR-004/SC-026). Optional + gated by the `mcp` feature above. rmcp is v2.x (the spec's "1" is a
