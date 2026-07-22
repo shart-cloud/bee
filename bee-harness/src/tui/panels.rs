@@ -16,15 +16,52 @@
 
 use std::time::{Duration, Instant};
 
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+
+use super::effects::{self, Effects, ResolveCtx};
+use crate::config::VisualConfig;
 use crate::render_spec::{PanelOp, RenderSpec};
 
-/// One live panel: its id, current content, and optional expiry.
+/// The transition a panel owes the effects pipeline on its next render (009 US1).
+///
+/// Which one it is falls out of the create-vs-replace distinction the registry already draws — the
+/// caller never picks a transition, so a panel cannot animate as if it were new when it wasn't.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transition {
+    /// First upsert under this name: fade in (FR-003).
+    Enter,
+    /// Content replaced in place: dissolve the old, coalesce the new (FR-004).
+    Update,
+}
+
+/// Per-panel effect state (009 T017).
+///
+/// It holds the outgoing content and nothing else. Cancellation deliberately does **not** live here:
+/// a stored effect handle would have to be reconciled by hand at every re-upsert, whereas
+/// `EffectManager::unique` already cancels by panel name for free (FR-005, research R4).
+#[derive(Debug, Clone, Default)]
+pub struct EffectSlot {
+    /// The panel's last rendered content, the outgoing half of an update transition. `None` until
+    /// the panel has been drawn once — which is why a brand-new panel gets an entrance, not a
+    /// cross-fade from nothing.
+    pub prev: Option<Buffer>,
+    /// When the pending transition was first requested. A burst of upserts between two redraws
+    /// coalesces to one transition (FR-011) that still dates from the first of them, so rapid
+    /// updates don't keep pushing the animation's start into the future.
+    pub started: Option<Instant>,
+}
+
+/// One live panel: its id, current content, optional expiry, and pending transition.
 #[derive(Debug, Clone)]
 pub struct Panel {
     pub id: String,
     pub spec: RenderSpec,
     /// When set, the panel is dropped by [`PanelRegistry::prune`] once this instant passes.
     pub expires_at: Option<Instant>,
+    /// The transition owed at the next render, cleared once registered.
+    pub pending: Option<Transition>,
+    pub fx: EffectSlot,
 }
 
 /// The ordered set of live panels. `Default` is empty (US1 has none).
@@ -69,6 +106,10 @@ impl PanelRegistry {
     }
 
     /// [`PanelRegistry::upsert`] with an explicit expiry instant.
+    ///
+    /// Also records the transition the panel now owes (009 FR-003/FR-004): a new name owes an
+    /// entrance, an existing one owes an update. Nothing is registered with the effects pipeline
+    /// here — the panel's `Rect` isn't known until it renders (see [`register_transition`]).
     pub fn upsert_with_expiry(
         &mut self,
         id: impl Into<String>,
@@ -76,17 +117,40 @@ impl PanelRegistry {
         expires_at: Option<Instant>,
     ) {
         let id = id.into();
+        let now = Instant::now();
         match self.panels.iter_mut().find(|p| p.id == id) {
             Some(p) => {
                 p.spec = spec;
                 p.expires_at = expires_at;
+                // An entrance still pending (the panel was created and replaced before it ever drew)
+                // stays an entrance — there is no old content to cross-fade from.
+                if p.pending != Some(Transition::Enter) {
+                    p.pending = Some(Transition::Update);
+                }
+                p.fx.started.get_or_insert(now);
             }
             None => self.panels.push(Panel {
                 id,
                 spec,
                 expires_at,
+                pending: Some(Transition::Enter),
+                fx: EffectSlot {
+                    prev: None,
+                    started: Some(now),
+                },
             }),
         }
+    }
+
+    /// Mutable access to a panel by id, for the renderer's snapshot/registration pass.
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut Panel> {
+        self.panels.iter_mut().find(|p| p.id == id)
+    }
+
+    /// Panels in insertion order, mutably — the renderer walks this to register transitions and
+    /// snapshot each panel's drawn content.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Panel> {
+        self.panels.iter_mut()
     }
 
     /// Remove panel `id`; a no-op when it isn't present.
@@ -131,6 +195,83 @@ impl PanelRegistry {
     pub fn is_empty(&self) -> bool {
         self.panels.is_empty()
     }
+}
+
+/// Where a panel landed on screen this frame: its bordered box and the content region inside it.
+#[derive(Debug, Clone, Copy)]
+pub struct PanelArea {
+    /// The whole panel including its border.
+    pub outer: Rect,
+    /// The content region the widget drew into.
+    pub inner: Rect,
+}
+
+/// Register the transition a panel owes, now that its on-screen `Rect` is known (T018/T019).
+///
+/// Split this way because the two halves genuinely belong in different places: *which* transition is
+/// owed is panel state (create vs replace, and what the outgoing content was), while *where* it plays
+/// is only knowable once the layout has run. The renderer calls this; it never chooses an effect.
+///
+/// The panel name is the effect key, which is what makes FR-005 automatic — a second update landing
+/// mid-transition cancels the first through `EffectManager::unique` instead of stacking on it.
+///
+/// Returns whether an effect was registered. `false` means the final content is already on screen and
+/// nothing further will change it, which is the correct outcome for every suppressed case.
+pub fn register_transition(
+    panel: &mut Panel,
+    effects: &mut Effects,
+    at: PanelArea,
+    visual: VisualConfig,
+) -> bool {
+    let Some(pending) = panel.pending.take() else {
+        return false;
+    };
+    panel.fx.started = None;
+    match pending {
+        // The whole panel arrives, border and all.
+        Transition::Enter => {
+            let ctx = ResolveCtx::agent(visual, at.outer);
+            effects::apply(effects, Some(&panel.id), &effects::panel_enter_spec(), &ctx)
+        }
+        // Only the content changes on an update; dissolving the border too would read as the panel
+        // flickering rather than as its data being replaced.
+        Transition::Update => {
+            let ctx = ResolveCtx::agent(visual, at.inner);
+            match panel.fx.prev.clone() {
+                Some(prev) => match effects::panel_update(prev, &ctx) {
+                    Some(fx) => {
+                        effects.add_keyed(panel.id.clone(), fx);
+                        true
+                    }
+                    None => false,
+                },
+                // No snapshot means the panel was replaced before it ever drew, so there is nothing
+                // to dissolve — it enters instead of half-playing a cross-fade.
+                None => {
+                    effects::apply(effects, Some(&panel.id), &effects::panel_enter_spec(), &ctx)
+                }
+            }
+        }
+    }
+}
+
+/// Snapshot a panel's freshly drawn content as the outgoing half of its *next* update (T019).
+///
+/// Taken from the real frame buffer after the widget renders, so the cross-fade starts from what the
+/// operator actually saw — borders, theme colors and all — rather than from a re-render.
+pub fn snapshot_render(panel: &mut Panel, area: Rect, buf: &Buffer) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let mut snap = Buffer::empty(area);
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            if buf.area.contains(ratatui::layout::Position::new(x, y)) {
+                snap[(x, y)] = buf[(x, y)].clone();
+            }
+        }
+    }
+    panel.fx.prev = Some(snap);
 }
 
 #[cfg(test)]
@@ -225,6 +366,169 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert!(r.get("keep").is_some());
         assert!(!r.has_expiring());
+    }
+
+    // --- US1 (T017–T019, T024): transitions and their cancellation --------------------------------
+
+    fn panel_area() -> PanelArea {
+        let outer = Rect::new(0, 0, 20, 6);
+        PanelArea {
+            outer,
+            inner: Rect::new(1, 1, 18, 4),
+        }
+    }
+
+    /// Paint `ch` across a panel's content region, the way a widget would.
+    fn draw(buf: &mut ratatui::buffer::Buffer, at: Rect, ch: &str, style: ratatui::style::Style) {
+        for y in at.y..at.bottom() {
+            for x in at.x..at.right() {
+                buf[(x, y)].set_symbol(ch).set_style(style);
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_panel_owes_an_entrance_and_a_replaced_one_owes_an_update() {
+        let mut r = PanelRegistry::new();
+        r.upsert("m", text("v1"));
+        assert_eq!(r.get_mut("m").unwrap().pending, Some(Transition::Enter));
+
+        // Consuming the transition clears it: a redraw with no new content animates nothing.
+        r.get_mut("m").unwrap().pending = None;
+        r.upsert("m", text("v2"));
+        assert_eq!(r.get_mut("m").unwrap().pending, Some(Transition::Update));
+    }
+
+    #[test]
+    fn a_panel_replaced_before_it_ever_drew_still_enters() {
+        // No outgoing content exists yet, so there is nothing to cross-fade from (FR-011: the burst
+        // coalesces to one transition, and it is the entrance).
+        let mut r = PanelRegistry::new();
+        r.upsert("m", text("v1"));
+        r.upsert("m", text("v2"));
+        assert_eq!(r.get_mut("m").unwrap().pending, Some(Transition::Enter));
+    }
+
+    #[test]
+    fn a_burst_of_updates_between_redraws_keeps_the_first_request_time() {
+        // FR-011: the transition coalesces, and it still dates from the update that started it, so
+        // rapid writes can't push the animation's start indefinitely into the future.
+        let mut r = PanelRegistry::new();
+        r.upsert("m", text("v1"));
+        r.get_mut("m").unwrap().pending = None;
+        r.get_mut("m").unwrap().fx.started = None;
+
+        r.upsert("m", text("v2"));
+        let first = r.get_mut("m").unwrap().fx.started.expect("update is timed");
+        r.upsert("m", text("v3"));
+        assert_eq!(
+            r.get_mut("m").unwrap().fx.started,
+            Some(first),
+            "the second write joins the pending transition rather than restarting it"
+        );
+    }
+
+    #[test]
+    fn a_second_update_mid_transition_replaces_the_first_instead_of_stacking_on_it() {
+        // FR-005 / US1 §3. The discriminator is what's on screen one frame after the second update:
+        // with cancellation the outgoing snapshot shows in its own colors, whereas a surviving
+        // entrance would still be dragging every cell toward the theme's fade-from color.
+        let at = panel_area();
+        let content = ratatui::style::Style::default()
+            .fg(ratatui::style::Color::Rgb(200, 200, 200))
+            .bg(ratatui::style::Color::Rgb(20, 20, 30));
+        let fade_from = crate::viz::buffer_render::theme_to_ratatui_color(
+            crate::viz::theme::active_theme().get(crate::viz::theme::Role::Info),
+        );
+        assert_ne!(
+            fade_from,
+            ratatui::style::Color::Rgb(200, 200, 200),
+            "the test needs the theme color to differ from the content color"
+        );
+
+        let mut r = PanelRegistry::new();
+        let mut e = Effects::new();
+        let visual = VisualConfig::default();
+
+        // Frame 1: the panel is created, so it enters — and its content is snapshotted.
+        r.upsert("m", text("v1"));
+        let mut buf = ratatui::buffer::Buffer::empty(at.outer);
+        draw(&mut buf, at.inner, "O", content);
+        assert!(register_transition(
+            r.get_mut("m").unwrap(),
+            &mut e,
+            at,
+            visual
+        ));
+        snapshot_render(r.get_mut("m").unwrap(), at.inner, &buf);
+        e.process(Duration::ZERO, &mut buf, at.outer);
+
+        // ~50ms later, mid-entrance, the content is replaced.
+        for _ in 0..3 {
+            let mut f = ratatui::buffer::Buffer::empty(at.outer);
+            draw(&mut f, at.inner, "O", content);
+            e.process(Duration::from_millis(16), &mut f, at.outer);
+        }
+        r.upsert("m", text("v2"));
+        let mut frame = ratatui::buffer::Buffer::empty(at.outer);
+        draw(&mut frame, at.inner, "N", content);
+        assert!(register_transition(
+            r.get_mut("m").unwrap(),
+            &mut e,
+            at,
+            visual
+        ));
+        e.process(Duration::ZERO, &mut frame, at.outer);
+
+        for y in at.inner.y..at.inner.bottom() {
+            for x in at.inner.x..at.inner.right() {
+                let cell = &frame[(x, y)];
+                assert_ne!(
+                    cell.fg, fade_from,
+                    "the cancelled entrance is still painting at ({x},{y})"
+                );
+            }
+        }
+
+        // And the update owns the panel alone: it settles within its own budget, then the panel is
+        // simply the new content.
+        let frames = (crate::tui::effects::PANEL_UPDATE_MS / 16) + 2;
+        let mut last = frame;
+        for _ in 0..frames {
+            last = ratatui::buffer::Buffer::empty(at.outer);
+            draw(&mut last, at.inner, "N", content);
+            e.process(Duration::from_millis(16), &mut last, at.outer);
+        }
+        assert!(!e.is_running(), "nothing may outlive one update budget");
+        for y in at.inner.y..at.inner.bottom() {
+            for x in at.inner.x..at.inner.right() {
+                assert_eq!(last[(x, y)].symbol(), "N");
+            }
+        }
+    }
+
+    #[test]
+    fn a_suppressed_transition_registers_nothing_and_says_so() {
+        // FR-006c at the panel level: with motion off the caller is told `false`, which means the
+        // final content is already on screen.
+        let mut r = PanelRegistry::new();
+        let mut e = Effects::new();
+        r.upsert("m", text("v1"));
+        let off = VisualConfig {
+            animations: false,
+            ..VisualConfig::default()
+        };
+        assert!(!register_transition(
+            r.get_mut("m").unwrap(),
+            &mut e,
+            panel_area(),
+            off
+        ));
+        assert!(!e.is_running());
+        assert!(
+            r.get_mut("m").unwrap().pending.is_none(),
+            "the transition is consumed either way — it never queues up for later"
+        );
     }
 
     #[test]

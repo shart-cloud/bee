@@ -17,9 +17,9 @@
 use std::time::Duration;
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use ratatui::layout::{Offset, Rect};
 use ratatui::style::{Color, Style};
-use tachyonfx::{fx, Effect, EffectManager, Motion};
+use tachyonfx::{blit_buffer_region, fx, Effect, EffectManager, Motion};
 
 use crate::config::{VisualConfig, VisualLevel};
 use crate::render_spec::{EffectDirection, EffectSpec};
@@ -99,21 +99,27 @@ impl ResolveCtx {
 /// | zero-area region | every variant (spec Edge Cases) |
 /// | `visual_level = none` | every **agent** variant (FR-024) — chrome still plays |
 pub fn resolve(spec: &EffectSpec, ctx: &ResolveCtx) -> Option<Effect> {
-    if !ctx.visual.animations {
-        return None;
-    }
-    if ctx.area.width == 0 || ctx.area.height == 0 {
-        return None;
-    }
-    if ctx.origin == Origin::Agent && ctx.visual.level == VisualLevel::None {
-        return None;
-    }
-    // Color effects have nothing to say on a monochrome terminal, but text effects keep their
-    // motion — a NO_COLOR user has not asked for a still screen (FR-006).
-    if spec.is_color() && !ctx.color {
+    if suppressed(spec, ctx) {
         return None;
     }
     Some(build(spec, ctx))
+}
+
+/// The suppression half of [`resolve`], factored out so composite transitions that cannot be
+/// expressed as a single [`EffectSpec`] (see [`panel_update`]) still consult exactly one gate.
+fn suppressed(spec: &EffectSpec, ctx: &ResolveCtx) -> bool {
+    if !ctx.visual.animations {
+        return true;
+    }
+    if ctx.area.width == 0 || ctx.area.height == 0 {
+        return true;
+    }
+    if ctx.origin == Origin::Agent && ctx.visual.level == VisualLevel::None {
+        return true;
+    }
+    // Color effects have nothing to say on a monochrome terminal, but text effects keep their
+    // motion — a NO_COLOR user has not asked for a still screen (FR-006).
+    spec.is_color() && !ctx.color
 }
 
 /// Map a resolved spec to its tachyonfx construction (research R3).
@@ -186,6 +192,52 @@ pub fn panel_update_specs() -> (EffectSpec, EffectSpec) {
             ms: PANEL_UPDATE_MS,
         },
     )
+}
+
+/// Build the panel-replacement transition over a snapshot of the outgoing content (FR-004).
+///
+/// The two halves target different content — `prev` is the panel as it looked before the update,
+/// while the incoming content is whatever the widget just drew into the buffer — so this cannot be
+/// one [`EffectSpec`]. It routes through the same suppression gate as everything else, and returns
+/// `None` for the same four reasons [`resolve`] does.
+///
+/// Realized as a sequence over one budget rather than two literally-simultaneous shaders: tachyonfx
+/// effects transform the cells that are already in the buffer, so blending two *sources* per cell is
+/// not something the stock primitives can express. The first half blits the outgoing snapshot back
+/// over the freshly drawn content and dissolves it away; the second half coalesces the new content
+/// that was underneath all along. On screen that is the cross-fade — old scatters out, new forms in.
+pub fn panel_update(prev: Buffer, ctx: &ResolveCtx) -> Option<Effect> {
+    let (out_spec, in_spec) = panel_update_specs();
+    if suppressed(&out_spec, ctx) || suppressed(&in_spec, ctx) {
+        return None;
+    }
+    let half = (PANEL_UPDATE_MS / 2).max(1);
+    let origin = ctx.area;
+    Some(
+        fx::sequence(&[
+            fx::parallel(&[blit(prev, origin, half), fx::dissolve(half)]),
+            fx::coalesce(half),
+        ])
+        .with_area(ctx.area),
+    )
+}
+
+/// An effect that draws `src` over `area` on every tick for `ms`, changing nothing else.
+///
+/// Used as the floor of the update transition: the dissolve running beside it needs the *outgoing*
+/// content in the buffer to eat away at, and the widget has already overwritten it with the new one.
+fn blit(src: Buffer, area: Rect, ms: u32) -> Effect {
+    fx::effect_fn_buf(src, ms, move |src, _ctx, buf| {
+        blit_buffer_region(
+            src,
+            src.area,
+            buf,
+            Offset {
+                x: i32::from(area.x),
+                y: i32::from(area.y),
+            },
+        );
+    })
 }
 
 fn motion(d: EffectDirection) -> Motion {
@@ -291,13 +343,116 @@ pub fn effect_style() -> Style {
     Style::default()
 }
 
+/// A fixed-step clock for testing effects without a terminal or a real one (T015).
+///
+/// Real frames redraw the widget *and then* apply effects, so a harness that only advanced the
+/// manager over a static buffer would test something the renderer never does — `coalesce` would have
+/// nothing to reform. [`Timeline::run`] therefore redraws base content into a fresh buffer each
+/// step, exactly like [`crate::tui::view::view`], and captures the result at named offsets.
+///
+/// Determinism comes free: tachyonfx seeds its own `SimpleRng` and pulls in no `rand`, so the same
+/// area and the same step sequence produce the same frames on every run.
+#[cfg(test)]
+pub(crate) struct Timeline {
+    area: Rect,
+    step: Duration,
+}
+
+#[cfg(test)]
+impl Timeline {
+    /// A timeline over `area` advancing one 16ms frame at a time — the 60fps state of FR-002.
+    pub(crate) fn frames(area: Rect) -> Self {
+        Timeline {
+            area,
+            step: Duration::from_millis(16),
+        }
+    }
+
+    /// Advance `effects` to the last requested offset, capturing a buffer snapshot at each.
+    ///
+    /// `draw` paints the base content — the widget's own output — into a fresh buffer before the
+    /// effects for that frame are applied. A snapshot for offset `t` is taken on the first frame
+    /// whose elapsed time has reached `t`, so `at(0)` is the pre-animation frame.
+    pub(crate) fn run(
+        &self,
+        effects: &mut Effects,
+        at: &[Duration],
+        mut draw: impl FnMut(&mut Buffer),
+    ) -> Vec<Buffer> {
+        let mut captured = Vec::with_capacity(at.len());
+        let mut elapsed = Duration::ZERO;
+        let mut next = 0usize;
+        loop {
+            let mut buf = Buffer::empty(self.area);
+            draw(&mut buf);
+            // Every frame runs the effects pass, including the first — which advances by zero, the
+            // same delta `App::tick_clock` hands the first frame of a real session. That is what
+            // makes a t=0 snapshot show the *start* of the animation rather than the raw widget.
+            let dt = if elapsed.is_zero() {
+                Duration::ZERO
+            } else {
+                self.step
+            };
+            effects.process(dt, &mut buf, self.area);
+            while next < at.len() && at[next] <= elapsed {
+                captured.push(buf.clone());
+                next += 1;
+            }
+            if next >= at.len() {
+                return captured;
+            }
+            elapsed += self.step;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::VisualConfig;
+    use ratatui::style::Modifier;
 
     fn area() -> Rect {
         Rect::new(0, 0, 20, 5)
+    }
+
+    /// Base content for the timeline tests: a filled block of text with a distinct style, so both
+    /// symbol mutations (dissolve/coalesce) and color mutations (fade) are visible.
+    ///
+    /// Both colors are explicit. `Color::Reset` has no place on a gradient, so a faded cell comes
+    /// back as whatever concrete color `Reset` resolves to rather than as `Reset` itself — a real
+    /// property of color interpolation, but not the one these tests are about.
+    fn draw_base(buf: &mut Buffer) {
+        for y in buf.area.y..buf.area.bottom() {
+            for x in buf.area.x..buf.area.right() {
+                buf[(x, y)].set_symbol("X").set_style(
+                    Style::default()
+                        .fg(Color::Rgb(200, 200, 200))
+                        .bg(Color::Rgb(20, 20, 30)),
+                );
+            }
+        }
+    }
+
+    fn symbols(buf: &Buffer) -> String {
+        let mut s = String::new();
+        for y in buf.area.y..buf.area.bottom() {
+            for x in buf.area.x..buf.area.right() {
+                s.push_str(buf[(x, y)].symbol());
+            }
+        }
+        s
+    }
+
+    fn colors(buf: &Buffer) -> Vec<(Color, Color)> {
+        let mut v = Vec::new();
+        for y in buf.area.y..buf.area.bottom() {
+            for x in buf.area.x..buf.area.right() {
+                let c = &buf[(x, y)];
+                v.push((c.fg, c.bg));
+            }
+        }
+        v
     }
 
     fn ctx(visual: VisualConfig, color: bool, origin: Origin) -> ResolveCtx {
@@ -483,6 +638,226 @@ mod tests {
         let (out, in_) = panel_update_specs();
         assert!(matches!(out, EffectSpec::DissolveOut { .. }));
         assert!(matches!(in_, EffectSpec::DissolveIn { .. }));
+    }
+
+    // --- US1: the animation actually plays, and stops when told to (T022/T023/T025/T027/T028) ----
+
+    #[test]
+    fn a_panel_entrance_starts_at_the_theme_color_and_lands_on_the_final_content() {
+        // SC-001: at t=0 the region is the fade-from color, at 150ms it is neither that nor the
+        // final content, and by 300ms the widget's own colors are on screen untouched.
+        let mut e = Effects::new();
+        let c = ctx(on(), true, Origin::Agent);
+        assert!(apply(&mut e, Some("m"), &panel_enter_spec(), &c));
+
+        let shots = Timeline::frames(area()).run(
+            &mut e,
+            &[
+                Duration::ZERO,
+                Duration::from_millis(150),
+                Duration::from_millis(PANEL_ENTER_MS as u64),
+            ],
+            draw_base,
+        );
+
+        let mut finished = Buffer::empty(area());
+        draw_base(&mut finished);
+        let fade_from = role_color(Role::Info);
+
+        assert!(
+            colors(&shots[0]).iter().all(|(fg, _)| *fg == fade_from),
+            "t=0 must be the fade-from color, not the widget's"
+        );
+        assert_ne!(
+            colors(&shots[1]),
+            colors(&shots[0]),
+            "t=150ms must have moved off the starting color"
+        );
+        assert_ne!(
+            colors(&shots[1]),
+            colors(&finished),
+            "t=150ms must not have arrived yet"
+        );
+        assert_eq!(
+            colors(&shots[2]),
+            colors(&finished),
+            "t=300ms must be the widget's final colors"
+        );
+        assert_eq!(
+            symbols(&shots[1]),
+            symbols(&finished),
+            "a fade moves color, never glyphs"
+        );
+    }
+
+    #[test]
+    fn a_panel_update_dissolves_the_old_content_then_coalesces_the_new() {
+        // SC-002. The outgoing content is a snapshot; the incoming content is what the widget draws
+        // every frame, so the base painter here is the *new* content throughout.
+        let mut prev = Buffer::empty(area());
+        for y in area().y..area().bottom() {
+            for x in area().x..area().right() {
+                prev[(x, y)].set_symbol("O");
+            }
+        }
+        let draw_new = |buf: &mut Buffer| {
+            for y in buf.area.y..buf.area.bottom() {
+                for x in buf.area.x..buf.area.right() {
+                    buf[(x, y)].set_symbol("N");
+                }
+            }
+        };
+
+        let mut e = Effects::new();
+        let c = ctx(on(), true, Origin::Agent);
+        let fx = panel_update(prev, &c).expect("update transition");
+        e.add_keyed("m", fx);
+
+        let total = PANEL_UPDATE_MS as u64;
+        let shots = Timeline::frames(area()).run(
+            &mut e,
+            &[
+                Duration::ZERO,
+                Duration::from_millis(total / 4),
+                Duration::from_millis(total * 3 / 4),
+                Duration::from_millis(total),
+            ],
+            draw_new,
+        );
+
+        assert!(
+            symbols(&shots[0]).chars().all(|ch| ch == 'O'),
+            "t=0 still shows the outgoing content: {:?}",
+            symbols(&shots[0])
+        );
+        let quarter = symbols(&shots[1]);
+        assert!(
+            quarter.contains('O') && quarter.contains(' '),
+            "a quarter in, the old content is part-dissolved: {quarter:?}"
+        );
+        let three_quarters = symbols(&shots[2]);
+        assert!(
+            three_quarters.contains('N') && three_quarters.contains(' '),
+            "three quarters in, the new content is part-formed: {three_quarters:?}"
+        );
+        assert!(
+            symbols(&shots[3]).chars().all(|ch| ch == 'N'),
+            "by the end only the new content remains: {:?}",
+            symbols(&shots[3])
+        );
+    }
+
+    #[test]
+    fn character_effects_keep_moving_under_no_color_without_touching_a_single_color() {
+        // SC-010 / FR-006: NO_COLOR removes color, not motion. A dissolve still mutates glyphs; the
+        // fg/bg of every cell is exactly what the widget drew, so nothing can emit a color escape
+        // that the widget did not already ask for.
+        let mut e = Effects::new();
+        let c = ctx(on(), false, Origin::Agent);
+        assert!(apply(
+            &mut e,
+            Some("m"),
+            &EffectSpec::DissolveIn { ms: 300 },
+            &c
+        ));
+
+        let shots = Timeline::frames(area()).run(
+            &mut e,
+            &[Duration::ZERO, Duration::from_millis(150)],
+            draw_base,
+        );
+        let mut base = Buffer::empty(area());
+        draw_base(&mut base);
+
+        assert_ne!(
+            symbols(&shots[1]),
+            symbols(&base),
+            "the dissolve must still mutate glyphs under NO_COLOR"
+        );
+        for shot in &shots {
+            assert_eq!(
+                colors(shot),
+                colors(&base),
+                "no cell's color may change under NO_COLOR"
+            );
+            assert!(
+                shot.content()
+                    .iter()
+                    .all(|c| c.modifier == Modifier::empty()),
+                "no modifier is introduced either"
+            );
+        }
+    }
+
+    #[test]
+    fn the_env_kill_switch_leaves_the_first_frame_already_final() {
+        // FR-006b/c, SC-011: `BEE_NO_ANIMATION=1` resolves to animations-off, which registers
+        // nothing at all — so the very first frame is the finished content and `is_running()` never
+        // becomes true, which is what keeps the loop out of its 60fps state.
+        // `true` is what `resolve` passes when `BEE_NO_ANIMATION` is present in the environment;
+        // injected rather than set, so this test doesn't race other threads over a process global.
+        let off = VisualConfig::resolve_with(None, false, None, true, None)
+            .expect("BEE_NO_ANIMATION resolves");
+        assert!(!off.animations, "the env var must disable motion");
+
+        let mut e = Effects::new();
+        let c = ctx(off, true, Origin::Agent);
+        assert!(!apply(&mut e, Some("m"), &panel_enter_spec(), &c));
+        assert!(panel_update(Buffer::empty(area()), &c).is_none());
+        assert!(
+            !e.is_running(),
+            "an animation-disabled session never has motion to advance"
+        );
+
+        let shots = Timeline::frames(area()).run(
+            &mut e,
+            &[Duration::ZERO, Duration::from_millis(300)],
+            draw_base,
+        );
+        let mut finished = Buffer::empty(area());
+        draw_base(&mut finished);
+        for shot in &shots {
+            assert_eq!(symbols(shot), symbols(&finished));
+            assert_eq!(colors(shot), colors(&finished));
+        }
+    }
+
+    #[test]
+    fn the_three_axes_compose_without_cancelling_each_other_out() {
+        // SC-012 / FR-006d: NO_COLOR + motion on + `visual_level = none`. The agent gets nothing,
+        // bee's own chrome still animates its glyphs, and no color moves anywhere.
+        let level_none = VisualConfig {
+            level: VisualLevel::None,
+            ..VisualConfig::default()
+        };
+        let spec = EffectSpec::DissolveIn { ms: 300 };
+
+        let agent = ctx(level_none, false, Origin::Agent);
+        assert!(
+            resolve(&spec, &agent).is_none(),
+            "at level none the agent animates nothing"
+        );
+
+        let mut e = Effects::new();
+        let chrome = ctx(level_none, false, Origin::Chrome);
+        assert!(
+            apply(&mut e, None, &spec, &chrome),
+            "chrome is bee's own UI"
+        );
+
+        let shots = Timeline::frames(area()).run(
+            &mut e,
+            &[Duration::ZERO, Duration::from_millis(150)],
+            draw_base,
+        );
+        let mut base = Buffer::empty(area());
+        draw_base(&mut base);
+        assert_ne!(
+            symbols(&shots[1]),
+            symbols(&base),
+            "chrome text effects still move"
+        );
+        assert_eq!(colors(&shots[1]), colors(&base), "and still move no color");
     }
 
     #[test]

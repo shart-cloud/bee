@@ -14,12 +14,17 @@ use ratatui::Frame;
 
 use super::app::{App, Focus, LayoutMode, TurnState};
 use super::chat::{Body, Role};
+use super::panels::{self, PanelArea};
 use super::theme_bridge::{dim_style, role_style, role_style_bold};
 use crate::render_spec::RenderSpec;
 use crate::viz::theme::Role as ThemeRole;
 
 /// Draw the whole UI for the current model state.
-pub fn view(app: &App, frame: &mut Frame<'_>) {
+///
+/// Takes `&mut App` because the frame is where the effects pipeline lives (009 FR-001): panel
+/// transitions can only be registered once the layout has assigned each panel a `Rect`, and the
+/// effects pass mutates the buffer after every widget has drawn into it.
+pub fn view(app: &mut App, frame: &mut Frame<'_>) {
     let area = frame.area();
 
     if app.layout_mode == LayoutMode::TooSmall {
@@ -60,11 +65,15 @@ pub fn view(app: &App, frame: &mut Frame<'_>) {
     if app.help_open {
         render_help(frame, area);
     }
+
+    // Effects transform cells that are already drawn (FR-001), so this is the last thing the frame
+    // does: every widget above has painted, and ratatui flushes as soon as we return.
+    app.effects.process(app.dt, frame.buffer_mut(), area);
 }
 
 /// The single-pane panel overlay (US3 T036): panels stacked in a bordered popup over the chat, so a
 /// narrow terminal can still see model-owned output. Toggled with `p`, closed with `p`/`Esc`.
-fn render_panel_overlay(app: &App, frame: &mut Frame<'_>, area: Rect) {
+fn render_panel_overlay(app: &mut App, frame: &mut Frame<'_>, area: Rect) {
     let w = area.width.saturating_sub(4).clamp(20, 72);
     let h = area.height.saturating_sub(4).max(5);
     let popup = center(area, w, h);
@@ -328,7 +337,12 @@ pub fn viewport_for(app: &App) -> crate::viz::viewport::Viewport {
     }
 }
 
-fn render_panels(app: &App, frame: &mut Frame<'_>, area: Rect) {
+/// Draw the panel column, then let each panel claim the transition it owes (009 T018/T019).
+///
+/// Registration happens here rather than at upsert time because a transition needs the panel's
+/// `Rect`, which only exists after this function has laid the column out. The outgoing snapshot for
+/// the *next* update is taken from this frame's buffer on the way out.
+fn render_panels(app: &mut App, frame: &mut Frame<'_>, area: Rect) {
     if app.panels.is_empty() || area.height == 0 {
         return;
     }
@@ -339,6 +353,9 @@ fn render_panels(app: &App, frame: &mut Frame<'_>, area: Rect) {
     let inner_w = area.width.saturating_sub(2).max(1);
     let mut y = area.y;
     let mut shown = 0usize;
+    // Where each panel landed, so the transition pass below can register against the real Rect
+    // without re-deriving the greedy layout.
+    let mut placed: Vec<(String, PanelArea)> = Vec::new();
 
     for (id, spec) in app.panels.iter() {
         let remaining = area.bottom().saturating_sub(y);
@@ -364,8 +381,20 @@ fn render_panels(app: &App, frame: &mut Frame<'_>, area: Rect) {
         if inner.width > 0 && inner.height > 0 {
             crate::viz::buffer_render::render_into(spec, inner, frame.buffer_mut());
         }
+        placed.push((id.to_string(), PanelArea { outer: rect, inner }));
         y += h;
         shown += 1;
+    }
+
+    // Now that every panel has a Rect: register whatever transition it owes, then snapshot the
+    // content it just drew as the outgoing half of its *next* update (FR-003, FR-004).
+    let visual = app.visual;
+    for (id, at) in placed {
+        let Some(panel) = app.panels.get_mut(&id) else {
+            continue;
+        };
+        panels::register_transition(panel, &mut app.effects, at, visual);
+        panels::snapshot_render(panel, at.inner, frame.buffer_mut());
     }
 
     // Tell the truth about anything that didn't fit, and point at the way to reclaim space.
@@ -462,7 +491,7 @@ mod tests {
 
     // Render the view onto a fixed-size headless backend and return its symbols as text. Symbols are
     // color-independent, so these snapshots are deterministic without touching NO_COLOR (research D12).
-    fn render(app: &App, w: u16, h: u16) -> String {
+    fn render(app: &mut App, w: u16, h: u16) -> String {
         let mut term = Terminal::new(TestBackend::new(w, h)).expect("test backend");
         term.draw(|f| view(app, f)).expect("draw");
         symbols(term.backend().buffer())
@@ -485,7 +514,7 @@ mod tests {
         app.chat.push(ChatMessage::text(Role::User, "hello bee"));
         app.chat
             .push(ChatMessage::text(Role::Assistant, "hi there"));
-        let out = render(&app, 80, 20);
+        let out = render(&mut app, 80, 20);
         assert!(out.contains("bee"), "header missing:\n{out}");
         assert!(out.contains("you  hello bee"), "user line missing:\n{out}");
         assert!(out.contains("hi there"), "assistant line missing:\n{out}");
@@ -495,8 +524,8 @@ mod tests {
 
     #[test]
     fn too_small_terminal_shows_a_message_not_a_broken_layout() {
-        let app = App::new(30, 8); // below the 40×10 floor
-        let out = render(&app, 30, 8);
+        let mut app = App::new(30, 8); // below the 40×10 floor
+        let out = render(&mut app, 30, 8);
         assert!(out.contains("terminal too small"), "got:\n{out}");
     }
 
@@ -504,7 +533,7 @@ mod tests {
     fn help_overlay_lists_keybindings() {
         let mut app = App::new(80, 20);
         app.help_open = true;
-        let out = render(&app, 80, 20);
+        let out = render(&mut app, 80, 20);
         assert!(out.contains("keybindings"), "help title missing:\n{out}");
         assert!(out.contains("quit"), "help body missing:\n{out}");
     }
@@ -527,7 +556,7 @@ mod tests {
                 }],
             },
         );
-        let out = render(&app, 120, 24);
+        let out = render(&mut app, 120, 24);
         assert!(out.contains("metrics"), "panel title missing:\n{out}");
         assert!(out.contains("Latency"), "panel content missing:\n{out}");
         assert!(
@@ -545,7 +574,7 @@ mod tests {
         app.chat.push(ChatMessage::widget(RenderSpec::Sprite {
             spec: crate::viz::bee::sprite(),
         }));
-        let out = render(&app, 80, 24);
+        let out = render(&mut app, 80, 24);
         assert!(
             !out.contains("[sprite"),
             "sprite must rasterize, not print its ASCII placeholder:\n{out}"
@@ -582,7 +611,7 @@ mod tests {
         }));
         app.chat
             .push(ChatMessage::text(Role::Assistant, "THE NEWEST LINE"));
-        let out = render(&app, 80, 20);
+        let out = render(&mut app, 80, 20);
         assert!(
             out.contains("THE NEWEST LINE"),
             "newest message must be visible at the bottom:\n{out}"
@@ -607,7 +636,7 @@ mod tests {
                 },
             );
         }
-        let out = render(&app, 120, 24);
+        let out = render(&mut app, 120, 24);
         assert!(out.contains("more"), "overflow note missing:\n{out}");
         assert!(
             out.contains("remove_panel") || out.contains("clear_panels"),
@@ -634,14 +663,14 @@ mod tests {
         );
         assert_eq!(app.layout_mode, LayoutMode::SinglePane);
 
-        let closed = render(&app, 80, 24);
+        let closed = render(&mut app, 80, 24);
         assert!(
             !closed.contains("CPU 82%"),
             "panel hidden while the overlay is closed:\n{closed}"
         );
 
         app.panels_visible = true;
-        let open = render(&app, 80, 24);
+        let open = render(&mut app, 80, 24);
         assert!(
             open.contains("CPU 82%"),
             "overlay reveals the panel:\n{open}"
@@ -681,7 +710,7 @@ mod tests {
                 dim: false,
             },
         );
-        let out = render(&app, 120, 24);
+        let out = render(&mut app, 120, 24);
         for expected in [
             "bee",
             "you  hello bee",
@@ -697,15 +726,15 @@ mod tests {
     #[test]
     fn the_footer_advertises_yank_always_and_p_only_when_the_overlay_is_the_way_in() {
         // Wide + no panels: no reason to mention `p`.
-        let wide = App::new(120, 24);
-        let out = render(&wide, 120, 24);
+        let mut wide = App::new(120, 24);
+        let out = render(&mut wide, 120, 24);
         assert!(out.contains("y yank"), "yank hint missing:\n{out}");
         assert!(!out.contains("p panels"), "no overlay to advertise:\n{out}");
 
         // Narrow + panels: the overlay is the only way to see them, so `p` is advertised.
         let mut narrow = App::new(80, 24);
         narrow.panels.upsert("m", RenderSpec::Separator);
-        let out = render(&narrow, 80, 24);
+        let out = render(&mut narrow, 80, 24);
         assert!(out.contains("p panels"), "overlay hint missing:\n{out}");
     }
 
@@ -714,7 +743,7 @@ mod tests {
         // It sheds low-priority hints rather than getting cut off; quit must always survive.
         let mut app = App::new(50, 20);
         app.panels.upsert("m", RenderSpec::Separator);
-        let out = render(&app, 50, 20);
+        let out = render(&mut app, 50, 20);
         let footer = out.lines().last().unwrap_or_default();
         assert!(
             footer.contains("q quit"),
@@ -735,7 +764,7 @@ mod tests {
             a.chat.push(ChatMessage::text(Role::Assistant, "hi"));
             a
         };
-        let empty = render(&base(), 120, 24);
+        let empty = render(&mut base(), 120, 24);
         assert!(
             !empty.contains("metrics"),
             "no panel title when empty:\n{empty}"
@@ -743,11 +772,46 @@ mod tests {
 
         let mut with = base();
         with.panels.upsert("metrics", RenderSpec::Separator);
-        let populated = render(&with, 120, 24);
+        let populated = render(&mut with, 120, 24);
         assert!(
             populated.contains("metrics"),
             "panel appears once populated:\n{populated}"
         );
         assert_ne!(empty, populated, "the panel column changes the layout");
+    }
+
+    // --- 009 US1 (T018/T020): the render path is what puts effects on screen ---------------------
+
+    #[test]
+    fn drawing_a_new_panel_registers_its_entrance_and_snapshots_what_it_drew() {
+        // The whole US1 loop through the real renderer: layout assigns the panel a Rect, the
+        // transition is registered against it, and the drawn content is kept as the outgoing half of
+        // the next update.
+        let mut app = App::new(120, 24);
+        app.panels.upsert("metrics", RenderSpec::Separator);
+        assert!(!app.effects.is_running(), "nothing animates before a frame");
+
+        render(&mut app, 120, 24);
+        assert!(app.effects.is_running(), "the panel entered");
+        let panel = app.panels.get_mut("metrics").expect("panel");
+        assert!(panel.pending.is_none(), "the transition was consumed");
+        assert!(
+            panel.fx.prev.is_some(),
+            "the drawn content is the next update's outgoing half"
+        );
+    }
+
+    #[test]
+    fn a_motionless_session_draws_panels_with_no_effect_at_all() {
+        // FR-006c end to end: same frame, same panel, nothing registered — so the loop has nothing
+        // to advance and the operator sees final content immediately.
+        let mut app = App::new(120, 24).with_visual(crate::config::VisualConfig {
+            animations: false,
+            ..crate::config::VisualConfig::default()
+        });
+        app.panels.upsert("metrics", RenderSpec::Separator);
+        let out = render(&mut app, 120, 24);
+        assert!(!app.effects.is_running(), "no motion may be registered");
+        assert!(out.contains("metrics"), "the panel is on screen regardless");
     }
 }

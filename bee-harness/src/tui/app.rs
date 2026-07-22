@@ -5,12 +5,16 @@
 //! (sending a submitted line to the model) are surfaced as data via [`App::take_outbox`], not done
 //! here. Panels (US2) and the live-panel routing land in later tasks.
 
+use std::time::{Duration, Instant};
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::chat::{ChatMessage, Role};
+use super::effects::Effects;
 use super::input::InputState;
 use super::message::Message;
 use super::panels::PanelRegistry;
+use crate::config::VisualConfig;
 use crate::session::SessionEvent;
 
 /// Which region has keyboard focus. (Panels focus arrives with US2.)
@@ -81,6 +85,19 @@ pub struct App {
     pub yank: Option<String>,
     /// A `Ctrl-Z` suspend request; the event loop performs the SIGTSTP dance (US3 T035).
     pub suspend_requested: bool,
+    /// The live tachyonfx effects (009). Empty — and permanently so — when animations are off.
+    pub effects: Effects,
+    /// The three presentation axes for this session (009 FR-006a/FR-007).
+    pub visual: VisualConfig,
+    /// Time since the previous frame, set by the event loop before each draw and consumed by the
+    /// effects pass. Passed as state rather than read from a clock inside `view` so a test can
+    /// render a deterministic frame at any point on an effect's timeline.
+    pub dt: Duration,
+    /// When the last frame was drawn, for computing [`App::dt`].
+    last_frame: Option<Instant>,
+    /// Redraws caused by a periodic tick rather than by an event (009 SC-003). Event-driven draws
+    /// are not counted — the claim under test is that an idle session wakes up zero times.
+    pub periodic_redraws: u64,
 }
 
 impl App {
@@ -103,7 +120,36 @@ impl App {
             outbox: None,
             yank: None,
             suspend_requested: false,
+            effects: Effects::new(),
+            visual: VisualConfig::default(),
+            dt: Duration::ZERO,
+            last_frame: None,
+            periodic_redraws: 0,
         }
+    }
+
+    /// The same session under an explicit visual configuration (009). Kept separate from
+    /// [`App::new`] so 008's tests, which have no opinion about motion, stay untouched.
+    pub fn with_visual(mut self, visual: VisualConfig) -> Self {
+        self.visual = visual;
+        self
+    }
+
+    /// Stamp the frame clock, setting [`App::dt`] to the time since the previous frame. The first
+    /// frame gets a zero delta, so nothing jumps mid-animation on a session that has just started.
+    pub fn tick_clock(&mut self, now: Instant) {
+        self.dt = match self.last_frame {
+            Some(prev) => now.saturating_duration_since(prev),
+            None => Duration::ZERO,
+        };
+        self.last_frame = Some(now);
+    }
+
+    /// Whether a full-screen overlay is on screen. Always false until US3 (T037) gives `App` the
+    /// overlay field; the scheduler's countdown state is written against this from the start so the
+    /// state machine doesn't have to be retrofitted later (FR-002).
+    pub fn overlay_active(&self) -> bool {
+        false
     }
 
     /// Take the pending outgoing user message, if any (the loop sends it to the model).
