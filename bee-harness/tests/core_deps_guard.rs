@@ -27,6 +27,8 @@ const FORBIDDEN: &[&str] = &[
     "futures-util",
     // Scripting / rendering brought in by the harness
     "rhai",
+    // Terminal effects (009-tachyonfx-effects, SC-009)
+    "tachyonfx",
     // MCP client
     "rmcp",
 ];
@@ -101,6 +103,57 @@ fn bee_core_has_no_terminal_or_runtime_dependency() {
 #[test]
 fn bee_common_has_no_terminal_or_runtime_dependency() {
     assert_clean("bee-common");
+}
+
+/// `tachyonfx` must also stay out of the **headless** `bee-harness` build (009 SC-009,
+/// Constitution V): a batch run or a CI episode has no terminal, and pulling an effects engine into
+/// it would make the animation layer a cost everyone pays rather than one the TUI opts into.
+///
+/// Asserted against the manifest rather than the resolved tree, so the rule holds without building:
+/// the dependency must be `optional` and reachable only through the `tui` feature.
+#[test]
+fn tachyonfx_is_reachable_only_through_the_tui_feature() {
+    let path = workspace_root().join("bee-harness").join("Cargo.toml");
+    let manifest = std::fs::read_to_string(&path).expect("read bee-harness manifest");
+
+    // The declaration spans several lines, so take it from its key to the end of its table.
+    let start = manifest
+        .find("\ntachyonfx")
+        .expect("bee-harness must declare tachyonfx");
+    let decl: String = manifest[start + 1..]
+        .lines()
+        .take_while(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        decl.contains("optional = true"),
+        "tachyonfx must be optional so the headless build never pulls it in, but got: {decl}"
+    );
+
+    // And the only feature that turns it on is `tui`. Feature values are multi-line arrays, so
+    // track which key's value each `dep:tachyonfx` falls inside.
+    let features = manifest
+        .split("[features]")
+        .nth(1)
+        .expect("bee-harness must have a [features] table");
+    let features = features.split("\n[").next().unwrap_or(features);
+    let mut current = "";
+    let mut enabling: Vec<&str> = Vec::new();
+    for line in features.lines() {
+        if let Some((key, _)) = line.split_once('=') {
+            if !key.trim().is_empty() && !key.trim_start().starts_with('#') {
+                current = key.trim();
+            }
+        }
+        if line.contains("dep:tachyonfx") {
+            enabling.push(current);
+        }
+    }
+    assert_eq!(
+        enabling,
+        vec!["tui"],
+        "only the `tui` feature may enable tachyonfx"
+    );
 }
 
 #[test]
