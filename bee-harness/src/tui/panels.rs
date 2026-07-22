@@ -21,7 +21,7 @@ use ratatui::layout::Rect;
 
 use super::effects::{self, Effects, ResolveCtx};
 use crate::config::VisualConfig;
-use crate::render_spec::{PanelOp, RenderSpec};
+use crate::render_spec::{EffectSpec, PanelOp, RenderSpec};
 
 /// The transition a panel owes the effects pipeline on its next render (009 US1).
 ///
@@ -50,6 +50,10 @@ pub struct EffectSlot {
     /// coalesces to one transition (FR-011) that still dates from the first of them, so rapid
     /// updates don't keep pushing the animation's start into the future.
     pub started: Option<Instant>,
+    /// A transition the agent asked for with `widget.effect(e)` (009 FR-022). It replaces the
+    /// default for the next render only — consumed when the transition is registered, so the panel
+    /// returns to its default behavior rather than repeating the request forever.
+    pub requested: Option<EffectSpec>,
 }
 
 /// One live panel: its id, current content, optional expiry, and pending transition.
@@ -80,14 +84,20 @@ impl PanelRegistry {
     /// the clock.
     pub fn apply_at(&mut self, op: PanelOp, now: Instant) {
         match op {
-            // `effect` is consumed by the effects pipeline (009), not by the registry — the
-            // registry's job is content and lifetime. Transitions are chosen from the create-vs-
-            // replace distinction `upsert_with_expiry` already knows about.
             PanelOp::Upsert {
-                id, spec, ttl_ms, ..
+                id,
+                spec,
+                ttl_ms,
+                effect,
             } => {
                 let expires_at = ttl_ms.map(|ms| now + Duration::from_millis(ms));
-                self.upsert_with_expiry(id, spec, expires_at);
+                self.upsert_with_expiry(&id, spec, expires_at);
+                // The agent's requested transition replaces the default for this update (FR-022).
+                // `None` leaves the default in place — it means "the usual transition for this
+                // target", never "no animation"; suppressing motion is the kill switch's job.
+                if let (Some(p), Some(e)) = (self.get_mut(&id), effect) {
+                    p.fx.requested = Some(e);
+                }
             }
             PanelOp::Remove { id } => self.remove(&id),
             PanelOp::Clear => self.clear(),
@@ -135,8 +145,8 @@ impl PanelRegistry {
                 expires_at,
                 pending: Some(Transition::Enter),
                 fx: EffectSlot {
-                    prev: None,
                     started: Some(now),
+                    ..EffectSlot::default()
                 },
             }),
         }
@@ -227,6 +237,12 @@ pub fn register_transition(
         return false;
     };
     panel.fx.started = None;
+    // An agent-requested transition replaces the default for both create and replace, and plays over
+    // the whole panel — the agent asked for *this* motion, not for a variation on the default.
+    if let Some(spec) = panel.fx.requested.take() {
+        let ctx = ResolveCtx::agent(visual, at.outer);
+        return effects::apply(effects, Some(&panel.id), &spec, &ctx);
+    }
     match pending {
         // The whole panel arrives, border and all.
         Transition::Enter => {
@@ -551,5 +567,117 @@ mod tests {
             "expiry was lifted"
         );
         assert_eq!(r.get("m"), Some(&text("v2")));
+    }
+    // --- 009 US4 (T055): the agent's requested transition ----------------------------------------
+
+    #[test]
+    fn an_agent_requested_effect_replaces_the_default_transition() {
+        // FR-022: `chart.effect(slide_in("left", 400))` is directional intent, and it must actually
+        // be what plays — otherwise the whole Rhai surface is decoration on decoration.
+        let mut r = PanelRegistry::new();
+        r.apply(PanelOp::Upsert {
+            id: "m".into(),
+            spec: text("v1"),
+            ttl_ms: None,
+            effect: Some(EffectSpec::SlideIn {
+                direction: crate::render_spec::EffectDirection::Left,
+                ms: 400,
+            }),
+        });
+        assert_eq!(
+            r.get_mut("m").unwrap().fx.requested,
+            Some(EffectSpec::SlideIn {
+                direction: crate::render_spec::EffectDirection::Left,
+                ms: 400,
+            })
+        );
+
+        let mut e = Effects::new();
+        assert!(register_transition(
+            r.get_mut("m").unwrap(),
+            &mut e,
+            panel_area(),
+            VisualConfig::default()
+        ));
+        assert!(e.is_running());
+        assert!(
+            r.get_mut("m").unwrap().fx.requested.is_none(),
+            "the request is consumed, not repeated on every later update"
+        );
+    }
+
+    #[test]
+    fn a_requested_effect_lasts_as_long_as_it_asked_for() {
+        // US4 §1: a 400ms slide is active for 400ms — not the panel default's 300.
+        let at = panel_area();
+        let mut r = PanelRegistry::new();
+        let mut e = Effects::new();
+        r.apply(PanelOp::Upsert {
+            id: "m".into(),
+            spec: text("v1"),
+            ttl_ms: None,
+            effect: Some(EffectSpec::SlideIn {
+                direction: crate::render_spec::EffectDirection::Left,
+                ms: 400,
+            }),
+        });
+        register_transition(r.get_mut("m").unwrap(), &mut e, at, VisualConfig::default());
+
+        let mut buf = ratatui::buffer::Buffer::empty(at.outer);
+        // Still animating a whisker before its budget...
+        for _ in 0..23 {
+            e.process(Duration::from_millis(16), &mut buf, at.outer);
+        }
+        assert!(e.is_running(), "a 400ms effect is still live at ~368ms");
+        // ...and finished after it.
+        for _ in 0..5 {
+            e.process(Duration::from_millis(16), &mut buf, at.outer);
+        }
+        assert!(!e.is_running(), "and done by ~448ms");
+    }
+
+    #[test]
+    fn no_request_means_the_default_transition_not_a_still_panel() {
+        // `None` is the absence of a *request*, never a request for stillness.
+        let mut r = PanelRegistry::new();
+        let mut e = Effects::new();
+        r.apply(PanelOp::Upsert {
+            id: "m".into(),
+            spec: text("v1"),
+            ttl_ms: None,
+            effect: None,
+        });
+        assert!(register_transition(
+            r.get_mut("m").unwrap(),
+            &mut e,
+            panel_area(),
+            VisualConfig::default()
+        ));
+        assert!(e.is_running(), "the default entrance still plays");
+    }
+
+    #[test]
+    fn a_requested_effect_is_still_subject_to_the_kill_switch() {
+        // FR-006b outranks FR-022: asking for a specific effect is not a way around the operator's
+        // motion setting.
+        let mut r = PanelRegistry::new();
+        let mut e = Effects::new();
+        r.apply(PanelOp::Upsert {
+            id: "m".into(),
+            spec: text("v1"),
+            ttl_ms: None,
+            effect: Some(EffectSpec::Glow { ms: 500 }),
+        });
+        let off = VisualConfig {
+            animations: false,
+            ..VisualConfig::default()
+        };
+        assert!(!register_transition(
+            r.get_mut("m").unwrap(),
+            &mut e,
+            panel_area(),
+            off
+        ));
+        assert!(!e.is_running());
     }
 }

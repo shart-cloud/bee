@@ -79,6 +79,38 @@ pub struct GridCell {
     pub content: RenderSpec,
 }
 
+/// A widget plus the transition the agent asked for (009-tachyonfx-effects, FR-022).
+///
+/// The pair exists because a [`RenderSpec`] is content and an [`EffectSpec`] is motion, and 008's
+/// transcripts must keep deserializing byte-identically — so the effect rides *beside* the spec
+/// rather than inside it. `effect: None` means "use the default transition for this target", never
+/// "no animation": suppressing motion is the kill switch's job, not the absence of a request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Renderable {
+    pub spec: RenderSpec,
+    pub effect: Option<EffectSpec>,
+}
+
+impl Renderable {
+    /// A widget with no agent-requested transition — the default entrance applies.
+    pub fn plain(spec: RenderSpec) -> Self {
+        Renderable { spec, effect: None }
+    }
+
+    /// Attach (or replace) the requested transition. Last write wins, matching every other
+    /// builder setter on the drawing API.
+    pub fn with_effect(mut self, effect: EffectSpec) -> Self {
+        self.effect = Some(effect);
+        self
+    }
+}
+
+impl From<RenderSpec> for Renderable {
+    fn from(spec: RenderSpec) -> Self {
+        Renderable::plain(spec)
+    }
+}
+
 /// A layout direction — maps to a ratatui `Direction` at render time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -45,9 +45,19 @@ available — only these drawing functions:\n\
   render_to_ttl(panel_id, widget, ttl_ms)  // same, but the panel auto-expires after ttl_ms\n\
   remove_panel(panel_id)       // close one panel and reclaim its space\n\
   clear_panels()               // close every panel\n\
+  render_fullscreen(widget)                // take over the whole chat area briefly\n\
+  render_fullscreen_ttl(widget, ttl_ms)    // same, with your own lifetime (capped by the operator)\n\
 Panel hygiene: panels persist until removed and share one column, so each extra panel shrinks the \
 rest. Reuse one id for updates, give short-lived output a TTL, and remove_panel/clear_panels when \
 done. You may address several panels in a single script.\n\
+Transitions (optional): widget.effect(e) sets how the widget arrives. Without one you still get a \
+sensible default — reach for these only when the motion means something.\n\
+  fade_in(ms) / fade_out(ms);  dissolve_in(ms) / dissolve_out(ms);  evolve_in(ms) / evolve_out(ms)\n\
+  slide_in(dir, ms) / slide_out(dir, ms);  sweep_in(dir, ms) / sweep_out(dir, ms)   (dir: left/right/top/bottom)\n\
+  pulse(color, ms)   // one flash, for a status change;  glow(ms)  // gentle breathing\n\
+Durations clamp to 100-2000ms and unknown directions become \"left\" — none of that is an error. \
+The operator may have disabled animation or restricted how much screen you get; your render still \
+succeeds and the result tells you if it was downgraded.\n\
 Colors: honey, pollen, sting, smoke, royal (or basic ANSI names). Caps: <=500 total elements. \
 The model receives a text summary of what was drawn, not the pixels.";
 
@@ -118,28 +128,64 @@ fn apply_visual_gate(
 ) -> (crate::render_api::RenderOutcome, Vec<&'static str>) {
     use crate::render_spec::{PanelOp, RenderTarget};
 
-    if level != VisualLevel::None || outcome.panel_ops.is_empty() {
-        return (outcome, Vec::new());
+    let mut notes = Vec::new();
+    let mut note = |n: Option<&'static str>| {
+        if let Some(n) = n {
+            if !notes.contains(&n) {
+                notes.push(n);
+            }
+        }
+    };
+
+    // A takeover first: it is the highest target, so it is the one most likely to be downgraded.
+    if let Some((spec, ttl_ms, effect)) = outcome.overlay.take() {
+        let gated = visual_gate::gate(level, RenderTarget::Overlay { ttl_ms });
+        note(gated.note);
+        match gated.target {
+            RenderTarget::Overlay { ttl_ms } => outcome.overlay = Some((spec, ttl_ms, effect)),
+            // One tier down: the reserved panel. Repeat downgrades upsert the same id, so a model
+            // asking for takeover every turn replaces one panel instead of filling the column.
+            RenderTarget::Panel { id } => outcome.panel_ops.push(PanelOp::Upsert {
+                id,
+                spec,
+                ttl_ms: ttl_ms.map(u64::from),
+                effect,
+            }),
+            RenderTarget::Inline => {
+                outcome.inline = Some(spec);
+                outcome.inline_effect = effect;
+            }
+        }
     }
 
-    let mut notes = Vec::new();
-    for op in std::mem::take(&mut outcome.panel_ops) {
-        match op {
-            PanelOp::Upsert { id, spec, .. } => {
-                let gated = visual_gate::gate(level, RenderTarget::Panel { id });
-                if let Some(note) = gated.note {
-                    if !notes.contains(&note) {
-                        notes.push(note);
-                    }
+    // At `visual_level = none` the agent owns no regions at all, so panel upserts route inline.
+    // Inline holds one widget, so the last upsert wins — the same last-writer-wins rule `render()`
+    // has always had. Removes and clears simply drop: there are no panels for them to act on.
+    if level == VisualLevel::None && !outcome.panel_ops.is_empty() {
+        for op in std::mem::take(&mut outcome.panel_ops) {
+            match op {
+                PanelOp::Upsert {
+                    id, spec, effect, ..
+                } => {
+                    note(visual_gate::gate(level, RenderTarget::Panel { id }).note);
+                    outcome.inline = Some(spec);
+                    outcome.inline_effect = effect;
                 }
-                outcome.inline = Some(spec);
+                PanelOp::Remove { .. } | PanelOp::Clear => {}
             }
-            // Nothing was ever created, so nothing is left to remove or clear. Silent: the script
-            // asked to tidy up a column it never had, which is not a problem worth a note.
-            PanelOp::Remove { .. } | PanelOp::Clear => {}
         }
     }
     (outcome, notes)
+}
+
+/// Test-only handle on the gate, so `render_api`'s tests can assert the whole path from a Rhai
+/// script through the downgrade without standing up a `Tool` and a `Sandbox`.
+#[cfg(test)]
+pub(crate) fn gate_for_test(
+    outcome: crate::render_api::RenderOutcome,
+    level: VisualLevel,
+) -> (crate::render_api::RenderOutcome, Vec<&'static str>) {
+    apply_visual_gate(outcome, level)
 }
 
 /// The render tool. The Rhai [`Engine`] is built **once** (per registry/session) with hard resource
@@ -225,7 +271,22 @@ impl Tool for RenderTool {
                 for note in &notes {
                     summary.push_str(&format!(" ({note})"));
                 }
-                ToolResult::rendered_with_ops(summary, outcome.inline, outcome.panel_ops)
+                // A takeover and an inline widget are both single-slot, so the overlay wins the
+                // `render_spec`/`render_target` pair when a script commits both — it is the more
+                // specific request. Panel ops ride alongside either way.
+                match outcome.overlay {
+                    Some((spec, ttl_ms, _)) => ToolResult {
+                        panel_ops: outcome.panel_ops,
+                        ..ToolResult::rendered_to(
+                            summary,
+                            spec,
+                            crate::render_spec::RenderTarget::Overlay { ttl_ms },
+                        )
+                    },
+                    None => {
+                        ToolResult::rendered_with_ops(summary, outcome.inline, outcome.panel_ops)
+                    }
+                }
             }
             Err(e) => {
                 let msg = match &*e {
@@ -270,6 +331,8 @@ mod tests {
         apply_visual_gate(
             RenderOutcome {
                 inline: None,
+                inline_effect: None,
+                overlay: None,
                 panel_ops: ops,
                 render_calls: 1,
             },
@@ -350,6 +413,8 @@ mod tests {
             let (out, notes) = apply_visual_gate(
                 RenderOutcome {
                     inline: Some(text("hi")),
+                    inline_effect: None,
+                    overlay: None,
                     panel_ops: Vec::new(),
                     render_calls: 1,
                 },
