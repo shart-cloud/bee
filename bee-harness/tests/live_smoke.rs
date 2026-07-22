@@ -39,6 +39,8 @@ async fn ollama_openai_compat_smoke() {
         api_key_env: "OPENAI_API_KEY".to_string(),
         max_tokens: Some(64),
         temperature: None,
+        thinking: None,
+        effort: None,
         prompt_caching: true,
         script: Vec::new(),
     };
@@ -71,6 +73,8 @@ async fn anthropic_smoke() {
         api_key_env: "ANTHROPIC_API_KEY".to_string(),
         max_tokens: Some(64),
         temperature: None,
+        thinking: None,
+        effort: None,
         prompt_caching: true,
         script: Vec::new(),
     };

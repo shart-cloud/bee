@@ -22,7 +22,7 @@ use rig_core::completion::{
 use rig_core::streaming::{StreamedAssistantContent, StreamingCompletionResponse};
 use rig_core::OneOrMany;
 
-use crate::config::{ProviderConfig, ProviderType};
+use crate::config::{Effort, ProviderConfig, ProviderType, ThinkingMode};
 use crate::provider::{
     Conversation, EventStream, Message as HMessage, Model, ModelError, StopReason, StreamEvent,
     ToolCall, ToolSchema, Turn, Usage,
@@ -48,8 +48,45 @@ pub struct RigModel {
     id: String,
     max_tokens: Option<u64>,
     temperature: Option<f64>,
+    /// Provider-specific request extras flattened into the body by Rig (008): for Anthropic this
+    /// carries `thinking` and `output_config.effort` when set in the provider config. `None` for
+    /// providers/configs that set neither.
+    additional_params: Option<serde_json::Value>,
     complete: Completer,
     stream: Streamer,
+}
+
+/// Anthropic models that **reject** sampling params (`temperature`/`top_p`/`top_k`) — sending
+/// `temperature` to these is a 400 (Opus 4.7/4.8, Sonnet 5, Fable 5, Mythos 5; claude-api ref).
+/// Substring match: `"sonnet-5"` does not match `"sonnet-4-5"`, `"opus-4-8"` does not match `"opus-4-6"`.
+fn anthropic_rejects_sampling(model: &str) -> bool {
+    ["opus-4-8", "opus-4-7", "sonnet-5", "fable-5", "mythos-5"]
+        .iter()
+        .any(|m| model.contains(m))
+}
+
+/// The Anthropic request extras for a provider config: `thinking` and/or `output_config.effort`.
+/// `None` when neither is set (so we send no such fields — thinking stays off). Anthropic-only.
+fn anthropic_additional_params(cfg: &ProviderConfig) -> Option<serde_json::Value> {
+    let mut obj = serde_json::Map::new();
+    if let Some(mode) = cfg.thinking {
+        let ty = match mode {
+            ThinkingMode::Adaptive => "adaptive",
+            ThinkingMode::Disabled => "disabled",
+        };
+        obj.insert("thinking".into(), serde_json::json!({ "type": ty }));
+    }
+    if let Some(effort) = cfg.effort {
+        let e = match effort {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::Xhigh => "xhigh",
+            Effort::Max => "max",
+        };
+        obj.insert("output_config".into(), serde_json::json!({ "effort": e }));
+    }
+    (!obj.is_empty()).then_some(serde_json::Value::Object(obj))
 }
 
 /// Erase a concrete Rig `CompletionModel` into a boxed async closure that yields a [`RigTurn`].
@@ -188,10 +225,28 @@ impl RigModel {
                 ))
             }
         };
+        // Sampling guard: Opus 4.7/4.8 (and Sonnet 5 / Fable 5) reject `temperature` with a 400.
+        // Drop it rather than fail the episode; a config-level error would be too aggressive for the
+        // batch (unchecked) path, and the parameter is advisory. `thinking`/`effort` only apply to
+        // Anthropic — for other providers they're rejected at config validation, so this is None.
+        let mut temperature = cfg.temperature.map(f64::from);
+        let mut additional_params = None;
+        if cfg.provider == ProviderType::Anthropic {
+            if temperature.is_some() && anthropic_rejects_sampling(&cfg.model) {
+                eprintln!(
+                    "[bee] warning: model {:?} rejects `temperature` (Opus 4.7/4.8, Sonnet 5, \
+                     Fable 5) — dropping it from the request",
+                    cfg.model
+                );
+                temperature = None;
+            }
+            additional_params = anthropic_additional_params(cfg);
+        }
         Ok(RigModel {
             id,
             max_tokens: Some(cfg.max_tokens.map(u64::from).unwrap_or(DEFAULT_MAX_TOKENS)),
-            temperature: cfg.temperature.map(f64::from),
+            temperature,
+            additional_params,
             complete,
             stream,
         })
@@ -203,7 +258,13 @@ impl RigModel {
         convo: &Conversation,
         tools: &[ToolSchema],
     ) -> Result<CompletionRequest, ModelError> {
-        to_completion_request(convo, tools, self.max_tokens, self.temperature)
+        to_completion_request(
+            convo,
+            tools,
+            self.max_tokens,
+            self.temperature,
+            self.additional_params.clone(),
+        )
     }
 }
 
@@ -215,6 +276,7 @@ fn to_completion_request(
     tools: &[ToolSchema],
     max_tokens: Option<u64>,
     temperature: Option<f64>,
+    additional_params: Option<serde_json::Value>,
 ) -> Result<CompletionRequest, ModelError> {
     let mut history: Vec<Message> = Vec::new();
     for m in &convo.messages {
@@ -271,7 +333,10 @@ fn to_completion_request(
         temperature,
         max_tokens,
         tool_choice: None,
-        additional_params: None,
+        // Rig flattens this object into the Anthropic body (`AnthropicCompletionRequest` has
+        // `#[serde(flatten)] additional_params`), so `thinking` / `output_config` land as top-level
+        // request fields on both the blocking and streaming paths (008).
+        additional_params,
         output_schema: None,
     })
 }
@@ -425,8 +490,14 @@ mod tests {
 
     #[test]
     fn maps_system_tools_and_limits() {
-        let req = to_completion_request(&sample_convo(), &sample_tools(), Some(4096), Some(0.0))
-            .expect("build request");
+        let req = to_completion_request(
+            &sample_convo(),
+            &sample_tools(),
+            Some(4096),
+            Some(0.0),
+            None,
+        )
+        .expect("build request");
         assert_eq!(req.preamble.as_deref(), Some("SYSTEM-PROMPT"));
         assert_eq!(req.max_tokens, Some(4096));
         assert_eq!(req.temperature, Some(0.0));
@@ -443,7 +514,7 @@ mod tests {
             messages: vec![],
         };
         assert!(matches!(
-            to_completion_request(&convo, &[], None, None),
+            to_completion_request(&convo, &[], None, None, None),
             Err(ModelError::Request(_))
         ));
     }
@@ -454,7 +525,7 @@ mod tests {
     // catching the drift before it silently breaks a live provider round-trip.
     #[test]
     fn tool_call_and_result_survive_rig_serialization() {
-        let req = to_completion_request(&sample_convo(), &sample_tools(), Some(64), None)
+        let req = to_completion_request(&sample_convo(), &sample_tools(), Some(64), None, None)
             .expect("build request");
         let wire = serde_json::to_string(&req.chat_history).expect("serialize chat_history");
 
@@ -474,5 +545,92 @@ mod tests {
             wire.contains("myhost"),
             "tool result content missing: {wire}"
         );
+    }
+
+    fn anthropic_cfg(
+        thinking: Option<ThinkingMode>,
+        effort: Option<Effort>,
+        temperature: Option<f32>,
+        model: &str,
+    ) -> ProviderConfig {
+        ProviderConfig {
+            provider: ProviderType::Anthropic,
+            base_url: None,
+            model: model.to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".into(),
+            max_tokens: Some(4096),
+            temperature,
+            thinking,
+            effort,
+            prompt_caching: true,
+            script: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn additional_params_encodes_thinking_and_effort() {
+        // Neither set → None, so no `thinking` field is sent (reasoning stays off).
+        assert!(
+            anthropic_additional_params(&anthropic_cfg(None, None, None, "claude-opus-4-8"))
+                .is_none()
+        );
+        // Adaptive + high → the two flattened top-level fields.
+        let v = anthropic_additional_params(&anthropic_cfg(
+            Some(ThinkingMode::Adaptive),
+            Some(Effort::High),
+            None,
+            "claude-opus-4-8",
+        ))
+        .expect("params");
+        assert_eq!(v["thinking"]["type"], "adaptive");
+        assert_eq!(v["output_config"]["effort"], "high");
+        // Disabled + xhigh.
+        let v = anthropic_additional_params(&anthropic_cfg(
+            Some(ThinkingMode::Disabled),
+            Some(Effort::Xhigh),
+            None,
+            "m",
+        ))
+        .expect("params");
+        assert_eq!(v["thinking"]["type"], "disabled");
+        assert_eq!(v["output_config"]["effort"], "xhigh");
+    }
+
+    #[test]
+    fn sampling_guard_matches_only_no_temperature_models() {
+        for m in [
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-sonnet-5",
+            "claude-fable-5",
+        ] {
+            assert!(anthropic_rejects_sampling(m), "{m} should reject sampling");
+        }
+        for m in ["claude-opus-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"] {
+            assert!(!anthropic_rejects_sampling(m), "{m} still accepts sampling");
+        }
+    }
+
+    #[test]
+    fn from_config_drops_temperature_and_carries_params_on_opus_4_8() {
+        // Anthropic client construction is offline (no request until a call is made), so from_config
+        // succeeds with a dummy key and we can inspect the resolved fields.
+        let cfg = anthropic_cfg(
+            Some(ThinkingMode::Adaptive),
+            Some(Effort::High),
+            Some(0.5),
+            "claude-opus-4-8",
+        );
+        let m = RigModel::from_config(&cfg, "sk-test").expect("build model");
+        assert_eq!(m.temperature, None, "temperature dropped for opus-4-8");
+        let ap = m.additional_params.expect("thinking/effort present");
+        assert_eq!(ap["thinking"]["type"], "adaptive");
+        assert_eq!(ap["output_config"]["effort"], "high");
+
+        // A model that still accepts temperature keeps it and sends no thinking when unset.
+        let cfg = anthropic_cfg(None, None, Some(0.5), "claude-opus-4-6");
+        let m = RigModel::from_config(&cfg, "sk-test").expect("build model");
+        assert_eq!(m.temperature, Some(0.5));
+        assert!(m.additional_params.is_none());
     }
 }
