@@ -1,1 +1,21 @@
-{"phase":0,"context":{"mode":"interactive","environment":"CLI/agent harness; operator configuration is trusted, but repositories, models, skills, tool output, and MCP responses may be malicious.","threat_model":["Confused-deputy privilege escalation causing unauthorized host access, command execution, secret exposure, or network egress."],"scoring":"Derived HIGH/MEDIUM/LOW from preconditions","noise_tolerance":"precision","votes_per_finding":3,"repo":"/home/jg/git/bee","findings_path":"/home/jg/git/bee/VULN-FINDINGS.json"}}
+{
+  "phase": 0,
+  "context": {
+    "mode": "interactive",
+    "environment": "CLI/batch tool and interactive REPL. Operator-supplied configuration and direct operator inputs are trusted; repository files, scenarios, project configuration, model output, tool output, skills, and MCP content are untrusted.",
+    "threat_model": [
+      "Privilege escalation to administrator or root (highest priority)",
+      "Sandbox or confinement escape (highest priority)",
+      "Host credential and sensitive-data exposure",
+      "Supply-chain compromise of downstream users",
+      "Unauthorized network or service access",
+      "Integrity loss in policy, audit, transcript, or evaluation evidence",
+      "Denial of service through algorithmic or unbounded in-process work"
+    ],
+    "scoring": "Derived HIGH/MEDIUM/LOW from preconditions",
+    "noise_tolerance": "precision",
+    "votes_per_finding": 3,
+    "repo": "/home/jg/git/bee",
+    "findings_path": "/home/jg/git/bee/VULN-FINDINGS.json"
+  }
+}

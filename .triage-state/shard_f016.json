@@ -1,18 +1,1 @@
-{
-  "id": "f016",
-  "verdict": "false_positive",
-  "vote_breakdown": {
-    "true_positive": 1,
-    "false_positive": 2,
-    "cannot_verify": 0
-  },
-  "confidence": 10,
-  "exclusion_rule": 8,
-  "refute_reasons": [
-    "implausible_trigger"
-  ],
-  "first_links": [
-    "bee-harness/src/bin/bee-episode.rs:310"
-  ],
-  "rationale": "Filename construction is traversal-prone (bee-harness/src/bin/bee-episode.rs:333-336), but scenario_id comes solely from an operator-selected scenario file. Under the trusted-operator-config boundary, no declared untrusted source controls it, so rule 8 applies."
-}
+{"id":"f016","verdict":"true_positive","vote_breakdown":{"true_positive":3,"false_positive":0,"cannot_verify":0},"confidence":9.7,"exclusion_rule":null,"refute_reasons":[],"first_links":["src/app/repl.rs:120"],"rationale":"Project configuration is explicitly untrusted yet may set policy.path and is auto-loaded from .bee/config.toml at src/app/config/file.rs:21-27,79-90,265-285. src/app/config/mod.rs:353-367 accepts that requested policy unchanged when no trusted ceiling exists, and REPL/session startup compiles it into authority."}

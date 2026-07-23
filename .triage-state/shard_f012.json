@@ -1,17 +1,1 @@
-{
-  "id": "f012",
-  "verdict": "true_positive",
-  "vote_breakdown": {
-    "true_positive": 3,
-    "false_positive": 0,
-    "cannot_verify": 0
-  },
-  "confidence": 10,
-  "exclusion_rule": null,
-  "refute_reasons": [],
-  "first_links": [
-    "bee-userspace/src/lib.rs:329",
-    "bee-harness/src/sandbox.rs:244"
-  ],
-  "rationale": "Tool execution tracks only the direct child, while teardown merely removes the cgroup and ignores a populated-cgroup failure (bee-harness/src/tools/exec.rs:38-55; bee-userspace/src/cgroup.rs:41-44; bee-harness/src/sandbox.rs:240-249). Dropping Engine then detaches enforcement, leaving a daemonized descendant alive."
-}
+{"id":"f012","verdict":"true_positive","vote_breakdown":{"true_positive":3,"false_positive":0,"cannot_verify":0},"confidence":10.0,"exclusion_rule":null,"refute_reasons":[],"first_links":["src/app/config/mod.rs:361","src/main.rs:194","src/main.rs:221"],"rationale":"Network attenuation checks only child destinations at crates/core/src/attenuation.rs:177-186, so an empty child passes. crates/userspace/src/plan.rs:45-47 clears FLAG_NET_ENFORCED and crates/ebpf/src/main.rs:94-101 then allows all connections for the exact child cgroup."}

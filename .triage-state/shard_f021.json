@@ -1,16 +1,1 @@
-{
-  "id": "f021",
-  "verdict": "true_positive",
-  "vote_breakdown": {
-    "true_positive": 3,
-    "false_positive": 0,
-    "cannot_verify": 0
-  },
-  "confidence": 9,
-  "exclusion_rule": null,
-  "refute_reasons": [],
-  "first_links": [
-    "bee-harness/src/tools/skill.rs:109"
-  ],
-  "rationale": "Discovery follows links and stores a mutable SKILL.md pathname, while model invocation later reopens it with host authority (bee-harness/src/skills.rs:109-114,184-190,269-274; bee-harness/src/tools/skill.rs:109-111). A writable project entry can be replaced by a symlink before invocation to disclose an arbitrary host-readable file."
-}
+{"id":"f021","verdict":"false_positive","vote_breakdown":{"true_positive":1,"false_positive":2,"cannot_verify":0},"confidence":9.0,"exclusion_rule":"3","refute_reasons":["intentional_behavior"],"first_links":["src/app/session.rs:142","src/episode.rs:599"],"rationale":"The majority found tool membership intentionally separate from filesystem/exec/network Policy. Interactive registration remains operator-consented, while a noninteractive scenario already selects its shipped tools and skill roots; actual effects remain bounded by compiled policy, so no stronger independent tool ceiling is crossed."}
