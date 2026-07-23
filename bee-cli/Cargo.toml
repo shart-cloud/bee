@@ -20,7 +20,11 @@ bee-userspace = { path = "../bee-userspace" }
 bee-harness = { path = "../bee-harness" }
 clap = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 toml = { workspace = true }
+# The session commands are async; `check`, `validate`, and `exec` are not. The runtime is built
+# inside `run`/`repl` rather than with `#[tokio::main]` so the diagnostic commands never enter one.
+tokio = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

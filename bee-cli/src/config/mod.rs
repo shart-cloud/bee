@@ -280,6 +280,50 @@ pub fn resolve(cwd: &Path, flags: &Flags) -> Result<EffectiveConfig, ResolveErro
     resolve_from_layers(&layers, flags)
 }
 
+/// Resolve only the presentation axes — theme and visual level — without requiring a provider.
+///
+/// For commands that have no single session to configure but still have to install the theme and
+/// the visual gate: a batch, which carries its own provider per pair, and the reporting commands.
+/// Splitting it out means those commands do not have to invent a provider they will never use.
+pub fn resolve_presentation(
+    cwd: &Path,
+    flags: &Flags,
+) -> Result<(Theme, Option<String>, VisualConfig), ResolveError> {
+    let layers = file::discover(cwd, flags.config.as_deref())?;
+    let m = Merged::build(&layers, flags);
+    let (theme, warning) = resolve_theme(flags, &m);
+    let visual = resolve_visual(flags, &m)?;
+    Ok((theme, warning, visual))
+}
+
+/// Theme: flag > `BEE_THEME` > file. An unknown name warns and falls back — theming is decoration
+/// (FR-052).
+fn resolve_theme(flags: &Flags, m: &Merged) -> (Theme, Option<String>) {
+    bee_harness::viz::theme::resolve(
+        flags.theme.as_deref(),
+        std::env::var("BEE_THEME").ok().as_deref(),
+        m.theme.as_ref(),
+    )
+}
+
+/// Visual: flag > `BEE_VISUAL_LEVEL` > file, through the harness's own resolver so the
+/// motion-stickiness rule — any source may turn motion off, none may turn it back on — is the one
+/// already tested there. An unknown level is a hard error: this is a ceiling, and falling back
+/// could widen it.
+fn resolve_visual(flags: &Flags, m: &Merged) -> Result<VisualConfig, ResolveError> {
+    let section = HarnessSection {
+        visual_level: m.visual_level.clone(),
+        animations: m.animations,
+        takeover_ttl_secs: None,
+    };
+    VisualConfig::resolve(
+        flags.visual_level.as_deref(),
+        flags.no_animation,
+        Some(&section),
+    )
+    .map_err(|e| ResolveError::Visual(e.to_string()))
+}
+
 /// The pure core: resolve already-discovered layers against the flags.
 pub fn resolve_from_layers(
     layers: &[Layer],
@@ -322,27 +366,8 @@ pub fn resolve_from_layers(
         (None, None) => None,
     };
 
-    // Theme: flag > BEE_THEME > file. An unknown name warns and falls back.
-    let (theme, theme_warning) = bee_harness::viz::theme::resolve(
-        flags.theme.as_deref(),
-        std::env::var("BEE_THEME").ok().as_deref(),
-        m.theme.as_ref(),
-    );
-
-    // Visual: flag > BEE_VISUAL_LEVEL > file, through the harness's own resolver so the
-    // motion-stickiness rule (any source may turn motion off; none may turn it back on) is the one
-    // already tested there.
-    let harness_section = HarnessSection {
-        visual_level: m.visual_level.clone(),
-        animations: m.animations,
-        takeover_ttl_secs: None,
-    };
-    let visual = VisualConfig::resolve(
-        flags.visual_level.as_deref(),
-        flags.no_animation,
-        Some(&harness_section),
-    )
-    .map_err(|e| ResolveError::Visual(e.to_string()))?;
+    let (theme, theme_warning) = resolve_theme(flags, &m);
+    let visual = resolve_visual(flags, &m)?;
 
     Ok(EffectiveConfig {
         provider,

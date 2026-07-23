@@ -7,6 +7,8 @@
 //! issues. Bare `bee` prints help — starting a session is always something the operator asked for.
 
 mod config;
+mod run;
+mod session;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -40,6 +42,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Run a headless harness session: one agent episode, a batch of them, or a concurrent batch.
+    // Boxed because the session commands carry a far larger argument set than the diagnostics, and
+    // an unboxed variant would make every `Cmd` the size of the biggest one.
+    Run(Box<run::RunArgs>),
     /// Print kernel support diagnostics and exit (never attaches).
     Check,
     /// Compile-check a policy, or check attenuation of a child against a parent.
@@ -72,6 +78,7 @@ enum Cmd {
 
 fn main() -> ExitCode {
     match Cli::parse().cmd {
+        Cmd::Run(args) => run::main(*args),
         Cmd::Check => cmd_check(),
         Cmd::Validate { policy, parent } => cmd_validate(&policy, parent.as_deref()),
         Cmd::Exec {
