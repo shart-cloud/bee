@@ -10,6 +10,7 @@
 //! consent prompting, and the sandbox lifetime belong to the command, because those are the parts
 //! that genuinely differ between headless and interactive.
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use bee_harness::{model_from_config, set_non_dumpable, Model};
@@ -91,4 +92,139 @@ pub fn build(cfg: &EffectiveConfig, command: &str) -> Result<Session, SessionErr
 pub fn fail(command: &str, e: &SessionError) -> ExitCode {
     eprintln!("{command}: {}", e.detail);
     ExitCode::from(e.code)
+}
+
+// --- skills, grants, and the sandbox ----------------------------------------------------------
+//
+// These lived in `bee-repl`'s binary. They are here because a headless session has a legitimate
+// claim on all of them: scenarios already carry a skills list, grant resolution is the same
+// attenuation-bounded operation either way, and both kinds of session need a sandbox. What differs
+// is only the *consent sink* — an interactive prompt versus a scenario's declared grants — so that
+// is the injected part rather than the whole path being duplicated.
+
+use std::sync::Arc;
+
+use bee_harness::skills::{ConsentSink, Skill};
+use bee_harness::{Sandbox, SkillRegistry, ToolRegistry};
+
+/// Discover skills from the project and user roots, printing any malformed-skill warnings. A bad
+/// skill warns; it never aborts a session.
+pub fn discover_skills(cwd: &Path, command: &str) -> Arc<SkillRegistry> {
+    let roots = SkillRegistry::default_roots(cwd);
+    let skills = Arc::new(SkillRegistry::discover(&roots));
+    for w in skills.warnings() {
+        eprintln!(
+            "{command}: skill warning: {}: {}",
+            w.path.display(),
+            w.reason
+        );
+    }
+    skills
+}
+
+/// Resolve skill capability grants before the scope compiles, and register whatever was granted.
+///
+/// The base policy is the session's; the ceiling bounds what a skill may add to it. Each
+/// within-ceiling request goes to `consent`; beyond-ceiling requests are refused outright. Returns
+/// the widened policy to compile, or `None` when there is no base policy to widen.
+pub async fn resolve_grants(
+    base: Option<&bee_core::Policy>,
+    ceiling: Option<&bee_core::Policy>,
+    skills: &SkillRegistry,
+    registry: &mut ToolRegistry,
+    consent: &dyn ConsentSink,
+    command: &str,
+) -> Option<bee_core::Policy> {
+    let base = base?.clone();
+    let ceiling = ceiling.cloned().unwrap_or_else(|| base.clone());
+
+    let skill_refs: Vec<&Skill> = skills.iter().collect();
+    let mut outcome =
+        bee_harness::skills::resolve_grants(&skill_refs, &base, &ceiling, consent).await;
+    for name in &outcome.granted {
+        println!("{command}: skill '{name}' capabilities granted");
+    }
+    for (name, reason) in &outcome.refused {
+        eprintln!("{command}: skill '{name}' refused — {reason}");
+    }
+    for tool in &outcome.tools {
+        bee_harness::tools::register_named(registry, tool, None);
+    }
+    // Readable-scope: each discovered skill directory becomes readable so bundled resources
+    // resolve. Read, never write — a skill's own files are inputs.
+    for s in &skill_refs {
+        if let Some(dir) = s.dir.to_str() {
+            outcome
+                .policy
+                .filesystem
+                .entry(dir.to_string())
+                .or_insert(bee_core::Access::Read);
+        }
+    }
+    Some(outcome.policy)
+}
+
+/// The environment variables tool children must not inherit: the provider key plus anything else
+/// the session names (MCP token variables are added by the caller that knows about them).
+pub fn strip_vars(key_env: Option<&str>) -> Vec<String> {
+    bee_harness::sandbox::key_vars(key_env)
+}
+
+/// Build the sandbox a session's tools run in, plus a human-readable label for the banner.
+///
+/// With the enforcement feature and a policy this is a real kernel-enforced scope; otherwise it is
+/// a hardened, credential-stripped host sandbox with no scope.
+#[cfg(feature = "enforce")]
+pub fn build_sandbox(
+    policy: Option<bee_core::Policy>,
+    label_hint: Option<&Path>,
+    strip_env: Vec<String>,
+) -> Result<(Sandbox, String), String> {
+    use bee_userspace::{EnforcementPlan, Engine, ScopeMode, SystemResolver};
+
+    let Some(policy) = policy else {
+        return Ok((
+            Sandbox::host(strip_env),
+            "none — host mode (no kernel scope)".to_string(),
+        ));
+    };
+
+    let resolver = SystemResolver::current();
+    let compiled = policy
+        .compile(&resolver)
+        .map_err(|e| format!("policy compile: {e}"))?;
+    let plan = EnforcementPlan::prepare(&compiled, ScopeMode::Enforce)
+        .map_err(|e| format!("enforcement plan: {e}"))?;
+    let mut engine = Engine::init().map_err(|e| format!("engine init: {e}"))?;
+
+    let scope_id = format!("bee-session-{}", std::process::id());
+    let scope = engine
+        .create_scope(&scope_id, bee_userspace::cgroup::DEFAULT_PARENT, &plan)
+        .map_err(|e| format!("create scope: {e}"))?;
+    let reader = engine
+        .take_audit_reader(&scope_id)
+        .map_err(|e| format!("audit reader: {e}"))?;
+    let label = match label_hint {
+        Some(p) => format!("{} (enforced)", p.display()),
+        None => "policy (enforced)".to_string(),
+    };
+    Ok((Sandbox::enforced(engine, scope, reader, strip_env), label))
+}
+
+/// Host build: there is no kernel enforcement to apply, so a resolved policy is noted but not
+/// enforced. Tools still run hardened and credential-stripped.
+#[cfg(not(feature = "enforce"))]
+pub fn build_sandbox(
+    _policy: Option<bee_core::Policy>,
+    label_hint: Option<&Path>,
+    strip_env: Vec<String>,
+) -> Result<(Sandbox, String), String> {
+    let label = match label_hint {
+        Some(p) => format!(
+            "{} — IGNORED (host build; rebuild with --features enforce to enforce it)",
+            p.display()
+        ),
+        None => "none — host mode (no kernel scope)".to_string(),
+    };
+    Ok((Sandbox::host(strip_env), label))
 }

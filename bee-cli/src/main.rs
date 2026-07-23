@@ -7,6 +7,7 @@
 //! issues. Bare `bee` prints help — starting a session is always something the operator asked for.
 
 mod config;
+mod repl;
 mod run;
 mod session;
 
@@ -46,6 +47,8 @@ enum Cmd {
     // Boxed because the session commands carry a far larger argument set than the diagnostics, and
     // an unboxed variant would make every `Cmd` the size of the biggest one.
     Run(Box<run::RunArgs>),
+    /// Chat interactively with a sandboxed coding agent, inline or full-screen.
+    Repl(Box<repl::ReplArgs>),
     /// Print kernel support diagnostics and exit (never attaches).
     Check,
     /// Compile-check a policy, or check attenuation of a child against a parent.
@@ -79,6 +82,7 @@ enum Cmd {
 fn main() -> ExitCode {
     match Cli::parse().cmd {
         Cmd::Run(args) => run::main(*args),
+        Cmd::Repl(args) => repl::main(*args),
         Cmd::Check => cmd_check(),
         Cmd::Validate { policy, parent } => cmd_validate(&policy, parent.as_deref()),
         Cmd::Exec {

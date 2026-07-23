@@ -25,6 +25,9 @@ toml = { workspace = true }
 # The session commands are async; `check`, `validate`, and `exec` are not. The runtime is built
 # inside `run`/`repl` rather than with `#[tokio::main]` so the diagnostic commands never enter one.
 tokio = { workspace = true }
+# `TIOCGWINSZ` for the terminal row count the full-screen hard-floor check needs. Only reached
+# under the `tui` feature, but a plain dep: an optional one for three lines of ioctl is noise.
+libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
