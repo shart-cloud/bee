@@ -9,9 +9,8 @@ use rhai::Engine;
 
 /// Run one example against a fresh engine, returning what it drew.
 fn run_example(name: &str) -> RenderOutcome {
+    // CARGO_MANIFEST_DIR *is* the workspace root: the application package is the root package.
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("workspace root")
         .join("specs/009-tachyonfx-effects/examples")
         .join(name);
     let script = std::fs::read_to_string(&path)
@@ -99,8 +98,6 @@ fn fullscreen_chart_requests_a_takeover_with_its_own_lifetime() {
 fn every_example_in_the_directory_is_covered() {
     // A new example that nothing runs is a new example that can rot. This is the guard.
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("workspace root")
         .join("specs/009-tachyonfx-effects/examples");
     let mut found: Vec<String> = std::fs::read_dir(&dir)
         .expect("examples directory")

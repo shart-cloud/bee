@@ -473,8 +473,8 @@ mod tests {
     /// requiring capabilities).
     #[test]
     fn discovers_repo_skills_fixture() {
-        // CARGO_MANIFEST_DIR is the workspace root: the application package *is* the root.
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        // CARGO_MANIFEST_DIR *is* the workspace root: the application package is the root package.
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = workspace.join(".claude").join("skills");
         if !root.is_dir() {
             return; // fixture not present (e.g. packaged crate) — skip rather than fail.
