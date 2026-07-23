@@ -85,15 +85,22 @@ where
         cmd.env_remove(key);
     }
     // SAFETY: the pre_exec closure runs in the forked child before exec and issues only
-    // async-signal-safe operations: the raw setrlimit/prctl syscalls in `pre_exec_hardening`, plus
-    // the caller-supplied cgroup join (which, under the enforce feature, must itself use raw
-    // open/write syscalls — not std::fs — to stay fork-safe).
+    // async-signal-safe operations: the raw setrlimit/prctl/capset syscalls in `pre_exec_hardening`
+    // and `drop_privileges`, plus the caller-supplied cgroup join (which, under the enforce feature,
+    // must itself use raw open/write syscalls — not std::fs — to stay fork-safe).
     unsafe {
         cmd.pre_exec(move || {
-            crate::hardening::pre_exec_hardening()?;
+            // The cgroup join goes FIRST: writing the scope's `cgroup.procs` needs the launcher's
+            // authority, and `drop_privileges` is about to discard it. Joining afterwards would
+            // fail with EACCES and — because the error propagates — turn every enforced spawn into
+            // a spawn failure.
             if let Some(join) = &cgroup_move {
                 join()?;
             }
+            crate::hardening::pre_exec_hardening()?;
+            // Only now shed privilege, so the child cannot migrate back out of the scope cgroup or
+            // exec its way to a capability the policy never granted (FR-015).
+            crate::hardening::drop_privileges()?;
             Ok(())
         });
     }
@@ -136,6 +143,39 @@ mod tests {
             }
         }
         eprintln!("no setuid binary available in this environment; refusal path not exercised");
+    }
+
+    /// The child must come out the other side of `pre_exec` unable to gain privilege. Reading it
+    /// back from `/proc/self/status` in the child is the only honest check — the parent's own bits
+    /// are untouched, which is the point.
+    #[test]
+    fn child_has_no_new_privs_and_no_capabilities() {
+        let mut cmd = hardened_command::<fn() -> io::Result<()>>(
+            "cat",
+            &["/proc/self/status".to_string()],
+            None,
+        )
+        .expect("build cmd");
+        let out = cmd.output().expect("run cat");
+        let status = String::from_utf8_lossy(&out.stdout);
+
+        let field = |name: &str| {
+            status
+                .lines()
+                .find_map(|l| l.strip_prefix(name)?.split_whitespace().next())
+                .unwrap_or_else(|| panic!("{name} missing from /proc/self/status"))
+                .to_string()
+        };
+
+        assert_eq!(field("NoNewPrivs:"), "1", "PR_SET_NO_NEW_PRIVS not applied");
+        // Effective/permitted are always droppable, so they must be empty regardless of whether the
+        // test runs as root. The bounding set needs CAP_SETPCAP to empty, so it is only asserted
+        // when we actually had privilege to drop.
+        assert_eq!(field("CapEff:"), "0000000000000000", "effective caps kept");
+        assert_eq!(field("CapPrm:"), "0000000000000000", "permitted caps kept");
+        if unsafe { libc::geteuid() } == 0 {
+            assert_eq!(field("CapBnd:"), "0000000000000000", "bounding set kept");
+        }
     }
 
     #[test]

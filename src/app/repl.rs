@@ -271,7 +271,9 @@ async fn repl(args: ReplArgs) -> ExitCode {
         drop(config);
         drop(mcp_bridge);
     }
-    sbox.teardown();
+    if let Err(e) = sbox.teardown() {
+        eprintln!("{CMD}: WARNING: {e} — a process may have outlived enforcement");
+    }
 
     if let Some(path) = &args.save {
         if let Some(transcript) = session_out.as_ref().and_then(|s| s.transcript.as_ref()) {
