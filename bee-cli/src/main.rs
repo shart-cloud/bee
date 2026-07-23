@@ -1,5 +1,10 @@
-//! `bee` CLI — a thin wrapper over `bee-core` + `bee-userspace` (constitution Principle V; the CLI
-//! adds no enforcement logic of its own). See `contracts/cli.md` for the command surface + exit codes.
+//! `bee` — the bee application and its sole host executable (ADR-0002). It adds no enforcement
+//! logic of its own: every command here assembles `bee-core` + `bee-userspace` and gets out of the
+//! way (constitution Principle V). See `contracts/cli.md` for the command surface + exit codes.
+//!
+//! The command tree grows over the consolidation (`.scratch/application-consolidation/`): `check`,
+//! `validate`, and `exec` live here today; `run`, `repl`, and `metrics` arrive with the later
+//! issues. Bare `bee` prints help — starting a session is always something the operator asked for.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -21,7 +26,10 @@ const EX_INTERNAL: u8 = 70;
 #[command(
     name = "bee",
     version,
-    about = "eBPF-enforced sandbox harness for coding agents"
+    about = "eBPF-enforced sandbox harness for coding agents",
+    // Bare `bee` prints help rather than defaulting into a command: starting a session is always
+    // something the operator asked for (ADR-0002).
+    arg_required_else_help = true
 )]
 struct Cli {
     #[command(subcommand)]
@@ -40,8 +48,9 @@ enum Cmd {
         #[arg(long)]
         parent: Option<PathBuf>,
     },
-    /// Run a command inside a sandbox scope.
-    Run {
+    /// Run one host command inside a scope — a diagnostic for exercising a policy against a single
+    /// process, with no agent involved. The primary journeys are `bee run` and `bee repl`.
+    Exec {
         #[arg(long)]
         policy: PathBuf,
         /// Parent policy to attenuate against (subagent mode): the effective policy is
@@ -63,13 +72,13 @@ fn main() -> ExitCode {
     match Cli::parse().cmd {
         Cmd::Check => cmd_check(),
         Cmd::Validate { policy, parent } => cmd_validate(&policy, parent.as_deref()),
-        Cmd::Run {
+        Cmd::Exec {
             policy,
             parent,
             mode,
             parent_cgroup,
             command,
-        } => cmd_run(
+        } => cmd_exec(
             &policy,
             parent.as_deref(),
             mode.as_deref(),
@@ -135,7 +144,10 @@ fn cmd_validate(policy: &Path, parent: Option<&Path>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn cmd_run(
+/// `bee exec` — compile, plan, and run one host command in a scope. Diagnostic: no agent, no
+/// session, no provider. The enforcement path it exercises is the same one the sessions use, which
+/// is what makes it worth keeping as a harness-free way to prove a policy enforces.
+fn cmd_exec(
     policy: &Path,
     parent: Option<&Path>,
     mode: Option<&str>,
@@ -208,7 +220,7 @@ fn cmd_run(
         Ok(engine) => {
             #[cfg(feature = "enforce")]
             {
-                enforce_run(engine, &policy.name, mode, parent_cgroup, command, &plan)
+                enforce_exec(engine, &policy.name, mode, parent_cgroup, command, &plan)
             }
             #[cfg(not(feature = "enforce"))]
             {
@@ -237,7 +249,7 @@ fn cmd_run(
 /// Full enforce path: create a scope cgroup, register it for enforcement, spawn the hardened command
 /// into it, and stream audit events until it exits.
 #[cfg(feature = "enforce")]
-fn enforce_run(
+fn enforce_exec(
     mut engine: Engine,
     policy_name: &str,
     mode: &str,

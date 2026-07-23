@@ -17,7 +17,7 @@ emit() { # name status note
 # Run bee, capturing child stdout (fd1) and bee audit/stderr separately.
 run_bee() { # policy -- cmd...
   local policy=$1; shift
-  sudo "$BEE" run --policy "$policy" "$@" 2>"$WORK/err"
+  sudo "$BEE" exec --policy "$policy" "$@" 2>"$WORK/err"
 }
 
 mkdir -p /home/ubuntu/.ssh
@@ -80,7 +80,7 @@ mode = "enforce"
 [policy.filesystem]
 "**/target" = "deny"
 EOF
-sudo "$BEE" run --policy "$WORK/seg.toml" -- true >/dev/null 2>"$WORK/err"
+sudo "$BEE" exec --policy "$WORK/seg.toml" -- true >/dev/null 2>"$WORK/err"
 rc=$?
 if [ "$rc" -eq 64 ] && grep -q 'cannot enforce filesystem segment rule' "$WORK/err"; then
   emit file-segment-refused PASS "fail-closed on unenforceable rule"
@@ -173,7 +173,7 @@ allow = ["9.9.9.9:443"]
 EOF
 
 # An over-broad subagent (requests a dest the parent lacks) must be refused BEFORE running.
-sudo "$BEE" run --policy "$WORK/child-bad.toml" --parent "$WORK/parent.toml" -- true >/dev/null 2>"$WORK/err"
+sudo "$BEE" exec --policy "$WORK/child-bad.toml" --parent "$WORK/parent.toml" -- true >/dev/null 2>"$WORK/err"
 rc=$?
 if [ "$rc" -ne 0 ] && grep -q 'attenuation violation' "$WORK/err"; then
   emit atten-reject PASS "over-broad subagent refused (rc=$rc)"
@@ -183,9 +183,9 @@ fi
 
 # A subset subagent runs, enforcing its NARROWER policy: the parent allows 8.8.8.8 but the child
 # dropped it, so under the child scope 8.8.8.8 is blocked while 1.1.1.1 (kept) still connects.
-out=$(sudo "$BEE" run --policy "$WORK/child-ok.toml" --parent "$WORK/parent.toml" -- bash -c 'curl -sS --max-time 8 -o /dev/null -w %{http_code} https://1.1.1.1' 2>/dev/null)
+out=$(sudo "$BEE" exec --policy "$WORK/child-ok.toml" --parent "$WORK/parent.toml" -- bash -c 'curl -sS --max-time 8 -o /dev/null -w %{http_code} https://1.1.1.1' 2>/dev/null)
 if connected "$out"; then emit atten-subset-allow PASS "child-kept dest connects (http=$out)"; else emit atten-subset-allow FAIL "http=$out"; fi
-out=$(sudo "$BEE" run --policy "$WORK/child-ok.toml" --parent "$WORK/parent.toml" -- bash -c 'curl -sS --max-time 8 -o /dev/null -w %{http_code} https://8.8.8.8' 2>/dev/null)
+out=$(sudo "$BEE" exec --policy "$WORK/child-ok.toml" --parent "$WORK/parent.toml" -- bash -c 'curl -sS --max-time 8 -o /dev/null -w %{http_code} https://8.8.8.8' 2>/dev/null)
 if [ "$out" = 000 ]; then emit atten-subset-deny PASS "parent-allowed but child-dropped dest blocked"; else emit atten-subset-deny FAIL "http=$out"; fi
 
 # ---------------------------------------------------------------- per-scope isolation

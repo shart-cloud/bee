@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "bee command-line wrapper: run / check / validate."
+description = "The bee application and its sole host executable (ADR-0002)."
 
 [[bin]]
 name = "bee"

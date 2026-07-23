@@ -24,7 +24,7 @@ data model, and contracts.
 | `bee-core` | Policy types, TOML parsing, compiler/glob-lowering, attenuation validator, audit types | ✅ implemented + tested |
 | `bee-hardening` | Pre-exec / pre-main process hardening (FR-011) | ✅ implemented + tested |
 | `bee-userspace` | Support detection, cgroup lifecycle, hardened launcher, engine gating | ✅ host logic tested; ⏳ eBPF attach behind `--features enforce` |
-| `bee-cli` | `bee run` / `check` / `validate` | ✅ `check` + `validate` work; `run` fail-closed here |
+| `bee-cli` | The application: `bee check` / `validate` / `exec` | ✅ `check` + `validate` work; `exec` fail-closed here |
 | `bee-harness` | Agent episodes, batch/concurrent runs, CTF scoring, and REPL | ✅ host-tested; enforcement behind features |
 | `bee-ebpf` | LSM programs (`file_open`, `bprm_check_security`, `socket_connect`) | ⏳ requires nightly bpf toolchain + BPF-LSM kernel |
 
@@ -41,11 +41,17 @@ cargo clippy --workspace --all-targets
 Try the CLI (works without a special kernel):
 
 ```bash
+./target/debug/bee                                                    # help — bare `bee` runs nothing
 ./target/debug/bee check                                              # kernel support gates
 ./target/debug/bee validate --policy policies/cargo-test.toml         # prove policy is runnable
 ./target/debug/bee validate --policy policies/subagent.toml \
                             --parent policies/parent.toml             # attenuation check
 ```
+
+`bee exec --policy P -- COMMAND` runs a single host command inside a scope. It is a **diagnostic** —
+a way to prove a policy enforces with no agent in the picture — and needs a BPF-LSM kernel, so it
+fails closed on an ordinary host. The primary journeys are `bee run` (headless) and `bee repl`
+(interactive); see [ADR-0002](docs/adr/0002-present-bee-as-one-user-facing-application.md).
 
 ### Full-screen TUI (optional)
 
