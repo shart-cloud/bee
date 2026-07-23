@@ -1,4 +1,4 @@
-//! Compiles and embeds the `bee-ebpf` BPF object — but only when building with `--features enforce`.
+//! Compiles and embeds the `bee-lsm` BPF object — but only when building with `--features enforce`.
 //! Without the feature (the default host build) this is a no-op, so a stock stable toolchain works.
 //!
 //! We invoke the bpf build directly (rather than via aya-build) because `bee-ebpf` is intentionally
@@ -14,12 +14,12 @@ fn main() {
     }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let ebpf_dir = manifest_dir.join("..").join("bee-ebpf");
+    let ebpf_dir = manifest_dir.join("..").join("ebpf");
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
-    println!("cargo:rerun-if-changed=../bee-ebpf/src");
-    println!("cargo:rerun-if-changed=../bee-common/src");
-    println!("cargo:rerun-if-changed=../bee-ebpf/Cargo.toml");
+    println!("cargo:rerun-if-changed=../ebpf/src");
+    println!("cargo:rerun-if-changed=../common/src");
+    println!("cargo:rerun-if-changed=../ebpf/Cargo.toml");
 
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&ebpf_dir)
@@ -42,10 +42,10 @@ fn main() {
             "--release",
         ]);
 
-    let status = cmd.status().expect("failed to invoke cargo for bee-ebpf");
-    assert!(status.success(), "bee-ebpf BPF build failed");
+    let status = cmd.status().expect("failed to invoke cargo for bee-lsm");
+    assert!(status.success(), "bee-lsm BPF build failed");
 
-    let obj = ebpf_dir.join("target/bpfel-unknown-none/release/bee");
-    std::fs::copy(&obj, out_dir.join("bee"))
-        .unwrap_or_else(|e| panic!("copy {} -> OUT_DIR/bee: {e}", obj.display()));
+    let obj = ebpf_dir.join("target/bpfel-unknown-none/release/bee-lsm");
+    std::fs::copy(&obj, out_dir.join("bee-lsm"))
+        .unwrap_or_else(|e| panic!("copy {} -> OUT_DIR/bee-lsm: {e}", obj.display()));
 }

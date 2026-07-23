@@ -8,7 +8,7 @@ use aya::{Btf, Ebpf};
 use crate::EngineError;
 
 /// The embedded BPF object, compiled by `build.rs` via aya-build.
-pub static EBPF_OBJ: &[u8] = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/bee"));
+pub static EBPF_OBJ: &[u8] = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/bee-lsm"));
 
 /// LSM hooks bee attaches. Extend as hooks are implemented.
 const HOOKS: &[&str] = &["socket_connect", "file_open", "bprm_check_security"];

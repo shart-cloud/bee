@@ -102,12 +102,12 @@ fn assert_clean(crate_name: &str) {
 
 #[test]
 fn bee_core_has_no_terminal_or_runtime_dependency() {
-    assert_clean("bee-core");
+    assert_clean("crates/core");
 }
 
 #[test]
 fn bee_common_has_no_terminal_or_runtime_dependency() {
-    assert_clean("bee-common");
+    assert_clean("crates/common");
 }
 
 /// `tachyonfx` must also stay out of the **headless** `bee-harness` build (009 SC-009,

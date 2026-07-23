@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 bee-core = { workspace = true }
-bee-userspace = { path = "../bee-userspace" }
+bee-userspace = { workspace = true }
 # The harness library: the sessions `bee run` / `bee repl` drive, and the home of the provider,
 # theme, and visual types the configuration resolver resolves *into*. The application package is
 # allowed this dependency; `bee-core` and `bee-common` are not, and `core_deps_guard` enforces that.

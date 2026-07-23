@@ -1,14 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
-    "bee-common",
-    "bee-core",
-    "bee-userspace",
+    "crates/common",
+    "crates/core",
+    "crates/userspace",
     "bee-cli",
     "bee-harness",
 ]
-# bee-ebpf targets bpfel-unknown-none (nightly + bpf-linker) and is built out-of-band
-# by bee-userspace/build.rs via aya-build. Excluding it keeps host `cargo build`/`cargo test`
+# crates/ebpf targets bpfel-unknown-none (nightly + bpf-linker) and is built out-of-band
+# by crates/userspace/build.rs via aya-build. Excluding it keeps host `cargo build`/`cargo test`
 # from trying to compile the BPF object with the default target.
 #
 # xtask is the developer-tool crate (`cargo xtask viz-snapshot`, see xtask/README.md). It is its own
@@ -16,7 +16,7 @@ members = [
 # ratzilla + wasm32 tree — never enter the shipping crates' dependency graph. Excluding it is what
 # keeps `cargo build`/`cargo test`/`cargo clippy --workspace --all-targets` byte-for-byte unaffected
 # by its existence.
-exclude = ["bee-ebpf", "xtask"]
+exclude = ["crates/ebpf", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
@@ -28,9 +28,9 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 # Shared POD map layouts (no_std) live here; both user-space and eBPF depend on it.
-bee-common = { path = "bee-common" }
-bee-core = { path = "bee-core" }
-bee-userspace = { path = "bee-userspace" }
+bee-common = { path = "crates/common" }
+bee-core = { path = "crates/core" }
+bee-userspace = { path = "crates/userspace" }
 
 # User-space eBPF stack (stable Rust).
 aya = "0.14"
