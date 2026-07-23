@@ -77,6 +77,13 @@ fn bee_run(args: &[&str]) -> Output {
         .unwrap()
 }
 
+/// `bee-episode` has no `--host`: it silently ran unenforced, which is exactly what issue 05
+/// stopped `bee run` from doing. Strip the flag so the comparison is about behaviour under the
+/// same intent rather than about a flag the old binary never had.
+fn without_host<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    args.iter().copied().filter(|a| *a != "--host").collect()
+}
+
 fn bee_episode(args: &[&str]) -> Option<Output> {
     let Some(bin) = episode_bin() else {
         // Cargo builds only the binaries of the package under test, so `cargo test -p bee-cli`
@@ -88,7 +95,7 @@ fn bee_episode(args: &[&str]) -> Option<Output> {
         );
         return None;
     };
-    Some(Command::new(bin).args(args).output().unwrap())
+    Some(Command::new(bin).args(without_host(args)).output().unwrap())
 }
 
 /// Run the same arguments through both and assert they agree on everything observable.
@@ -125,6 +132,7 @@ fn a_single_episode_matches() {
         "--provider",
         provider.to_str().unwrap(),
         "--quiet",
+        "--host",
     ]);
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -142,6 +150,7 @@ fn an_ad_hoc_task_matches() {
         "--provider",
         provider.to_str().unwrap(),
         "--quiet",
+        "--host",
     ]);
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("\"scenario_id\": \"adhoc\""));
@@ -165,6 +174,7 @@ fn a_batch_matches() {
         "--providers",
         &providers,
         "--quiet",
+        "--host",
     ]);
     assert!(out.status.success());
     // Two scenarios × two providers.
@@ -184,6 +194,7 @@ fn a_missing_provider_file_fails_the_same_way() {
         "--provider",
         missing.to_str().unwrap(),
         "--quiet",
+        "--host",
     ]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -196,6 +207,7 @@ fn a_missing_provider_file_fails_the_same_way() {
         "--provider",
         missing.to_str().unwrap(),
         "--quiet",
+        "--host",
     ]) {
         assert_eq!(out.status.code(), theirs.status.code());
     }
@@ -217,6 +229,7 @@ fn an_unparseable_scenario_fails_the_same_way() {
         "--provider",
         provider.to_str().unwrap(),
         "--quiet",
+        "--host",
     ]);
     assert_eq!(out.status.code(), Some(64), "usage error");
     assert!(String::from_utf8_lossy(&out.stderr).contains("scenario"));
@@ -235,6 +248,7 @@ fn the_transcript_stays_out_of_the_progress_stream() {
         scenario.to_str().unwrap(),
         "--provider",
         provider.to_str().unwrap(),
+        "--host",
     ]);
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -257,6 +271,7 @@ fn out_writes_the_transcript_to_a_file() {
         "--out",
         out_path.to_str().unwrap(),
         "--quiet",
+        "--host",
     ]);
     assert!(out.status.success());
     assert!(out.stdout.is_empty(), "nothing goes to stdout with --out");
@@ -283,6 +298,7 @@ fn concurrent_without_the_feature_is_an_explicit_refusal() {
         "--providers",
         p.to_str().unwrap(),
         "--quiet",
+        "--host",
     ]);
     assert_eq!(out.status.code(), Some(64));
     let stderr = String::from_utf8_lossy(&out.stderr);

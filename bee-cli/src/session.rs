@@ -170,6 +170,125 @@ pub fn strip_vars(key_env: Option<&str>) -> Vec<String> {
     bee_harness::sandbox::key_vars(key_env)
 }
 
+// --- the enforcement invariant ----------------------------------------------------------------
+//
+// Bee's first design principle is deny-by-default and fail-closed: refuse rather than degrade
+// silently. `bee exec` has always honoured it. The sessions did not — an interactive session
+// without a policy became a host session, announced by one line of a six-line banner, and a session
+// *with* a policy on a build without enforcement had that policy parsed, accepted, and ignored.
+//
+// After this, unenforced execution is something the operator asks for.
+
+/// What a session will actually run under, once the operator's intent and the build have both had
+/// their say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Enforcement {
+    /// A kernel-enforced scope.
+    Enforced,
+    /// Hardened, credential-stripped host processes with no scope — explicitly requested.
+    Host,
+}
+
+/// Why a session may not start. Three distinct problems, so three distinct messages: an operator
+/// who sees the wrong one is sent in the wrong direction.
+pub struct EnforcementError {
+    pub detail: String,
+    pub code: u8,
+}
+
+/// Decide what the session runs under, or refuse.
+///
+/// `policy_configured` is whether *any* source produced a policy for this session — a flag,
+/// configuration, or a scenario file's own `policy_path`. `explicit_policy` is narrower: whether
+/// the operator asked for one on the command line or in configuration, which is what can contradict
+/// `--host`. A scenario file naming a policy does not contradict it: a scenario is a portable
+/// artifact, and running one on a host build while saying so is a legitimate thing to do.
+pub fn resolve_enforcement(
+    policy_configured: bool,
+    explicit_policy: bool,
+    host: bool,
+) -> Result<Enforcement, EnforcementError> {
+    if host && explicit_policy {
+        return Err(EnforcementError {
+            detail: "--host means run with no kernel scope, but a policy was configured. \
+                     Asking for a policy and asking to run unenforced are contradictory: \
+                     drop one."
+                .to_string(),
+            code: EX_USAGE,
+        });
+    }
+
+    // Without the feature there is no enforcement to have, whatever the configuration says.
+    if !cfg!(feature = "enforce") {
+        if host {
+            return Ok(Enforcement::Host);
+        }
+        let detail = if policy_configured {
+            "a policy is configured, but this `bee` was built without enforcement, so nothing \
+             would enforce it.\n  Rebuild with `--features enforce` on the nightly bpf toolchain \
+             to enforce it,\n  or drop the policy and pass `--host` to run unenforced on purpose."
+        } else {
+            "refusing to start an unenforced session.\n  This `bee` was built without \
+             enforcement, so tools would run as hardened host processes with no kernel scope.\n  \
+             Rebuild with `--features enforce` to enforce a policy, or pass `--host` to accept \
+             that on purpose."
+        };
+        return Err(EnforcementError {
+            detail: detail.to_string(),
+            code: EX_USAGE,
+        });
+    }
+
+    if host {
+        return Ok(Enforcement::Host);
+    }
+    if !policy_configured {
+        return Err(EnforcementError {
+            detail: "incomplete configuration:\n  - a policy — what the agent's tools are allowed \
+                     to do\n      supply it with --policy <FILE>\n      or `[policy] path` in \
+                     project configuration (.bee/config.toml)\n      or `[policy] path` in user \
+                     configuration (~/.config/bee/config.toml)\n      or pass --host to run with \
+                     no kernel scope on purpose"
+                .to_string(),
+            code: EX_USAGE,
+        });
+    }
+    Ok(Enforcement::Enforced)
+}
+
+/// Refuse before starting if the kernel cannot enforce, the way `bee exec` already does. Without
+/// this the sessions discover it half-built and report it as an infrastructure error.
+#[cfg(feature = "enforce")]
+pub fn require_kernel_support() -> Result<(), EnforcementError> {
+    let support = bee_userspace::Engine::supported();
+    if support.is_supported() {
+        return Ok(());
+    }
+    Err(EnforcementError {
+        detail: format!("refusing to run: kernel cannot enforce (fail-closed)\n{support}"),
+        code: EX_UNSUPPORTED,
+    })
+}
+
+#[cfg(not(feature = "enforce"))]
+pub fn require_kernel_support() -> Result<(), EnforcementError> {
+    Ok(())
+}
+
+/// Say plainly, once, on stderr, that nothing is enforcing. A banner line is not enough: it scrolls
+/// past, and it is invisible in a piped log.
+pub fn announce_host_mode(command: &str) {
+    eprintln!(
+        "{command}: HOST MODE — no kernel scope is in effect. Tools run as hardened, \
+         credential-stripped host processes with no capability enforcement."
+    );
+}
+
+/// Exit code for an unsupported kernel, matching `bee exec`. Only reachable on an enforcement
+/// build — a host build has no kernel gate to fail.
+#[cfg_attr(not(feature = "enforce"), allow(dead_code))]
+pub const EX_UNSUPPORTED: u8 = 65;
+
 /// Build the sandbox a session's tools run in, plus a human-readable label for the banner.
 ///
 /// With the enforcement feature and a policy this is a real kernel-enforced scope; otherwise it is

@@ -60,6 +60,12 @@ fn bee_repl(args: &[&str], input: &str) -> Output {
     run_with_stdin(Path::new(env!("CARGO_BIN_EXE_bee")), &a, input)
 }
 
+/// `bee-repl` has no `--host`: it silently ran unenforced, which is what issue 05 stopped. Strip
+/// the flag so the comparison is about behaviour under the same intent.
+fn without_host<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    args.iter().copied().filter(|a| *a != "--host").collect()
+}
+
 fn old_bee_repl(args: &[&str], input: &str) -> Option<Output> {
     let Some(bin) = repl_bin() else {
         eprintln!(
@@ -68,7 +74,7 @@ fn old_bee_repl(args: &[&str], input: &str) -> Option<Output> {
         );
         return None;
     };
-    Some(run_with_stdin(&bin, args, input))
+    Some(run_with_stdin(&bin, &without_host(args), input))
 }
 
 /// The banner lines both commands print, minus the first line (which names the command and so
@@ -89,6 +95,7 @@ fn the_banner_reports_the_same_session() {
         "--provider",
         provider.to_str().unwrap(),
         "--no-bee",
+        "--host",
         "--tools",
         "bash,read_file",
     ];
@@ -103,10 +110,12 @@ fn the_banner_reports_the_same_session() {
     assert!(mine_out.starts_with("bee repl"), "{mine_out}");
     assert!(mine_out.contains("model:  mock/scripted"), "{mine_out}");
     assert!(mine_out.contains("tools:  bash, read_file"), "{mine_out}");
-    // No policy configured ⇒ host mode, and the banner says so. Issue 05 turns this into a
-    // refusal unless `--host` is given; until then the banner is the only signal, which is
-    // precisely the gap that issue exists to close.
-    assert!(mine_out.contains("host mode"), "{mine_out}");
+    // Host mode is announced on stderr now, not buried in the banner (issue 05).
+    assert!(
+        String::from_utf8_lossy(&mine.stderr).contains("HOST MODE"),
+        "{}",
+        String::from_utf8_lossy(&mine.stderr)
+    );
 
     if let Some(theirs) = old_bee_repl(&args, "") {
         assert_eq!(mine.status.code(), theirs.status.code());
@@ -122,7 +131,15 @@ fn the_banner_reports_the_same_session() {
 fn closed_stdin_ends_the_session_cleanly() {
     let dir = tempfile::tempdir().unwrap();
     let provider = mock_provider(dir.path(), "p.toml", "hi");
-    let out = bee_repl(&["--provider", provider.to_str().unwrap(), "--no-bee"], "");
+    let out = bee_repl(
+        &[
+            "--provider",
+            provider.to_str().unwrap(),
+            "--no-bee",
+            "--host",
+        ],
+        "",
+    );
     assert!(out.status.success());
 }
 
@@ -162,6 +179,7 @@ fn a_transcript_is_saved_on_exit() {
             "--provider",
             provider.to_str().unwrap(),
             "--no-bee",
+            "--host",
             "--save",
             save.to_str().unwrap(),
         ],
@@ -189,6 +207,7 @@ fn a_full_screen_request_falls_back_when_piped() {
             "--provider",
             provider.to_str().unwrap(),
             "--no-bee",
+            "--host",
             "--tui",
         ],
         "",
@@ -219,6 +238,7 @@ fn mcp_configuration_without_the_feature_is_refused() {
             "--provider",
             provider.to_str().unwrap(),
             "--no-bee",
+            "--host",
             "--mcp-config",
             mcp.to_str().unwrap(),
         ],

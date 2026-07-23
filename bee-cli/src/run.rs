@@ -85,6 +85,10 @@ pub struct RunArgs {
     /// Disable all motion — agent effects and bee's own chrome alike.
     #[arg(long)]
     pub no_animation: bool,
+    /// Run with no kernel scope: tools execute as hardened, credential-stripped host processes.
+    /// Required to start an unenforced session — bee will not fall back to one silently.
+    #[arg(long, conflicts_with = "policy")]
+    pub host: bool,
 }
 
 impl RunArgs {
@@ -119,17 +123,11 @@ impl RunArgs {
             .task
             .as_ref()
             .ok_or("either --scenario or --task is required")?;
-        // An enforced scope must have a real policy; the `/dev/null` placeholder below is only
-        // valid on the host build, where the policy is never compiled. Fail clean rather than let
-        // it surface as a confusing TOML parse error at run time.
-        #[cfg(feature = "enforce")]
-        if cfg.policy_path.is_none() {
-            return Err(
-                "under --features enforce, --task requires a policy (--policy <FILE>, or \
-                 `[policy] path` in configuration) — an enforced scope must have a policy"
-                    .to_string(),
-            );
-        }
+        // An enforced scope must have a real policy, and the `/dev/null` placeholder below is only
+        // valid when nothing will compile it. That rule used to live here, as an enforce-gated
+        // guard. It belongs to the enforcement invariant instead (`session::resolve_enforcement`),
+        // which runs just after this and knows about `--host` — the guard here did not, so it
+        // refused ad-hoc host-mode runs that the operator had explicitly asked for.
         Ok(Scenario {
             id: "adhoc".to_string(),
             policy_path: cfg
@@ -196,6 +194,44 @@ async fn run(args: RunArgs) -> ExitCode {
             return ExitCode::from(EX_USAGE);
         }
     };
+
+    // The enforcement invariant, before anything is contacted or spawned. A scenario file's own
+    // `policy_path` counts as a configured policy — `/dev/null` is the long-standing "no policy"
+    // placeholder and does not.
+    let scenario_has_policy = scenario.policy_path != Path::new("/dev/null");
+    match session::resolve_enforcement(
+        scenario_has_policy || cfg.policy_path.is_some(),
+        cfg.policy_path.is_some(),
+        args.host,
+    ) {
+        Ok(session::Enforcement::Host) => {
+            // Known limitation, refused rather than faked. `run_episode` builds its own sandbox,
+            // and under the `enforce` feature that path is unconditional — there is no host branch
+            // to select. Honouring `--host` here would announce an unenforced session and then run
+            // an enforced one, or fail half-built with an infrastructure error. `bee repl` is
+            // unaffected: it constructs its own sandbox and can choose.
+            if cfg!(feature = "enforce") {
+                eprintln!(
+                    "{CMD}: --host is not available in an enforcement build.\n  \
+                     A headless episode's sandbox is built by the harness, which has no \
+                     unenforced path when compiled with `--features enforce`.\n  \
+                     Use a build without that feature for host-mode runs, or supply a policy."
+                );
+                return ExitCode::from(EX_USAGE);
+            }
+            session::announce_host_mode(CMD)
+        }
+        Ok(session::Enforcement::Enforced) => {
+            if let Err(e) = session::require_kernel_support() {
+                eprintln!("{CMD}: {}", e.detail);
+                return ExitCode::from(e.code);
+            }
+        }
+        Err(e) => {
+            eprintln!("{CMD}: {}", e.detail);
+            return ExitCode::from(e.code);
+        }
+    }
 
     let session = match session::build(&cfg, CMD) {
         Ok(s) => s,

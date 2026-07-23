@@ -74,6 +74,10 @@ pub struct ReplArgs {
     /// Disable all motion — agent effects and bee's own chrome alike.
     #[arg(long)]
     pub no_animation: bool,
+    /// Run with no kernel scope: tools execute as hardened, credential-stripped host processes.
+    /// Required to start an unenforced session — bee will not fall back to one silently.
+    #[arg(long, conflicts_with = "policy")]
+    pub host: bool,
 }
 
 impl ReplArgs {
@@ -125,6 +129,21 @@ async fn repl(args: ReplArgs) -> ExitCode {
     if cfg.mcp_config.is_some() {
         eprintln!("{CMD}: MCP configuration requires building with --features mcp");
         return ExitCode::from(EX_USAGE);
+    }
+
+    // The enforcement invariant, before a provider is contacted or a tool runs.
+    match session::resolve_enforcement(cfg.policy.is_some(), cfg.policy.is_some(), args.host) {
+        Ok(session::Enforcement::Host) => session::announce_host_mode(CMD),
+        Ok(session::Enforcement::Enforced) => {
+            if let Err(e) = session::require_kernel_support() {
+                eprintln!("{CMD}: {}", e.detail);
+                return ExitCode::from(e.code);
+            }
+        }
+        Err(e) => {
+            eprintln!("{CMD}: {}", e.detail);
+            return ExitCode::from(e.code);
+        }
     }
 
     let session = match session::build(&cfg, CMD) {
