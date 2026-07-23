@@ -1,8 +1,8 @@
 //! The colors the scenes draw in.
 //!
-//! These are bee's `catppuccin-mocha` built-in theme (`bee-harness/src/viz/themes.rs`), transcribed
+//! These are bee's `catppuccin-mocha` built-in theme (`src/viz/themes.rs`), transcribed
 //! as literals. Transcribed rather than imported because this crate deliberately does not depend on
-//! `bee-harness` — that crate's tree is tokio, rig-core, aya, rustyline and rhai, none of which
+//! the bee application package — that crate's tree is tokio, rig-core, aya, rustyline and rhai, none of which
 //! compile to wasm32.
 //!
 //! Mocha rather than bee's default `honeycomb`: honeycomb is basic-ANSI (`\e[33m` and friends), and a

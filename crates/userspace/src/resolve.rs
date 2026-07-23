@@ -3,7 +3,7 @@
 //! The `Resolver` trait lives in `bee-core` (pure, no ambient I/O — NFR-005); this concrete
 //! implementation — reading cwd / `$HOME` / `PATH` / system DNS — lives here in `bee-userspace`, the
 //! crate that owns host-facing operations and already provides [`crate::spawn::resolve_in_path`].
-//! Shared by `bee-cli` and `bee-harness` (the standard abstract-trait-in-core, concrete-impl-in-a-
+//! Shared by the application package (the standard abstract-trait-in-core, concrete-impl-in-a-
 //! higher-crate pattern). Sync only — no async runtime; `resolve_host` blocks at policy-compile
 //! time, before any agent loop runs.
 

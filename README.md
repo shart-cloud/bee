@@ -20,12 +20,26 @@ data model, and contracts.
 
 | Crate | Role | Status |
 |-------|------|--------|
-| `bee-common` | `#[repr(C)]` map layouts + verifier-safe matcher primitives (`no_std`) | ✅ implemented + tested |
-| `bee-core` | Policy types, TOML parsing, compiler/glob-lowering, attenuation validator, audit types | ✅ implemented + tested |
-| `bee-userspace` | Support detection, cgroup lifecycle, hardened launcher (incl. process hardening, FR-011), engine gating | ✅ host logic tested; ⏳ eBPF attach behind `--features enforce` |
-| `bee-cli` | The application and sole host executable: `bee run` / `repl` / `exec` / `check` / `validate` / `metrics` | ✅ `check` + `validate` work; enforcement fail-closed here |
-| `bee-harness` | Harness library: agent episodes, batch/concurrent runs, CTF scoring, and the REPL core | ✅ host-tested; enforcement behind features |
-| `bee-ebpf` | LSM programs (`file_open`, `bprm_check_security`, `socket_connect`) | ⏳ requires nightly bpf toolchain + BPF-LSM kernel |
+Five packages, one host executable ([ADR-0002](docs/adr/0002-present-bee-as-one-user-facing-application.md)):
+
+```text
+Cargo.toml           # workspace root *and* the `bee` application package
+src/                 # the harness library (episodes, tools, REPL core, render pipeline)
+src/app/             # the application layer: commands, config resolution, session construction
+crates/
+  core/  common/  userspace/  ebpf/
+```
+
+| Package | Role | Status |
+|-------|------|--------|
+| `bee` (root) | The application and sole host executable, plus the harness library it drives | ✅ host-tested; enforcement behind features |
+| `crates/common` | `#[repr(C)]` map layouts + verifier-safe matcher primitives (`no_std`) | ✅ implemented + tested |
+| `crates/core` | Policy types, TOML parsing, compiler/glob-lowering, attenuation validator, audit types | ✅ implemented + tested |
+| `crates/userspace` | Support detection, cgroup lifecycle, hardened launcher (incl. process hardening, FR-011), engine gating | ✅ host logic tested; ⏳ eBPF attach behind `--features enforce` |
+| `crates/ebpf` | LSM programs (`file_open`, `bprm_check_security`, `socket_connect`), built as `bee-lsm` | ⏳ requires nightly bpf toolchain + BPF-LSM kernel |
+
+The four `crates/` packages stay separate because their runtime, kernel, `no_std`, and BPF-target
+constraints earn it. The harness library does not: it has exactly one consumer.
 
 ## Build & test
 
@@ -74,7 +88,7 @@ fails closed on an ordinary host. `bee metrics` reports recorded usage, cost, an
 a full-screen chat surface with model-owned live panels (008-grid-tui):
 
 ```bash
-cargo build --release -p bee-cli --features tui
+cargo build --release --features tui
 ./target/release/bee repl --provider <provider.toml> --tui        # --no-tui forces inline
 ```
 
@@ -97,7 +111,7 @@ gesture there.
 
 ## Kernel requirements (for enforcement)
 
-The `enforce` feature and the `bee-ebpf` crate require:
+The `enforce` feature and the `crates/ebpf` package require:
 
 * Linux **≥ 5.7** with `CONFIG_BPF_LSM=y` and `CONFIG_DEBUG_INFO_BTF=y`,
 * **`bpf` in the active LSM list** — check `cat /sys/kernel/security/lsm` for a `bpf` token; if absent,

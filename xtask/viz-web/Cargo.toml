@@ -14,13 +14,13 @@ description = "bee's TUI visual constructs, compiled to WebAssembly so a headles
 # <span>s inside <pre> lines, so block glyphs, colors and modifiers survive to the screenshot.
 ratzilla = "0.3"
 
-# Same major as bee-harness (0.30), so the widget calls below are the ones bee itself makes. Held at
+# Same major as bee (0.30), so the widget calls below are the ones bee itself makes. Held at
 # `default-features = false` for the same reason bee holds it there: no terminal backend is wanted —
 # ratzilla is the backend. ratzilla itself turns on `all-widgets`, and this restates it so the scene
 # code does not silently depend on a transitive feature.
 ratatui = { version = "0.30", default-features = false, features = ["all-widgets"] }
 
-# Same major as bee-harness (0.25), configured the same way (contract: the effects here must be the
+# Same major as bee (0.25), configured the same way (contract: the effects here must be the
 # effects bee builds). `default-features = false` drops the `dsl` parser and its `anpa` dep — bee
 # builds effects from Rust constructors, never from DSL strings (009 research R3). `std` is the other
 # half of tachyonfx's default and is re-enabled explicitly. `wasm` swaps the internal clock for

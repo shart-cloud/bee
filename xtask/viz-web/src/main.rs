@@ -12,7 +12,7 @@
 //! Two reasons, both about the pixels being trustworthy.
 //!
 //! *Determinism.* Effects here are advanced by a **fixed 16ms step**, never by wall-clock time —
-//! the same stepping `bee-harness`'s `tui::effects::Timeline` test helper uses, including the
+//! the same stepping the bee application package's `tui::effects::Timeline` test helper uses, including the
 //! zero-length first frame that makes a `t=0` capture show the *start* of the animation rather than
 //! the untouched widget. A real-time animation screenshotted "about 150ms in" would not reproduce.
 //! Fixed stepping is necessary but not sufficient: the cell-scattering effects also have to be
@@ -41,7 +41,7 @@ use wasm_bindgen::prelude::*;
 use scenes::Scene;
 
 /// One 60fps frame. The step [`render_at`] advances effects by, matching
-/// `bee-harness`'s `tui::effects::Timeline::frames`.
+/// the bee application package's `tui::effects::Timeline::frames`.
 const FRAME_MS: u32 = 16;
 
 /// How long the gallery holds a finished scene before moving to the next one.

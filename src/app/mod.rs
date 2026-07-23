@@ -1,0 +1,13 @@
+//! The application layer: the commands `bee` exposes, and what they resolve before running.
+//!
+//! Reached only from `src/main.rs`. Everything beside it in `src/` is the harness *library* — the
+//! episode loop, the tool registry, the REPL core, the render pipeline — which this layer drives
+//! and does not extend. Keeping the two in one package reflects that the library has exactly one
+//! consumer (ADR-0002); keeping them in separate module trees keeps the direction of that
+//! dependency visible.
+
+pub mod config;
+pub mod metrics;
+pub mod repl;
+pub mod run;
+pub mod session;

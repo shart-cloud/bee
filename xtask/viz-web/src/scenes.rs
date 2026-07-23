@@ -6,9 +6,9 @@
 //! (`tui::effects::panel_update`) and the two harness-chrome presets (`Chrome::Header`,
 //! `Chrome::Footer`).
 //!
-//! **The effect constructors below are copied from `bee-harness/src/tui/effects.rs`, argument for
+//! **The effect constructors below are copied from `src/tui/effects.rs`, argument for
 //! argument** — same house constants, same durations, same `Motion` mapping, same two composites.
-//! That copying is the entire point: this crate cannot import `bee-harness` (its tree is tokio,
+//! That copying is the entire point: this crate cannot import the bee application package (its tree is tokio,
 //! rig-core, aya, rustyline and rhai, none of which build for wasm32), so the guarantee on offer is
 //! not "bee's code is exercised" but "the *upstream API surface* bee's code stands on is exercised,
 //! with bee's arguments". If ratatui or tachyonfx changes what these calls draw, the screenshots
@@ -33,7 +33,7 @@ use crate::palette;
 
 /// The seed every cell-scattering effect is pinned to.
 ///
-/// **This is the one place these scenes deliberately diverge from `bee-harness`.** The scatter
+/// **This is the one place these scenes deliberately diverge from the bee application package.** The scatter
 /// effects — `dissolve`, `coalesce`, `slide_in`, `slide_out` — build their per-cell thresholds from
 /// `SimpleRng::default()`, and under tachyonfx's `std`/`wasm` features that constructor seeds itself
 /// from `SystemTime::now()`. They are therefore *not* reproducible run to run, and a baseline of an
@@ -54,7 +54,7 @@ fn seeded(effect: Effect) -> Effect {
     effect.with_rng(SimpleRng::new(SEED))
 }
 
-// --- The house constants, from `bee-harness/src/tui/effects.rs` -------------------------------
+// --- The house constants, from `src/tui/effects.rs` -------------------------------
 
 /// How wide the leading gradient is on slide/sweep effects, in cells.
 const GRADIENT_LEN: u16 = 8;

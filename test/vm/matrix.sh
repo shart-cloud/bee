@@ -27,7 +27,7 @@ echo "== build (host) =="
 if [ "${BEE_SKIP_BUILD:-0}" != 1 ]; then
   # `concurrent` implies `enforce`, so one build covers every case in the matrix — including the
   # concurrent-audit-isolation one, which used to need a second binary and skipped without it.
-  ( cd "$REPO" && cargo build -p bee-cli --features concurrent --release )
+  ( cd "$REPO" && cargo build --features concurrent --release )
 fi
 BIN="$REPO/target/release/bee"
 [ -x "$BIN" ] || { echo "FAIL: $BIN not found (build first)"; exit 1; }
