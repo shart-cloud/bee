@@ -18,6 +18,12 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Link without debug info. The `mcp` test binaries pull rmcp + reqwest + rustls + aws-lc-sys, and
+  # linking that tree with full debug info exhausts the runner's memory: `ld` dies with SIGBUS, on a
+  # different test target each run. Debug info buys nothing in CI — no one is attaching a debugger
+  # to a green build — and dropping it is what keeps the link inside the runner's budget.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
   fmt:
