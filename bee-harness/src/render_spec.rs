@@ -293,6 +293,12 @@ pub enum RenderSpec {
     AsciiArt {
         lines: Vec<String>,
     },
+    /// A markdown block the agent asked to have rendered (010). Carried as **source**, never as
+    /// styled spans: the transcript stays renderer-free (NFR-002) and a replay re-renders at
+    /// whatever width the terminal reading it happens to have.
+    Markdown {
+        content: String,
+    },
     Separator,
     Layout {
         direction: Direction,
@@ -427,6 +433,9 @@ impl RenderSpec {
                 s
             }
             RenderSpec::Text { content, .. } => format!("{content}\n"),
+            // Markdown source *is* the plain-text form — that is the point of markdown — so the
+            // ASCII fallback prints it as written rather than stripping anything.
+            RenderSpec::Markdown { content } => format!("{content}\n"),
             RenderSpec::AsciiArt { lines } => format!("{}\n", lines.join("\n")),
             RenderSpec::Separator => "----\n".to_string(),
             RenderSpec::Layout { children, .. } => children
@@ -480,6 +489,7 @@ impl RenderSpec {
                 format!("a dot grid {title:?} with {} dots", dots.len())
             }
             RenderSpec::Text { .. } => "a text block".to_string(),
+            RenderSpec::Markdown { .. } => "a markdown block".to_string(),
             RenderSpec::AsciiArt { lines } => format!("ASCII art ({} lines)", lines.len()),
             RenderSpec::Separator => "a separator".to_string(),
             RenderSpec::Layout {

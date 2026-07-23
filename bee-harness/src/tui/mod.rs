@@ -12,6 +12,7 @@ pub mod chat;
 pub mod effects;
 pub mod frontend;
 pub mod input;
+pub mod markdown;
 pub mod message;
 pub mod overlay;
 pub mod panels;

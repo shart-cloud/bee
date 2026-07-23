@@ -74,6 +74,12 @@ impl ReplOutput for SessionSink {
     fn steering(&self, msg: &str) {
         self.emit(SessionEvent::Steering(msg.to_string()));
     }
+    fn markdown(&self, md: &str) {
+        self.emit(SessionEvent::Markdown(md.to_string()));
+    }
+    fn clear_history(&self) {
+        self.emit(SessionEvent::Cleared);
+    }
     fn busy_start(&self) {
         self.emit(SessionEvent::TurnStarted);
     }
@@ -104,6 +110,18 @@ impl ReplOutput for SessionSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clear_history_reaches_the_front_end_as_an_event() {
+        // The trait default is a no-op (right for the inline REPL, whose history is the terminal's
+        // scrollback); the sink has to override it or the TUI's pane keeps a conversation the model
+        // has already forgotten (010).
+        let (sink, mut rx) = SessionSink::new();
+        sink.clear_history();
+        drop(sink);
+        let got: Vec<SessionEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(matches!(got.as_slice(), [SessionEvent::Cleared]));
+    }
 
     #[test]
     fn sink_forwards_callbacks_as_events_in_order() {

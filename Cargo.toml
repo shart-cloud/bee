@@ -11,7 +11,13 @@ members = [
 # bee-ebpf targets bpfel-unknown-none (nightly + bpf-linker) and is built out-of-band
 # by bee-userspace/build.rs via aya-build. Excluding it keeps host `cargo build`/`cargo test`
 # from trying to compile the BPF object with the default target.
-exclude = ["bee-ebpf"]
+#
+# xtask is the developer-tool crate (`cargo xtask viz-snapshot`, see xtask/README.md). It is its own
+# workspace with its own lockfile, so its clap/anyhow — and, under xtask/viz-web, the whole
+# ratzilla + wasm32 tree — never enter the shipping crates' dependency graph. Excluding it is what
+# keeps `cargo build`/`cargo test`/`cargo clippy --workspace --all-targets` byte-for-byte unaffected
+# by its existence.
+exclude = ["bee-ebpf", "xtask"]
 
 [workspace.package]
 version = "0.1.0"

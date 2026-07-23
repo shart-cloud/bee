@@ -29,6 +29,11 @@ const FORBIDDEN: &[&str] = &[
     "rhai",
     // Terminal effects (009-tachyonfx-effects, SC-009)
     "tachyonfx",
+    // Markdown → ratatui `Text` (010): a chat-pane concern, never a policy-core one. Both the
+    // crate bee uses and the one it deliberately did not are listed, so reaching for either from
+    // the core fails here rather than in review.
+    "tui-markdown",
+    "ratatui-markdown",
     // MCP client
     "rmcp",
 ];
@@ -111,15 +116,14 @@ fn bee_common_has_no_terminal_or_runtime_dependency() {
 ///
 /// Asserted against the manifest rather than the resolved tree, so the rule holds without building:
 /// the dependency must be `optional` and reachable only through the `tui` feature.
-#[test]
-fn tachyonfx_is_reachable_only_through_the_tui_feature() {
+fn assert_reachable_only_through_the_tui_feature(dep: &str) {
     let path = workspace_root().join("bee-harness").join("Cargo.toml");
     let manifest = std::fs::read_to_string(&path).expect("read bee-harness manifest");
 
     // The declaration spans several lines, so take it from its key to the end of its table.
     let start = manifest
-        .find("\ntachyonfx")
-        .expect("bee-harness must declare tachyonfx");
+        .find(&format!("\n{dep}"))
+        .unwrap_or_else(|| panic!("bee-harness must declare {dep}"));
     let decl: String = manifest[start + 1..]
         .lines()
         .take_while(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
@@ -127,11 +131,11 @@ fn tachyonfx_is_reachable_only_through_the_tui_feature() {
         .join(" ");
     assert!(
         decl.contains("optional = true"),
-        "tachyonfx must be optional so the headless build never pulls it in, but got: {decl}"
+        "{dep} must be optional so the headless build never pulls it in, but got: {decl}"
     );
 
     // And the only feature that turns it on is `tui`. Feature values are multi-line arrays, so
-    // track which key's value each `dep:tachyonfx` falls inside.
+    // track which key's value each `dep:<name>` falls inside.
     let features = manifest
         .split("[features]")
         .nth(1)
@@ -145,15 +149,27 @@ fn tachyonfx_is_reachable_only_through_the_tui_feature() {
                 current = key.trim();
             }
         }
-        if line.contains("dep:tachyonfx") {
+        if line.contains(&format!("dep:{dep}")) {
             enabling.push(current);
         }
     }
     assert_eq!(
         enabling,
         vec!["tui"],
-        "only the `tui` feature may enable tachyonfx"
+        "only the `tui` feature may enable {dep}"
     );
+}
+
+#[test]
+fn tachyonfx_is_reachable_only_through_the_tui_feature() {
+    assert_reachable_only_through_the_tui_feature("tachyonfx");
+}
+
+/// Markdown rendering is a chat-pane concern (010): a batch run or a CI episode has no chat pane,
+/// so a headless build must not carry a markdown parser — the same rule tachyonfx lives under.
+#[test]
+fn tui_markdown_is_reachable_only_through_the_tui_feature() {
+    assert_reachable_only_through_the_tui_feature("tui-markdown");
 }
 
 #[test]

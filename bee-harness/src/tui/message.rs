@@ -22,6 +22,10 @@ pub enum Message {
     Resume,
     /// An animation tick (armed only while something animates).
     Tick,
+    /// Scroll the chat flow by `n` rows, away from the newest content (wheel-up, PgUp, ↑).
+    ScrollUp(u16),
+    /// Scroll the chat flow by `n` rows, back toward the newest content (wheel-down, PgDn, ↓).
+    ScrollDown(u16),
     /// The conversation core spoke. Boxed: a `SessionEvent` carries a whole `ToolResult`/`RenderSpec`,
     /// which would otherwise inflate every `Message` (a bare `Tick`) to its size.
     Session(Box<SessionEvent>),

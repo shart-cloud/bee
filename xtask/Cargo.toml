@@ -1,0 +1,19 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "bee's developer tasks. Not part of the workspace and not shipped."
+
+# Its own workspace root, so `cargo xtask` resolves against xtask/Cargo.lock rather than bee's. The
+# root manifest lists "xtask" in `exclude` for the same reason from the other side.
+#
+# `viz-web` is excluded rather than a member: it only compiles for wasm32-unknown-unknown (ratzilla
+# pulls web-sys, which has no host implementation), so a `cargo build` here must not try to build it.
+# `trunk` builds it, with its own lockfile, from xtask/viz-web/.
+[workspace]
+exclude = ["viz-web"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"

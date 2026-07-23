@@ -50,6 +50,14 @@ pub enum SessionEvent {
     Footer(String),
     /// A steering acknowledgement (`steering`).
     Steering(String),
+    /// A block the sender declared to be markdown (`markdown`) — a skill's instructions, say. The
+    /// TUI renders it styled; declared, never inferred (010).
+    Markdown(String),
+    /// The conversation history was dropped (`clear_history`, `/clear`). The model's message log is
+    /// already empty when this arrives; a front-end that keeps its own copy of the transcript — the
+    /// TUI's chat pane — has to be told, or it goes on showing a conversation the model has
+    /// forgotten (010).
+    Cleared,
     /// The "working" indicator began (`busy_start`) — the assistant turn is in flight.
     TurnStarted,
     /// The "working" indicator ended (`busy_stop`).

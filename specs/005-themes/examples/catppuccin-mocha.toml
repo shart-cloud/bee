@@ -1,4 +1,8 @@
-# bee config — select a built-in theme by name.
-# Place at ~/.config/bee/config.toml (respects $XDG_CONFIG_HOME).
 [theme]
 name = "catppuccin-mocha"
+
+[provider]
+provider    = "anthropic"
+model       = "claude-opus-4-8"   # or claude-sonnet-5, claude-haiku-4-5
+api_key_env = "ANTHROPIC_API_KEY"
+max_tokens  = 4096k 

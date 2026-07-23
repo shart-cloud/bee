@@ -117,6 +117,19 @@ pub trait ReplOutput: Send + Sync {
     fn error(&self, msg: &str);
     /// An informational line (banners, warnings, meta-command output).
     fn info(&self, msg: &str);
+    /// A block the sender declares to be **markdown** — a skill's instructions, say (010). Defaults
+    /// to [`ReplOutput::info`], which prints the source verbatim: that is the honest rendering for a
+    /// scrolling terminal, and markdown source is meant to be readable as-is. The full-screen TUI
+    /// overrides it to style the block. Never inferred from content — a tool result containing `**`
+    /// is data, not emphasis — so only a caller that *knows* it holds markdown calls this.
+    fn markdown(&self, md: &str) {
+        self.info(md);
+    }
+    /// The conversation history was dropped (`/clear`). Defaults to a no-op: the inline REPL's
+    /// history *is* the terminal's scrollback, which belongs to the user and which we do not erase.
+    /// A front-end holding its own copy of the transcript (the TUI's chat pane) overrides this —
+    /// otherwise it keeps displaying a conversation the model has already forgotten (010).
+    fn clear_history(&self) {}
     /// A dim per-exchange summary footer. Defaults to [`ReplOutput::info`].
     fn footer(&self, msg: &str) {
         self.info(msg);
@@ -1004,6 +1017,10 @@ pub async fn run_repl(
                     Some(skill) => match skill.body() {
                         Ok(body) => {
                             output.info(&format!("loaded skill '{name}' into the conversation."));
+                            // Show the operator the instructions the agent was just handed. A
+                            // SKILL.md body is markdown by definition (006-skills), so it is
+                            // declared as such rather than guessed at (010).
+                            output.markdown(&body);
                             to_run = Some(crate::tools::skill::load_message(
                                 &skill.name,
                                 &body,
@@ -1030,6 +1047,9 @@ pub async fn run_repl(
                 },
                 MetaCommand::Clear => {
                     conversation.messages.clear();
+                    // Before the info line, so a front-end that wipes its transcript still shows the
+                    // acknowledgement afterwards rather than clearing it away again (010).
+                    output.clear_history();
                     output.info("conversation history cleared (system prompt kept).");
                 }
                 MetaCommand::Save(path) => {

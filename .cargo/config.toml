@@ -1,0 +1,13 @@
+# `cargo xtask <cmd>` — the standard Rust xtask convention.
+#
+# Run it from the repository root: cargo expands the alias verbatim and resolves `--manifest-path`
+# against the current directory, so `cargo xtask` from a subdirectory reports that
+# `xtask/Cargo.toml` does not exist. (Cargo has no way to make an alias path repo-relative.) The
+# xtask binary itself anchors every path it uses to its own manifest directory, so only this one hop
+# cares where you are.
+#
+# xtask is NOT a workspace member — it is excluded in the root `Cargo.toml` alongside `bee-ebpf`, so
+# `cargo build`/`cargo test`/`cargo clippy --workspace` never see it and none of its dependencies
+# enter the shipping crates' lockfile. `--manifest-path` is what reaches it anyway.
+[alias]
+xtask = "run --manifest-path xtask/Cargo.toml --"

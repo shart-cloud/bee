@@ -799,6 +799,12 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
     });
     engine.register_fn("bold", |t: &mut TextBuilder| t.bold = true);
     engine.register_fn("dim", |t: &mut TextBuilder| t.dim = true);
+    // Markdown the agent writes as source and bee renders through the active theme (010). One verb,
+    // no builder: there is nothing to configure — the look belongs to the operator's theme, not to
+    // the script.
+    engine.register_fn("markdown", |content: String| -> Renderable {
+        RenderSpec::Markdown { content }.into()
+    });
     engine.register_fn("ascii_art", |lines: Array| -> Renderable {
         RenderSpec::AsciiArt {
             lines: array_to_strings(lines),
@@ -1143,6 +1149,39 @@ mod tests {
         let _g = VP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::viz::viewport::reset();
         run_inner(script)
+    }
+
+    #[test]
+    fn markdown_commits_its_source_not_a_rendering() {
+        // 010: the spec carries source, so the transcript stays renderer-free and a replay
+        // re-renders at the width the replaying terminal has.
+        // `r##` because the markdown content contains `"#`, which would close an `r#` literal.
+        let out = run(r##"render(markdown("# Title\n\nbody **here**"));"##).unwrap();
+        let spec = out.inline.expect("committed inline");
+        match spec {
+            RenderSpec::Markdown { content } => {
+                assert!(content.contains("# Title"));
+                assert!(content.contains("**here**"), "source, verbatim");
+            }
+            other => panic!("expected a markdown spec, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_markdown_block_takes_an_effect_and_a_panel_like_any_other_widget() {
+        // `effect` mutates the widget rather than chaining, so this is the two-statement form the
+        // rest of the surface uses.
+        let out =
+            run(r##"let w = markdown("# Notes"); w.effect(fade_in(300)); render_to("notes", w);"##)
+                .unwrap();
+        assert_eq!(out.panel_ops.len(), 1);
+        assert!(matches!(
+            &out.panel_ops[0],
+            PanelOp::Upsert {
+                effect: Some(EffectSpec::FadeIn { ms: 300 }),
+                ..
+            }
+        ));
     }
 
     #[test]
