@@ -13,6 +13,10 @@
 pub mod cgroup;
 pub mod detect;
 pub mod events;
+// Pre-exec / pre-main process hardening (FR-011). Was its own package until consolidation issue
+// 07: one source file, one consumer (`spawn`), and none of the runtime, kernel, `no_std`, or
+// BPF-target constraints that earn the other crates their separation.
+pub mod hardening;
 pub mod kbtf;
 pub mod loader;
 pub mod plan;

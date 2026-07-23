@@ -81,7 +81,7 @@ where
     // Strip LD_* in the PARENT (fork-safe): remove them from the child's environment before exec.
     // Doing this in pre_exec would deadlock — env access takes locks and allocates, which is unsafe
     // after fork() in a multithreaded process.
-    for key in bee_hardening::ld_env_keys(std::env::vars().map(|(k, _)| k)) {
+    for key in crate::hardening::ld_env_keys(std::env::vars().map(|(k, _)| k)) {
         cmd.env_remove(key);
     }
     // SAFETY: the pre_exec closure runs in the forked child before exec and issues only
@@ -90,7 +90,7 @@ where
     // open/write syscalls — not std::fs — to stay fork-safe).
     unsafe {
         cmd.pre_exec(move || {
-            bee_hardening::pre_exec_hardening()?;
+            crate::hardening::pre_exec_hardening()?;
             if let Some(join) = &cgroup_move {
                 join()?;
             }

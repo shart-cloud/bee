@@ -10,9 +10,9 @@ description = "bee eBPF loader, scope lifecycle, and audit consumer (kernel-faci
 [dependencies]
 bee-common = { workspace = true }
 bee-core = { workspace = true }
-bee-hardening = { path = "../bee-hardening" }
 thiserror = { workspace = true }
 libc = { workspace = true }
+ctor = { version = "0.2", optional = true }
 time = { workspace = true }
 
 # The eBPF loading path (aya) + BPF object embedding are enabled with the `enforce` feature, which
@@ -35,6 +35,10 @@ features = ["net", "sync", "rt", "macros"]
 [features]
 default = []
 enforce = ["dep:aya", "bee-common/aya"]
+# Install a `#[ctor]` that hardens the process before `main()` — for agents embedding bee
+# in-process. Carried over from the `bee-hardening` package it came from (consolidation issue 07);
+# nothing in the workspace enables it, but it is a public capability an embedder can still ask for.
+ctor = ["dep:ctor"]
 tokio = ["dep:tokio", "enforce"]
 
 [dev-dependencies.tokio]

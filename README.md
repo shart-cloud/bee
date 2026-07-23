@@ -22,8 +22,7 @@ data model, and contracts.
 |-------|------|--------|
 | `bee-common` | `#[repr(C)]` map layouts + verifier-safe matcher primitives (`no_std`) | ✅ implemented + tested |
 | `bee-core` | Policy types, TOML parsing, compiler/glob-lowering, attenuation validator, audit types | ✅ implemented + tested |
-| `bee-hardening` | Pre-exec / pre-main process hardening (FR-011) | ✅ implemented + tested |
-| `bee-userspace` | Support detection, cgroup lifecycle, hardened launcher, engine gating | ✅ host logic tested; ⏳ eBPF attach behind `--features enforce` |
+| `bee-userspace` | Support detection, cgroup lifecycle, hardened launcher (incl. process hardening, FR-011), engine gating | ✅ host logic tested; ⏳ eBPF attach behind `--features enforce` |
 | `bee-cli` | The application and sole host executable: `bee run` / `repl` / `exec` / `check` / `validate` / `metrics` | ✅ `check` + `validate` work; enforcement fail-closed here |
 | `bee-harness` | Harness library: agent episodes, batch/concurrent runs, CTF scoring, and the REPL core | ✅ host-tested; enforcement behind features |
 | `bee-ebpf` | LSM programs (`file_open`, `bprm_check_security`, `socket_connect`) | ⏳ requires nightly bpf toolchain + BPF-LSM kernel |

@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "bee-common",
     "bee-core",
-    "bee-hardening",
     "bee-userspace",
     "bee-cli",
     "bee-harness",
@@ -32,7 +31,6 @@ rust-version = "1.85"
 bee-common = { path = "bee-common" }
 bee-core = { path = "bee-core" }
 bee-userspace = { path = "bee-userspace" }
-bee-hardening = { path = "bee-hardening" }
 
 # User-space eBPF stack (stable Rust).
 aya = "0.14"
