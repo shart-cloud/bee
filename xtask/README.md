@@ -3,7 +3,7 @@
 Today this is one pipeline: **visual regression testing for the TUI**.
 
 bee's terminal UI is ratatui widgets with a [tachyonfx](https://github.com/ratatui/tachyonfx) effects
-pass applied to the buffer after they draw (009-tachyonfx-effects). `bee-harness` already asserts
+pass applied to the buffer after they draw (009-tachyonfx-effects). the bee application package already asserts
 that pipeline at the *cell* level — `tui::effects::Timeline` steps effects frame by frame and checks
 symbols and colors. This checks it at the *pixel* level: the same widget calls and the same effect
 constructors are compiled to WebAssembly with [Ratzilla](https://github.com/ratatui/ratzilla), drawn
@@ -79,12 +79,12 @@ interpolation curve.
 `panel_update` is the exception, captured at the quarters instead (four frames, 46 baselines in
 total). It is two sequential halves, so at its exact midpoint the old content has finished
 dissolving and the new has not begun coalescing: the frame is blank *by construction*, which is also
-what a completely broken transition would produce. `bee-harness`'s own test for this transition
+what a completely broken transition would produce. the bee application package's own test for this transition
 samples the same quarter and three-quarter offsets, for the same reason.
 
 One baseline is worth knowing about: `fade_in_0` is a solid block of the `info` color. That is
 correct — `fx::fade_from(INFO, INFO, …)` sets both foreground and background to the role color on
-its opening frame, so nothing is legible yet, and `bee-harness` asserts exactly that ("t=0 must be
+its opening frame, so nothing is legible yet, and the bee application package asserts exactly that ("t=0 must be
 the fade-from color, not the widget's"). It still pins the fade-from color and the scene geometry;
 it just cannot tell you anything about the text.
 
@@ -116,26 +116,26 @@ Puppeteer driver reads it from there, so there is no second list to keep in sync
 
 ## Design notes
 
-**`viz-web` does not depend on `bee-harness`, on purpose.** That crate's tree is tokio, rig-core,
+**`viz-web` does not depend on the bee application package, on purpose.** That crate's tree is tokio, rig-core,
 aya, rustyline and rhai; none of it compiles to wasm32. So the scenes are self-contained
 reproductions: the same ratatui widget calls, and the tachyonfx constructors copied out of
-`bee-harness/src/tui/effects.rs` argument for argument — same `GRADIENT_LEN`, same `RANDOMNESS`,
+`src/tui/effects.rs` argument for argument — same `GRADIENT_LEN`, same `RANDOMNESS`,
 same `Motion` mapping, same two composites, same durations.
 
 What that buys is honest but bounded. These screenshots do **not** prove bee's own code is correct;
-`bee-harness`'s own tests do that. They prove that the *upstream surface bee stands on* still draws
+the bee application package's own tests do that. They prove that the *upstream surface bee stands on* still draws
 what it drew — that a ratatui or tachyonfx bump has not silently changed a border glyph, a gradient
 curve, or the block set an `evolve` substitutes. That is the failure mode cell-level assertions in
 bee are least likely to catch, because they assert against expectations written at the same time as
 the code.
 
 **Time is stepped, never measured.** Effects advance in fixed 16ms increments, including a
-zero-length first frame — the same stepping `bee-harness`'s `Timeline` uses, and the reason a `t=0`
+zero-length first frame — the same stepping the bee application package's `Timeline` uses, and the reason a `t=0`
 capture shows the animation's opening frame rather than the untouched widget. Nothing in the pipeline
 screenshots a real-time animation "about halfway through".
 
 **The scatter effects are explicitly seeded, because tachyonfx's are not deterministic.** This is
-the one place the scenes deliberately diverge from `bee-harness`, and it is worth stating plainly
+the one place the scenes deliberately diverge from the bee application package, and it is worth stating plainly
 because bee's own source says otherwise. `tui/effects.rs` documents that "tachyonfx carries its own
 seeded `SimpleRng` and has no `rand` dependency, so the character-scatter effects reproduce for a
 given area and timeline". The first half is true and the conclusion does not follow: `dissolve`,
@@ -144,7 +144,7 @@ and under tachyonfx's `std` (or `wasm`) feature that constructor seeds itself fr
 `SystemTime::now()`. They differ every run. Measured here: unseeded, eight of the 46 frames failed
 against baselines taken minutes earlier, by up to 18% of their pixels.
 
-`bee-harness`'s tests do not notice because they assert *structural* properties of these effects —
+the bee application package's tests do not notice because they assert *structural* properties of these effects —
 "some cells still show `O` and some show a space" — never an exact frame. Nothing in bee is broken by
 this; the docstring is just wrong about why, and anyone who adds a pinned frame snapshot of a
 dissolve on the strength of it will get a flaky test.

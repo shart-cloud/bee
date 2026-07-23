@@ -1,8 +1,8 @@
 //! bee's mascot, drawn into a ratatui buffer as half-block glyphs.
 //!
-//! Transcribed from `bee-harness/src/viz/bee.rs` (the 16×16 bitmap and its palette) and
-//! `bee-harness/src/viz/sprite_render.rs` (the glyph-selection rule), because this crate cannot
-//! depend on `bee-harness`. The `evolve_in` / `evolve_out` scenes need a sprite specifically: the
+//! Transcribed from `src/viz/bee.rs` (the 16×16 bitmap and its palette) and
+//! `src/viz/sprite_render.rs` (the glyph-selection rule), because this crate cannot
+//! depend on the bee application package. The `evolve_in` / `evolve_out` scenes need a sprite specifically: the
 //! `EvolveSymbolSet::BlocksHorizontal` effect substitutes block glyphs, and block glyphs against a
 //! surface already made of block glyphs is the one visual case that catches an upstream change to
 //! tachyonfx's substitution table.
@@ -23,7 +23,7 @@ const LOWER: &str = "▄";
 const UPPER: &str = "▀";
 
 /// The wings-level frame of bee's three-frame flap. Byte-identical to `FRAME_MID` in
-/// `bee-harness/src/viz/bee.rs`. Left→right the anatomy reads: stinger, banded abdomen, thorax with
+/// `src/viz/bee.rs`. Left→right the anatomy reads: stinger, banded abdomen, thorax with
 /// the wings above it, then the head with its white eye and antenna.
 const FRAME_MID: [&str; 16] = [
     "................",

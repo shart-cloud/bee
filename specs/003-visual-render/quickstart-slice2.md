@@ -1,5 +1,11 @@
 # Quickstart: bee Visual Rendering — Slice 2 (sprites & animation)
 
+> **Command names changed.** The consolidation (ADR-0002) replaced `bee-episode`, `bee-repl`, and
+> `bee-metrics` with subcommands of the single `bee` executable: `bee run`, `bee repl`, and
+> `bee metrics`. The raw process runner moved from `bee run` to `bee exec`, and a session with no
+> policy now needs an explicit `--host`. The commands below are recorded as this feature shipped
+> them; translate accordingly.
+
 Validation guide for Slice 2 — sprites, animation, and the bee mascot. All checks run on the host
 with `cargo test` (no terminal, no timing-sensitive assertions). See `contracts/sprite-api.md` and
 `data-model-slice2.md` for the details, and `research-slice2.md` (D12–D18) for the decisions.

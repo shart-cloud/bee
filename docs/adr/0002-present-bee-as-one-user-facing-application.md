@@ -1,0 +1,3 @@
+# Present Bee as one user-facing application
+
+Bee will install one host executable, `bee`, centered on `bee run` for headless harness execution and `bee repl` for interactive execution. Diagnostics, policy validation, metrics, and any retained raw-process diagnostic become subcommands rather than separately installed binaries; `bee-harness` and `bee-cli` become the application package, `bee-hardening` moves into `bee-userspace`, and `bee-core`, `bee-userspace`, `bee-common`, and `bee-ebpf` remain separate because their runtime, kernel, `no_std`, and BPF-target constraints provide real leverage.

@@ -1,5 +1,11 @@
 # Quickstart: validating the Full-Screen TUI + live panels
 
+> **Command names changed.** The consolidation (ADR-0002) replaced `bee-episode`, `bee-repl`, and
+> `bee-metrics` with subcommands of the single `bee` executable: `bee run`, `bee repl`, and
+> `bee metrics`. The raw process runner moved from `bee run` to `bee exec`, and a session with no
+> policy now needs an explicit `--host`. The commands below are recorded as this feature shipped
+> them; translate accordingly.
+
 Runnable scenarios that prove the feature end to end. Assumes the implementation from `plan.md` (a
 `--tui` front-end in `bee-harness`, the `render_to` surface, the `SessionEngine`). References
 [data-model.md](./data-model.md) and [contracts/](./contracts/) for shapes; no implementation code

@@ -20,13 +20,26 @@ data model, and contracts.
 
 | Crate | Role | Status |
 |-------|------|--------|
-| `bee-common` | `#[repr(C)]` map layouts + verifier-safe matcher primitives (`no_std`) | ✅ implemented + tested |
-| `bee-core` | Policy types, TOML parsing, compiler/glob-lowering, attenuation validator, audit types | ✅ implemented + tested |
-| `bee-hardening` | Pre-exec / pre-main process hardening (FR-011) | ✅ implemented + tested |
-| `bee-userspace` | Support detection, cgroup lifecycle, hardened launcher, engine gating | ✅ host logic tested; ⏳ eBPF attach behind `--features enforce` |
-| `bee-cli` | `bee run` / `check` / `validate` | ✅ `check` + `validate` work; `run` fail-closed here |
-| `bee-harness` | Agent episodes, batch/concurrent runs, CTF scoring, and REPL | ✅ host-tested; enforcement behind features |
-| `bee-ebpf` | LSM programs (`file_open`, `bprm_check_security`, `socket_connect`) | ⏳ requires nightly bpf toolchain + BPF-LSM kernel |
+Five packages, one host executable ([ADR-0002](docs/adr/0002-present-bee-as-one-user-facing-application.md)):
+
+```text
+Cargo.toml           # workspace root *and* the `bee` application package
+src/                 # the harness library (episodes, tools, REPL core, render pipeline)
+src/app/             # the application layer: commands, config resolution, session construction
+crates/
+  core/  common/  userspace/  ebpf/
+```
+
+| Package | Role | Status |
+|-------|------|--------|
+| `bee` (root) | The application and sole host executable, plus the harness library it drives | ✅ host-tested; enforcement behind features |
+| `crates/common` | `#[repr(C)]` map layouts + verifier-safe matcher primitives (`no_std`) | ✅ implemented + tested |
+| `crates/core` | Policy types, TOML parsing, compiler/glob-lowering, attenuation validator, audit types | ✅ implemented + tested |
+| `crates/userspace` | Support detection, cgroup lifecycle, hardened launcher (incl. process hardening, FR-011), engine gating | ✅ host logic tested; ⏳ eBPF attach behind `--features enforce` |
+| `crates/ebpf` | LSM programs (`file_open`, `bprm_check_security`, `socket_connect`), built as `bee-lsm` | ⏳ requires nightly bpf toolchain + BPF-LSM kernel |
+
+The four `crates/` packages stay separate because their runtime, kernel, `no_std`, and BPF-target
+constraints earn it. The harness library does not: it has exactly one consumer.
 
 ## Build & test
 
@@ -41,20 +54,42 @@ cargo clippy --workspace --all-targets
 Try the CLI (works without a special kernel):
 
 ```bash
+./target/debug/bee                                                    # help — bare `bee` runs nothing
 ./target/debug/bee check                                              # kernel support gates
 ./target/debug/bee validate --policy policies/cargo-test.toml         # prove policy is runnable
 ./target/debug/bee validate --policy policies/subagent.toml \
                             --parent policies/parent.toml             # attenuation check
 ```
 
+### The two primary journeys
+
+```bash
+# Headless: one agent episode, a batch of them, or a concurrent batch.
+./target/debug/bee run --scenario <scenario.toml> --provider <provider.toml>
+
+# Interactive: chat with a sandboxed agent, inline or full-screen.
+./target/debug/bee repl --policy <policy.toml> --provider <provider.toml>
+```
+
+Both resolve the same **effective configuration** — explicit flags, then `--config <file>`, then
+`.bee/config.toml`, then `~/.config/bee/config.toml` — and both refuse to start rather than run
+unenforced by accident. A session with no policy needs an explicit `--host`, which says out loud
+that tools will run as hardened host processes with no kernel scope. See
+[ADR-0001](docs/adr/0001-configuration-files-are-optional.md) and
+[ADR-0002](docs/adr/0002-present-bee-as-one-user-facing-application.md).
+
+`bee exec --policy P -- COMMAND` runs a single host command inside a scope. It is a **diagnostic** —
+a way to prove a policy enforces with no agent in the picture — and needs a BPF-LSM kernel, so it
+fails closed on an ordinary host. `bee metrics` reports recorded usage, cost, and latency.
+
 ### Full-screen TUI (optional)
 
-`bee-repl` runs the classic inline REPL by default. Build with the `tui` feature and pass `--tui` for
+`bee repl` runs the classic inline REPL by default. Build with the `tui` feature and pass `--tui` for
 a full-screen chat surface with model-owned live panels (008-grid-tui):
 
 ```bash
-cargo build --release -p bee-harness --features tui --bin bee-repl
-./target/release/bee-repl --provider <provider.toml> --tui        # --no-tui forces inline
+cargo build --release --features tui
+./target/release/bee repl --provider <provider.toml> --tui        # --no-tui forces inline
 ```
 
 The agent can address a rendered widget to a named side panel with `render_to("metrics", widget)`
@@ -76,7 +111,7 @@ gesture there.
 
 ## Kernel requirements (for enforcement)
 
-The `enforce` feature and the `bee-ebpf` crate require:
+The `enforce` feature and the `crates/ebpf` package require:
 
 * Linux **≥ 5.7** with `CONFIG_BPF_LSM=y` and `CONFIG_DEBUG_INFO_BTF=y`,
 * **`bpf` in the active LSM list** — check `cat /sys/kernel/security/lsm` for a `bpf` token; if absent,
