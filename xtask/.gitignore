@@ -1,0 +1,13 @@
+# trunk's WASM build output.
+viz-web/dist/
+# Screenshots taken by `viz-snapshot`. Only xtask/baselines/ is tracked.
+shots/
+# Puppeteer's dependencies + its downloaded Chromium.
+puppeteer/node_modules/
+
+# The root .gitignore excludes Cargo.lock repo-wide, which is right for a library workspace and
+# wrong here: these two lockfiles pin the exact ratatui, tachyonfx and ratzilla that produced the
+# committed baseline PNGs. Let a patch bump resolve differently per machine and the baselines start
+# failing for reasons no one changed.
+!Cargo.lock
+!viz-web/Cargo.lock

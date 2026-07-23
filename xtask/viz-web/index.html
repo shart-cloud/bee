@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>bee — visual scenes</title>
+
+    <link data-trunk rel="rust" data-bin="bee-viz-web" />
+    <link data-trunk rel="copy-file" href="assets/DejaVuSansMono.ttf" />
+    <link data-trunk rel="copy-file" href="assets/DejaVuSansMono.LICENSE.txt" />
+
+    <style>
+      /*
+       * The font is BUNDLED, not linked from a CDN and not left to `font-family: monospace`.
+       * A committed baseline PNG is a claim about pixels, and pixels come from glyph outlines: with
+       * the system monospace the same commit renders differently on every developer's machine and
+       * every diff is noise. Shipping DejaVu Sans Mono (Bitstream Vera license — redistribution is
+       * granted; see the bundled DejaVuSansMono.LICENSE.txt) pins the one input Puppeteer's own
+       * pinned Chromium does not already pin.
+       */
+      @font-face {
+        font-family: "bee-mono";
+        src: url("./DejaVuSansMono.ttf") format("truetype");
+        font-weight: normal;
+        font-style: normal;
+        font-display: block;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100vw;
+        height: 100vh;
+        /* No scrollbars, ever. A scrollbar steals ~15px of viewport width, which changes how many
+           columns ratzilla's backend thinks it has — i.e. it would silently reshape the grid. */
+        overflow: hidden;
+        background-color: #1e1e2e; /* catppuccin mocha `base`, the scenes' backdrop */
+      }
+
+      /*
+       * `line-height` is `!important` on purpose. ratzilla's DomBackend measures a cell by appending
+       * a probe <pre><span> carrying the INLINE style `line-height: normal` and reading its bounding
+       * box. `normal` is font-defined (~1.17em for DejaVu), so the measured cell height would be a
+       * fractional, font-version-dependent number. An author `!important` declaration outranks a
+       * normal inline one, which pins the measured cell to exactly 20px tall.
+       *
+       * Width follows from the font: DejaVu Sans Mono advances 0.602em, so 1ch at 16px is 9.633px —
+       * under the 10px the backend assumes when it converts window pixels to columns, which is the
+       * direction that matters (the DOM grid must never end up SMALLER than the buffer ratatui
+       * hands it, or the backend indexes past the end of its cell vector).
+       */
+      pre {
+        font-family: "bee-mono", monospace;
+        font-size: 16px;
+        line-height: 20px !important;
+        margin: 0;
+        padding: 0;
+        white-space: pre;
+      }
+
+      #caption {
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        padding: 6px 10px;
+        box-sizing: border-box;
+        font-family: "bee-mono", monospace;
+        font-size: 13px;
+        color: #6c7086;
+        background-color: #181825;
+      }
+      /* The gallery's caption is chrome, not scene content — the snapshot driver hides it so it can
+         never leak into a baseline. */
+      body[data-bee-mode="snapshot"] #caption {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="caption"></div>
+  </body>
+</html>

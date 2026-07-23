@@ -1,0 +1,14 @@
+[build]
+target = "index.html"
+dist = "dist"
+# Relative asset URLs, so `dist/` works both under `trunk serve` and under the throwaway static
+# server `cargo xtask viz-snapshot` starts on a random port.
+public_url = "./"
+
+[serve]
+port = 8080
+open = false
+
+[tools]
+# Left unpinned: trunk resolves the wasm-bindgen CLI version from Cargo.lock, which is the only way
+# it can match the `wasm-bindgen` crate this app links.

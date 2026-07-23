@@ -1,0 +1,44 @@
+[package]
+name = "bee-viz-web"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "bee's TUI visual constructs, compiled to WebAssembly so a headless browser can screenshot them."
+
+# Deliberately NOT a member of any workspace: this crate only builds for wasm32-unknown-unknown, and
+# a host `cargo build` in xtask/ must never reach it. `trunk` builds it from this directory.
+[workspace]
+
+[dependencies]
+# The official ratatui WASM backend. Renders the same cell grid a terminal does — cells become
+# <span>s inside <pre> lines, so block glyphs, colors and modifiers survive to the screenshot.
+ratzilla = "0.3"
+
+# Same major as bee-harness (0.30), so the widget calls below are the ones bee itself makes. Held at
+# `default-features = false` for the same reason bee holds it there: no terminal backend is wanted —
+# ratzilla is the backend. ratzilla itself turns on `all-widgets`, and this restates it so the scene
+# code does not silently depend on a transitive feature.
+ratatui = { version = "0.30", default-features = false, features = ["all-widgets"] }
+
+# Same major as bee-harness (0.25), configured the same way (contract: the effects here must be the
+# effects bee builds). `default-features = false` drops the `dsl` parser and its `anpa` dep — bee
+# builds effects from Rust constructors, never from DSL strings (009 research R3). `std` is the other
+# half of tachyonfx's default and is re-enabled explicitly. `wasm` swaps the internal clock for
+# `web-time`, which is what makes tachyonfx work at all under wasm32.
+tachyonfx = { version = "0.25", default-features = false, features = ["std", "wasm"] }
+
+# Needed for `#[wasm_bindgen]` on `bee_render`, which is what lets the snapshot driver render scene
+# after scene into ONE page load. Deviates from the plan sketch (which had the page re-read
+# `?scene=&t=` on every navigation) and buys two things that matter for a pixel-diff pipeline:
+#
+#  1. Determinism. `DomBackend` measures the page's monospace cell with `getBoundingClientRect()` at
+#     construction. Webfonts load asynchronously, so a fresh page load can measure the *fallback*
+#     font and lay out a differently-sized grid. Rendering on demand lets the driver await
+#     `document.fonts.ready` once, before any measurement happens.
+#  2. Speed. 45 screenshots from one WASM instantiation instead of 45.
+wasm-bindgen = "0.2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
