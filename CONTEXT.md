@@ -5,11 +5,11 @@ Bee runs coding-agent sessions whose tools receive capability-scoped access to a
 ## Language
 
 **User configuration**:
-Protected, operator-owned configuration under `~/.bee/` that defines trusted defaults and the maximum authority available to Bee sessions. Project content and agents cannot weaken or widen its authority.
+Protected, operator-owned configuration at `~/.config/bee/config.toml` (honouring `XDG_CONFIG_HOME`) that defines trusted defaults and the maximum authority available to Bee sessions. Project content and agents cannot weaken or widen its authority.
 _Avoid_: Global config, personal config
 
 **Project configuration**:
-Repository-local configuration under `.bee/` that describes project defaults and may request authority within the user configuration. It is treated as untrusted input when the repository is untrusted.
+Repository-local configuration at `.bee/config.toml` that describes project defaults and may request authority within the user configuration. It is treated as untrusted input when the repository is untrusted.
 _Avoid_: Repo config, workspace config
 
 **Effective configuration**:

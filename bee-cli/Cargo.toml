@@ -14,8 +14,23 @@ path = "src/main.rs"
 [dependencies]
 bee-core = { workspace = true }
 bee-userspace = { path = "../bee-userspace" }
+# The harness library: the sessions `bee run` / `bee repl` drive, and the home of the provider,
+# theme, and visual types the configuration resolver resolves *into*. The application package is
+# allowed this dependency; `bee-core` and `bee-common` are not, and `core_deps_guard` enforces that.
+bee-harness = { path = "../bee-harness" }
 clap = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
 
 [features]
 default = []
-enforce = ["bee-userspace/enforce"]
+# Each feature forwards to the harness feature of the same name: they gate whole code paths (kernel
+# enforcement, the async audit demux, the MCP client, the terminal backend), so the application
+# cannot expose a journey the harness was not built with.
+enforce = ["bee-userspace/enforce", "bee-harness/enforce"]
+concurrent = ["enforce", "bee-harness/concurrent"]
+mcp = ["bee-harness/mcp"]
+tui = ["bee-harness/tui"]

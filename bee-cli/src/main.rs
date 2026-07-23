@@ -6,6 +6,8 @@
 //! `validate`, and `exec` live here today; `run`, `repl`, and `metrics` arrive with the later
 //! issues. Bare `bee` prints help — starting a session is always something the operator asked for.
 
+mod config;
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
