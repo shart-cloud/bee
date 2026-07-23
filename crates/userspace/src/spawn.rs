@@ -98,8 +98,9 @@ where
                 join()?;
             }
             crate::hardening::pre_exec_hardening()?;
-            // Only now shed privilege, so the child cannot migrate back out of the scope cgroup or
-            // exec its way to a capability the policy never granted (FR-015).
+            // Only now shed privilege, so the child cannot exec its way to a capability the policy
+            // never granted or wield CAP_SYS_ADMIN/CAP_BPF to detach bee's own LSM (FR-015). The DAC
+            // pair is kept so file access still flows through the LSM hook — see `drop_privileges`.
             crate::hardening::drop_privileges()?;
             Ok(())
         });
@@ -145,11 +146,12 @@ mod tests {
         eprintln!("no setuid binary available in this environment; refusal path not exercised");
     }
 
-    /// The child must come out the other side of `pre_exec` unable to gain privilege. Reading it
-    /// back from `/proc/self/status` in the child is the only honest check — the parent's own bits
-    /// are untouched, which is the point.
+    /// The child must come out the other side of `pre_exec` unable to gain privilege, and — when the
+    /// launcher was root — holding only the DAC capabilities bee keeps so its LSM stays the file
+    /// arbiter. Reading it back from `/proc/self/status` in the child is the only honest check: the
+    /// parent's own bits are untouched, which is the point.
     #[test]
-    fn child_has_no_new_privs_and_no_capabilities() {
+    fn child_has_no_new_privs_and_only_the_dac_caps() {
         let mut cmd = hardened_command::<fn() -> io::Result<()>>(
             "cat",
             &["/proc/self/status".to_string()],
@@ -168,13 +170,17 @@ mod tests {
         };
 
         assert_eq!(field("NoNewPrivs:"), "1", "PR_SET_NO_NEW_PRIVS not applied");
-        // Effective/permitted are always droppable, so they must be empty regardless of whether the
-        // test runs as root. The bounding set needs CAP_SETPCAP to empty, so it is only asserted
-        // when we actually had privilege to drop.
-        assert_eq!(field("CapEff:"), "0000000000000000", "effective caps kept");
-        assert_eq!(field("CapPrm:"), "0000000000000000", "permitted caps kept");
+        // Bounding-set restriction needs CAP_SETPCAP, so only assert it when we ran as root. The
+        // kept set is exactly CAP_DAC_OVERRIDE (bit 1) | CAP_DAC_READ_SEARCH (bit 2) == 0x6, and
+        // CAP_SYS_ADMIN (bit 21) must be gone.
         if unsafe { libc::geteuid() } == 0 {
-            assert_eq!(field("CapBnd:"), "0000000000000000", "bounding set kept");
+            assert_eq!(
+                field("CapBnd:"),
+                "0000000000000006",
+                "bounding set should keep only the DAC pair"
+            );
+            let eff = u64::from_str_radix(&field("CapEff:"), 16).expect("hex CapEff");
+            assert_eq!(eff & (1 << 21), 0, "CAP_SYS_ADMIN still effective");
         }
     }
 
