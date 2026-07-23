@@ -196,9 +196,9 @@ if connected "$out"; then emit scope-isolation PASS "host egress unaffected"; el
 # ---------------------------------------------------------------- US1 (002): LLM agent episode
 # The load-bearing 002 check: a scripted (MockModel) episode whose tool call reads a policy-denied
 # path returns a kernel EACCES, the denial appears in the transcript's audit trail, and the episode
-# still ends `completed` (the agent ran; the *operation* was denied). Requires /home/ubuntu/bee-episode.
-EPISODE=${EPISODE:-/home/ubuntu/bee-episode}
-if [ -x "$EPISODE" ]; then
+# still ends `completed` (the agent ran; the *operation* was denied). Runs through `bee run`, the
+# same single executable every other case uses.
+if [ -x "$BEE" ]; then
   # episode-file-deny — read a denied path; expect EACCES in the tool result + a file_open denial.
   cat >"$WORK/ep-deny.policy.toml" <<'EOF'
 [policy]
@@ -226,7 +226,7 @@ args = { path = "/home/ubuntu/.ssh/secret.txt" }
 [[provider.script]]
 text = "I could not read the file."
 EOF
-  sudo "$EPISODE" --scenario "$WORK/ep-deny.scn.toml" --provider "$WORK/ep-deny.prov.toml" \
+  sudo "$BEE" run --scenario "$WORK/ep-deny.scn.toml" --provider "$WORK/ep-deny.prov.toml" \
     --out "$WORK/ep-deny.json" >"$WORK/ep-deny.log" 2>&1
   t="$WORK/ep-deny.json"
   if [ -f "$t" ] \
@@ -269,7 +269,7 @@ args = { path = "/home/ubuntu/epwork/out.txt", content = "hello from the agent\n
 [[provider.script]]
 text = "Done — file written."
 EOF
-  sudo "$EPISODE" --scenario "$WORK/ep-allow.scn.toml" --provider "$WORK/ep-allow.prov.toml" \
+  sudo "$BEE" run --scenario "$WORK/ep-allow.scn.toml" --provider "$WORK/ep-allow.prov.toml" \
     --out "$WORK/ep-allow.json" >"$WORK/ep-allow.log" 2>&1
   t="$WORK/ep-allow.json"
   if [ -f "$t" ] \
@@ -339,7 +339,7 @@ timeout_secs  = 30
 tools         = ["write_file"]
 skills        = ["$SKROOT"]
 EOF
-  sudo "$EPISODE" --scenario "$WORK/sk-allow.scn.toml" --provider "$WORK/sk.prov.toml" \
+  sudo "$BEE" run --scenario "$WORK/sk-allow.scn.toml" --provider "$WORK/sk.prov.toml" \
     --out "$WORK/sk-allow.json" >"$WORK/sk-allow.log" 2>&1
   t="$WORK/sk-allow.json"
   if [ -f "$t" ] \
@@ -366,7 +366,7 @@ timeout_secs  = 30
 tools         = ["write_file"]
 skills        = ["$SKROOT"]
 EOF
-  sudo "$EPISODE" --scenario "$WORK/sk-deny.scn.toml" --provider "$WORK/sk.prov.toml" \
+  sudo "$BEE" run --scenario "$WORK/sk-deny.scn.toml" --provider "$WORK/sk.prov.toml" \
     --out "$WORK/sk-deny.json" >"$WORK/sk-deny.log" 2>&1
   t="$WORK/sk-deny.json"
   # NB: bee enforces writes via the `file_open` LSM hook, which fires AFTER `O_CREAT` has made the
@@ -428,7 +428,7 @@ turn_limit    = 4
 timeout_secs  = 30
 tools         = ["write_file"]
 EOF
-  sudo "$EPISODE" --scenario "$WORK/dyn-allow.scn.toml" --provider "$WORK/dyn.prov.toml" \
+  sudo "$BEE" run --scenario "$WORK/dyn-allow.scn.toml" --provider "$WORK/dyn.prov.toml" \
     --out "$WORK/dyn-allow.json" >"$WORK/dyn-allow.log" 2>&1
   t="$WORK/dyn-allow.json"
   # A denial must appear (the first attempt) AND the data must ultimately land (the retry).
@@ -455,7 +455,7 @@ turn_limit    = 4
 timeout_secs  = 30
 tools         = ["write_file"]
 EOF
-  sudo "$EPISODE" --scenario "$WORK/dyn-deny.scn.toml" --provider "$WORK/dyn.prov.toml" \
+  sudo "$BEE" run --scenario "$WORK/dyn-deny.scn.toml" --provider "$WORK/dyn.prov.toml" \
     --out "$WORK/dyn-deny.json" >"$WORK/dyn-deny.log" 2>&1
   t="$WORK/dyn-deny.json"
   if [ -f "$t" ] \
@@ -468,16 +468,15 @@ EOF
   fi
   rm -rf /home/ubuntu/dynwork /home/ubuntu/dyngrant
 else
-  emit episode-file-deny FAIL "bee-episode not shipped to $EPISODE"
+  emit episode-file-deny FAIL "bee not shipped to $BEE"
 fi
 
 # ---------------------------------------------------------------- US4: concurrent audit isolation
 # Four episodes run concurrently (--batch --concurrent), each in its OWN scope, each reading a
 # DISTINCT policy-denied path. The async audit demux routes events by cgroup_id, so each transcript
-# must contain ONLY its own denial and none of the others' (SC-004 / US4 AS-1). Requires bee-episode
+# must contain ONLY its own denial and none of the others' (SC-004 / US4 AS-1). Requires a `bee`
 # built with `--features concurrent`; a plain enforce build SKIPs this case.
-EPISODE_CONC=${EPISODE_CONC:-$EPISODE}
-if [ -x "$EPISODE_CONC" ]; then
+if [ -x "$BEE" ]; then
   ISO=/home/ubuntu/iso
   rm -rf "$ISO"; mkdir -p "$ISO"
   for i in 1 2 3 4; do echo "SECRET$i" >"$ISO/secret$i.txt"; done
@@ -511,11 +510,11 @@ args = { path = "/home/ubuntu/iso/secret$i.txt" }
 text = "done"
 EOF
   done
-  sudo "$EPISODE_CONC" --batch --concurrent \
+  sudo "$BEE" run --batch --concurrent \
     --scenarios "$WORK/iso-scn/iso.scn.toml" --providers "$WORK/iso-prov" \
     --out "$WORK/iso-out" --quiet >"$WORK/iso.log" 2>&1
   if grep -q 'requires building with --features concurrent' "$WORK/iso.log"; then
-    echo "RESULT|concurrent-audit-isolation|SKIP|bee-episode built without --features concurrent"
+    echo "RESULT|concurrent-audit-isolation|SKIP|bee built without --features concurrent"
   else
     ok=1; note="ok"
     for i in 1 2 3 4; do
@@ -535,7 +534,7 @@ EOF
   fi
   rm -rf "$ISO"
 else
-  echo "RESULT|concurrent-audit-isolation|SKIP|no concurrent bee-episode at $EPISODE_CONC"
+  echo "RESULT|concurrent-audit-isolation|SKIP|no bee at $BEE"
 fi
 
 rm -rf "$WORK"

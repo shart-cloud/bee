@@ -95,8 +95,8 @@ the level-wing `FRAME_MID` resting pose. Deterministic: built once via `OnceLock
 
 ```sh
 cargo run -p bee-harness --example bee_preview      # static sprite, real pipeline
-./target/debug/bee-repl --provider <cfg>            # full banner + wing-flap
-BEE_MASCOT=0 ./target/debug/bee-repl ...            # or --no-bee to suppress
+./target/debug/bee repl --provider <cfg>           # full banner + wing-flap
+BEE_MASCOT=0 ./target/debug/bee repl ...           # or --no-bee to suppress
 NO_COLOR=1 cargo run -p bee-harness --example bee_preview   # check the monochrome floor
 ```
 
@@ -122,7 +122,7 @@ grid system live in [the grid TUI plan](./grid-tui-plan.md).
 
 ### Full-screen surface (008-grid-tui)
 
-`bee-repl --tui` (build with `--features tui`) adds a full-screen front-end over the same
+`bee repl --tui` (build with `--features tui`) adds a full-screen front-end over the same
 conversation core the inline REPL uses, so both stay in lock-step.
 
 | Element | Form | Used for |

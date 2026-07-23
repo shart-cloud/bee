@@ -29,7 +29,9 @@ The `enforce` feature is **opt-in** so the default workspace build stays free of
   workdir, tears down).
 - `transcript` — `EpisodeTranscript` + truncation.
 - `scenario` / `config` — declarative TOML inputs (Constitution IV).
-- `bin/bee-episode` — the CLI.
+
+The commands that drive all of this — `bee run`, `bee repl`, `bee metrics` — live in the `bee-cli`
+application package. This crate ships no binaries of its own (ADR-0002).
 
 ## Quickstart
 
@@ -40,8 +42,9 @@ cargo test -p bee-harness
 # Live provider smoke (host — network, no enforcement; skipped when absent)
 cargo test -p bee-harness --test live_smoke -- --nocapture
 
-# One episode via the CLI (mock provider — no key needed)
-cargo run -p bee-harness --bin bee-episode -- \
+# One episode via the CLI (mock provider — no key needed). `--host` is required on a build
+# without enforcement: bee refuses to run unenforced unless you say so.
+cargo run -p bee-cli -- run --host \
   --scenario specs/002-llm-harness/examples/read-denied-ssh.toml \
   --provider specs/002-llm-harness/examples/mock-read-denied.toml
 ```

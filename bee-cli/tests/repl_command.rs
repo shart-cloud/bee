@@ -1,4 +1,7 @@
-//! `bee repl` must be indistinguishable from `bee-repl` (consolidation issue 04).
+//! `bee repl` — the interactive session's observable contract (consolidation issues 04 and 06).
+//!
+//! These began as parity tests against `bee-repl`, which issue 06 retired. What survives is what
+//! the parity was protecting.
 //!
 //! An interactive session is harder to pin than a headless one: it reads stdin, and its output is
 //! meant for a person. What these assert is the part a script or a person can check without a
@@ -11,14 +14,6 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-
-/// The `bee-repl` binary. `None` once issue 06 removes it.
-fn repl_bin() -> Option<PathBuf> {
-    let candidate = Path::new(env!("CARGO_BIN_EXE_bee"))
-        .parent()?
-        .join("bee-repl");
-    candidate.exists().then_some(candidate)
-}
 
 fn write(dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(name);
@@ -54,41 +49,27 @@ fn run_with_stdin(bin: &Path, args: &[&str], input: &str) -> Output {
     child.wait_with_output().unwrap()
 }
 
+/// Sessions here run unenforced via `--host`. On an enforcement build that path needs a BPF-LSM
+/// kernel, so these are covered by the live VM matrix instead.
+fn skip_on_enforcement_build() -> bool {
+    if cfg!(feature = "enforce") {
+        eprintln!("[skip] host-mode session: covered by test/vm/matrix.sh on an enforcing kernel.");
+        return true;
+    }
+    false
+}
+
 fn bee_repl(args: &[&str], input: &str) -> Output {
     let mut a = vec!["repl"];
     a.extend_from_slice(args);
     run_with_stdin(Path::new(env!("CARGO_BIN_EXE_bee")), &a, input)
 }
 
-/// `bee-repl` has no `--host`: it silently ran unenforced, which is what issue 05 stopped. Strip
-/// the flag so the comparison is about behaviour under the same intent.
-fn without_host<'a>(args: &[&'a str]) -> Vec<&'a str> {
-    args.iter().copied().filter(|a| *a != "--host").collect()
-}
-
-fn old_bee_repl(args: &[&str], input: &str) -> Option<Output> {
-    let Some(bin) = repl_bin() else {
-        eprintln!(
-            "[skip] parity comparison: no `bee-repl` beside the test binary. \
-             Run `cargo build --workspace` first to compare against it."
-        );
-        return None;
-    };
-    Some(run_with_stdin(&bin, &without_host(args), input))
-}
-
-/// The banner lines both commands print, minus the first line (which names the command and so
-/// legitimately differs) and minus the theme line when no theme is configured.
-fn banner_fields(stdout: &str) -> Vec<String> {
-    stdout
-        .lines()
-        .filter(|l| l.starts_with("  "))
-        .map(|l| l.trim().to_string())
-        .collect()
-}
-
 #[test]
-fn the_banner_reports_the_same_session() {
+fn the_banner_reports_the_session() {
+    if skip_on_enforcement_build() {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let provider = mock_provider(dir.path(), "p.toml", "hi");
     let args = [
@@ -116,19 +97,13 @@ fn the_banner_reports_the_same_session() {
         "{}",
         String::from_utf8_lossy(&mine.stderr)
     );
-
-    if let Some(theirs) = old_bee_repl(&args, "") {
-        assert_eq!(mine.status.code(), theirs.status.code());
-        assert_eq!(
-            banner_fields(&mine_out),
-            banner_fields(&String::from_utf8_lossy(&theirs.stdout)),
-            "banner fields differ"
-        );
-    }
 }
 
 #[test]
 fn closed_stdin_ends_the_session_cleanly() {
+    if skip_on_enforcement_build() {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let provider = mock_provider(dir.path(), "p.toml", "hi");
     let out = bee_repl(
@@ -150,10 +125,6 @@ fn a_missing_provider_is_a_usage_error() {
     let out = bee_repl(&["--provider", missing.to_str().unwrap(), "--no-bee"], "");
     assert_eq!(out.status.code(), Some(64));
     assert!(String::from_utf8_lossy(&out.stderr).contains("nope.toml"));
-
-    if let Some(theirs) = old_bee_repl(&["--provider", missing.to_str().unwrap()], "") {
-        assert_eq!(out.status.code(), theirs.status.code());
-    }
 }
 
 #[test]
@@ -170,6 +141,9 @@ fn no_provider_at_all_reports_what_is_missing() {
 
 #[test]
 fn a_transcript_is_saved_on_exit() {
+    if skip_on_enforcement_build() {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let provider = mock_provider(dir.path(), "p.toml", "Hello there.");
     let save = dir.path().join("session.json");
@@ -198,6 +172,9 @@ fn a_transcript_is_saved_on_exit() {
 
 #[test]
 fn a_full_screen_request_falls_back_when_piped() {
+    if skip_on_enforcement_build() {
+        return;
+    }
     // Piped output is not a terminal, so `--tui` degrades to inline with a note rather than
     // silently doing nothing — or worse, driving escape sequences into a pipe.
     let dir = tempfile::tempdir().unwrap();

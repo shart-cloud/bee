@@ -1,5 +1,11 @@
 # Quickstart & Validation Guide: MCP Client
 
+> **Command names changed.** The consolidation (ADR-0002) replaced `bee-episode`, `bee-repl`, and
+> `bee-metrics` with subcommands of the single `bee` executable: `bee run`, `bee repl`, and
+> `bee metrics`. The raw process runner moved from `bee run` to `bee exec`, and a session with no
+> policy now needs an explicit `--host`. The commands below are recorded as this feature shipped
+> them; translate accordingly.
+
 **Feature**: `004-mcp-client` | **Spec**: [spec.md](./spec.md) · **Plan**: [plan.md](./plan.md)
 
 A runnable guide proving the feature end-to-end. It maps each success criterion to a command and an

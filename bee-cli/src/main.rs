@@ -7,6 +7,7 @@
 //! issues. Bare `bee` prints help — starting a session is always something the operator asked for.
 
 mod config;
+mod metrics;
 mod repl;
 mod run;
 mod session;
@@ -49,6 +50,8 @@ enum Cmd {
     Run(Box<run::RunArgs>),
     /// Chat interactively with a sandboxed coding agent, inline or full-screen.
     Repl(Box<repl::ReplArgs>),
+    /// Report on recorded LLM usage, cost, and latency.
+    Metrics(metrics::MetricsArgs),
     /// Print kernel support diagnostics and exit (never attaches).
     Check,
     /// Compile-check a policy, or check attenuation of a child against a parent.
@@ -83,6 +86,7 @@ fn main() -> ExitCode {
     match Cli::parse().cmd {
         Cmd::Run(args) => run::main(*args),
         Cmd::Repl(args) => repl::main(*args),
+        Cmd::Metrics(args) => metrics::main(args),
         Cmd::Check => cmd_check(),
         Cmd::Validate { policy, parent } => cmd_validate(&policy, parent.as_deref()),
         Cmd::Exec {

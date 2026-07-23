@@ -1,5 +1,11 @@
 # Quickstart: bee Visual Rendering (Slice 1)
 
+> **Command names changed.** The consolidation (ADR-0002) replaced `bee-episode`, `bee-repl`, and
+> `bee-metrics` with subcommands of the single `bee` executable: `bee run`, `bee repl`, and
+> `bee metrics`. The raw process runner moved from `bee run` to `bee exec`, and a session with no
+> policy now needs an explicit `--host`. The commands below are recorded as this feature shipped
+> them; translate accordingly.
+
 Validation guide for Slice 1 — the `viz` foundation, US7 chrome migration, and the US6 `render` tool
 for static widgets. All checks run on the host with `cargo test` (no network, no keys, no VM). See
 `contracts/` for the I/O details and `data-model.md` for the types.

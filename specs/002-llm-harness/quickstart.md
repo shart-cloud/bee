@@ -1,5 +1,11 @@
 # Quickstart: bee LLM Agent Harness (Slice 1 — US1)
 
+> **Command names changed.** The consolidation (ADR-0002) replaced `bee-episode`, `bee-repl`, and
+> `bee-metrics` with subcommands of the single `bee` executable: `bee run`, `bee repl`, and
+> `bee metrics`. The raw process runner moved from `bee run` to `bee exec`, and a session with no
+> policy now needs an explicit `--host`. The commands below are recorded as this feature shipped
+> them; translate accordingly.
+
 Validates the first vertical slice: an LLM agent runs a multi-turn tool loop **inside a bee scope**,
 tool denials come from the kernel, and the episode transcript records the calls + audit trail. Details
 live in [data-model.md](./data-model.md) and [contracts/](./contracts/).
