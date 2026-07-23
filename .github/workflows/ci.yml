@@ -52,7 +52,7 @@ jobs:
       - name: clippy (default features)
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: clippy (mcp feature)
-        run: cargo clippy -p bee-harness --features mcp --all-targets -- -D warnings
+        run: cargo clippy --features mcp --all-targets -- -D warnings
 
   test:
     name: build & test
@@ -69,8 +69,8 @@ jobs:
         # No ANTHROPIC_API_KEY is set, so the live-provider smoke test self-skips (it only runs when
         # the key is present). Everything else is offline (MockModel + host sandbox).
         run: cargo test --workspace
-      - name: test (bee-harness, mcp feature)
-        run: cargo test -p bee-harness --features mcp
+      - name: test (mcp feature)
+        run: cargo test --features mcp
 
   enforce-check:
     name: enforce type-check (best-effort)
@@ -83,8 +83,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install stable toolchain (outer build)
         uses: dtolnay/rust-toolchain@stable
-      - name: Install nightly toolchain (bee-ebpf build)
-        # bee-ebpf/rust-toolchain.toml selects nightly with rust-src for the bpfel-unknown-none
+      - name: Install nightly toolchain (bee-lsm build)
+        # crates/ebpf/rust-toolchain.toml selects nightly with rust-src for the bpfel-unknown-none
         # target; build.rs shells out to `cargo +nightly build -Z build-std=core`.
         uses: dtolnay/rust-toolchain@nightly
         with:
@@ -95,6 +95,6 @@ jobs:
         # LLVM-matched linker for the BPF object. `cargo install` is cached by rust-cache across runs.
         run: cargo install bpf-linker
       - name: cargo check --features enforce
-        # Runs bee-userspace/build.rs, which compiles + embeds the bee-ebpf object, then type-checks
-        # the enforce user-space path in bee-harness.
-        run: cargo check -p bee-harness --features enforce
+        # Runs crates/userspace/build.rs, which compiles + embeds the bee-lsm object, then
+        # type-checks the enforce user-space path in the application package.
+        run: cargo check --features enforce
