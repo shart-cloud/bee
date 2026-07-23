@@ -1,6 +1,6 @@
 # `bee run` — the headless session
 
-Status: ready-for-agent
+Status: complete
 
 Part of [Bee application and workspace consolidation](../PRD.md).
 
@@ -90,3 +90,7 @@ possible, and issue 06 removes it once every journey has moved.
 - The live VM matrix (`test/vm/matrix.sh`) passes. Its episode cases still drive `bee-episode`, so
   this issue should not move them; the point is proving the shared extraction did not disturb the
   enforcement path.
+
+## Outcome
+
+Landed as written.

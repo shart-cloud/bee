@@ -1,6 +1,6 @@
 # Retire the old binaries
 
-Status: ready-for-agent
+Status: complete
 
 Part of [Bee application and workspace consolidation](../PRD.md).
 
@@ -76,3 +76,7 @@ names changed, and the record of what the feature shipped as stays intact.
 - The live VM matrix (`test/vm/matrix.sh`) passes with the same case results, now driving the single
   binary — including the concurrent-audit-isolation case, which previously skipped when the separate
   episode binary was missing or built without the concurrent feature.
+
+## Outcome
+
+Landed as written.

@@ -1,6 +1,6 @@
 # Effective configuration resolver
 
-Status: ready-for-agent
+Status: complete
 
 Part of [Bee application and workspace consolidation](../PRD.md).
 
@@ -104,3 +104,7 @@ and 04.
   only bee config file anyone has today.
 - No behaviour change is observable from any command yet. `bee check`, `bee validate`, and
   `bee exec` behave exactly as they did after issue 01.
+
+## Outcome
+
+Landed. The `bee-harness` dependency was added here rather than in issue 03: the resolver reuses `viz::theme::config_path` and `ThemeConfig`, so it needed the dependency to exist first.

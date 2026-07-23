@@ -1,6 +1,6 @@
 # Fail-closed configuration and explicit host mode
 
-Status: ready-for-agent
+Status: complete
 
 Part of [Bee application and workspace consolidation](../PRD.md).
 
@@ -95,3 +95,7 @@ need updating is anything that drives the commands without a policy, which after
   is the feature; an exit code alone leaves the operator exactly where the banner did.
 - The live VM matrix (`test/vm/matrix.sh`) passes, including a new case that a session started
   without a policy and without `--host` refuses to start.
+
+## Outcome
+
+Landed. Two deviations. The ad-hoc `--task` policy guard was removed rather than kept: it duplicated the invariant and predated `--host`, so it refused host-mode runs the operator had explicitly asked for. And headless `--host` on an enforcement build is **refused**, not honoured — `run_episode` builds its own sandbox with no unenforced branch under that feature, so honouring the flag would announce one thing and run another. `bee repl` is unaffected. Lifting that limitation means giving the harness a host branch, which is follow-up work.

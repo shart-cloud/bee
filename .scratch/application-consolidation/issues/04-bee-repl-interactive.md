@@ -1,6 +1,6 @@
 # `bee repl` — the interactive session
 
-Status: ready-for-agent
+Status: complete
 
 Part of [Bee application and workspace consolidation](../PRD.md).
 
@@ -89,3 +89,7 @@ it.
   restores the terminal cleanly on quit and on panic; piping the same command falls back to inline
   with the note. The terminal-restore behaviour is the one thing an automated test proves poorly.
 - The live VM matrix (`test/vm/matrix.sh`) passes.
+
+## Outcome
+
+Landed. The interactive consent sink is a plain function rather than a trait impl — `ConsentSink` is blanket-implemented for `Fn(&GrantRequest) -> bool`.

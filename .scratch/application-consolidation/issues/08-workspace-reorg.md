@@ -1,6 +1,6 @@
 # Workspace reorganisation
 
-Status: ready-for-agent
+Status: complete
 
 Part of [Bee application and workspace consolidation](../PRD.md).
 
@@ -82,3 +82,7 @@ reading the manifest diffs and the path fixes, and by trusting the test suite fo
   should be entirely unaffected, which is worth confirming rather than assuming.
 - `git log --follow` on a moved file shows its history, confirming the moves were recorded as moves.
 - The live VM matrix (`test/vm/matrix.sh`) passes.
+
+## Outcome
+
+Landed. Also fixed a pre-existing break: `src/concurrent.rs` had a test helper missing two `ProviderConfig` fields added in 008, so `cargo test --features concurrent` had not compiled since. Unrelated to the move, fixed in passing because it blocked the feature-matrix verification.

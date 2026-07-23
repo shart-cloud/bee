@@ -1,6 +1,6 @@
 # Absorb `bee-hardening` into `bee-userspace`
 
-Status: ready-for-agent
+Status: complete
 
 Part of [Bee application and workspace consolidation](../PRD.md).
 
@@ -58,3 +58,7 @@ behaves identically otherwise. The tests are the only thing that will notice.
   the hardening still applies to spawned tool children, and it exercises the path this issue
   touches from the far end.
 - The live VM matrix (`test/vm/matrix.sh`) passes — the spawn path is the enforcement path.
+
+## Outcome
+
+Landed as written.

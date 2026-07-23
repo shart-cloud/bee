@@ -1,6 +1,6 @@
 # The `bee` application package and `bee exec`
 
-Status: ready-for-agent
+Status: complete
 
 Part of [Bee application and workspace consolidation](../PRD.md).
 
@@ -70,3 +70,7 @@ and unreleased, and a shim for a command nobody has installed yet is pure carryi
   rename touched nothing but the one subcommand.
 - The live VM matrix (`test/vm/matrix.sh`) passes with the same case results as before the rename.
   This is the real gate: the matrix is the only thing that proves `exec` still enforces.
+
+## Outcome
+
+Landed as written.

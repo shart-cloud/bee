@@ -1,6 +1,6 @@
 # Bee application and workspace consolidation
 
-Status: ready-for-agent
+Status: complete
 
 Implements [ADR-0002](../../docs/adr/0002-present-bee-as-one-user-facing-application.md) and the
 working design in [docs/application-and-workspace-simplification.md](../../docs/application-and-workspace-simplification.md).
@@ -90,12 +90,13 @@ Five packages, one host application:
 
 ```text
 Cargo.toml           # workspace root and the `bee` application package
-src/                 # the application: commands, session construction, harness library
+src/                 # the harness library
+src/app/             # the application layer: commands, config resolution, session construction
 crates/
   core/              # bee-core
   userspace/         # bee-userspace, including hardening
   common/            # bee-common
-  ebpf/              # bee-ebpf
+  ebpf/              # bee-ebpf, built as the `bee-lsm` artifact
 ```
 
 `bee-core`, `bee-userspace`, `bee-common`, and `bee-ebpf` stay separate because their runtime,
@@ -131,3 +132,22 @@ Every issue carries its own verification section. The standing bar across all of
   consolidation must not push terminal, runtime, or MCP dependencies into `bee-core` or
   `bee-common`.
 - Anything touching enforcement runs the live VM matrix (`test/vm/matrix.sh`).
+
+## Outcome
+
+All eight issues landed on `011-application-consolidation`. The workspace is five packages with one
+installed host executable; `cargo metadata` declares exactly one binary.
+
+Verified across the default, `enforce`, `concurrent`, `mcp`, `tui`, and `tui,mcp,concurrent` feature
+configurations: tests pass and clippy is clean on each. `--features enforce` builds on the nightly
+bpf toolchain with the renamed `bee-lsm` artifact. `xtask` is unaffected.
+
+Two things a reader should know:
+
+- **Headless `--host` is refused on an enforcement build.** `run_episode` builds its own sandbox and
+  has no unenforced branch when compiled with `enforce`, so the flag is refused with the reason
+  rather than announced and then contradicted. `bee repl` constructs its own sandbox and is
+  unaffected. See issue 05.
+- **The live VM matrix has not been run.** It needs the BPF-LSM VM. Every change that touches
+  enforcement — the `bee exec` rename, the `bee run` episode cases, the fail-closed invariant, the
+  BPF artifact rename — is covered by it and unverified until it runs.
