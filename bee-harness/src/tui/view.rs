@@ -9,7 +9,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+};
 use ratatui::Frame;
 
 use super::app::{App, Focus, LayoutMode, TurnState};
@@ -224,12 +226,13 @@ fn render_input(app: &App, frame: &mut Frame<'_>, area: Rect) {
         inner,
     );
 
-    // Place the cursor at the end of the buffer when the input is focused (a single-line
-    // approximation for the MVP; multi-line cursor tracking is a refinement).
+    // The cursor follows its real position in the buffer (010) — ↑/↓ can now move between the soft
+    // newlines Shift-Enter makes, so drawing it always at the end would misreport where typing lands.
+    // Soft *wrapping* of one long line is still not tracked; only hard newlines are.
     if focused {
-        let last = text.rsplit('\n').next().unwrap_or("");
-        let x = inner.x + (last.chars().count() as u16).min(inner.width.saturating_sub(1));
-        let y = inner.y + (text.matches('\n').count() as u16).min(inner.height.saturating_sub(1));
+        let (row, col) = app.input.line_col();
+        let x = inner.x + (col as u16).min(inner.width.saturating_sub(1));
+        let y = inner.y + (row as u16).min(inner.height.saturating_sub(1));
         frame.set_cursor_position(Position::new(x, y));
     }
 }
@@ -241,6 +244,8 @@ const MAX_INLINE_WIDGET_ROWS: u16 = 24;
 /// exactly one row and the scroll arithmetic is exact (no hidden re-wrap by `Paragraph`).
 enum Item<'a> {
     Line(Line<'static>),
+    /// A row already rendered and cached on the message (010) — borrowed, not re-parsed.
+    Cached(&'a Line<'static>),
     /// An inline widget and the number of rows it occupies.
     Widget(&'a RenderSpec, u16),
 }
@@ -248,14 +253,42 @@ enum Item<'a> {
 impl Item<'_> {
     fn height(&self) -> u16 {
         match self {
-            Item::Line(_) => 1,
+            Item::Line(_) | Item::Cached(_) => 1,
             Item::Widget(_, h) => *h,
         }
     }
 }
 
-fn render_chat(app: &App, frame: &mut Frame<'_>, area: Rect) {
+/// Width of the scrollbar gutter reserved on the right of the chat pane (010).
+pub(crate) const CHAT_GUTTER: u16 = 1;
+
+/// Split the scrollbar gutter off the right edge of the chat pane. Reserved unconditionally rather
+/// than only while content overflows: a gutter that appeared on overflow would re-wrap the entire
+/// flow at that exact moment, shifting every line sideways under the reader's eye.
+fn split_gutter(area: Rect) -> (Rect, Option<Rect>) {
+    if area.width <= CHAT_GUTTER {
+        return (area, None);
+    }
+    let text = Rect {
+        width: area.width - CHAT_GUTTER,
+        ..area
+    };
+    let gutter = Rect {
+        x: area.x + area.width - CHAT_GUTTER,
+        width: CHAT_GUTTER,
+        ..area
+    };
+    (text, Some(gutter))
+}
+
+fn render_chat(app: &mut App, frame: &mut Frame<'_>, area: Rect) {
+    let (area, gutter) = split_gutter(area);
     let width = area.width.max(1);
+    // Refresh any markdown whose cache cannot answer for this width, so the layout pass below is
+    // pure lookup. Parsing the backlog every frame is what this avoids (010).
+    for msg in app.chat.iter_mut() {
+        msg.rendered_markdown(width);
+    }
     let items = chat_items(app, width);
     let total: u16 = items.iter().map(|i| i.height()).sum();
     let height = area.height;
@@ -285,12 +318,37 @@ fn render_chat(app: &App, frame: &mut Frame<'_>, area: Rect) {
                         );
                     }
                 }
+                Item::Cached(l) => {
+                    if avail > 0 {
+                        frame.render_widget(
+                            Paragraph::new((*l).clone()),
+                            Rect::new(area.x, draw_y, area.width, 1),
+                        );
+                    }
+                }
                 Item::Widget(spec, wh) => {
                     blit_widget(frame, spec, *wh, width, area, draw_y, skip, avail);
                 }
             }
         }
         y = end;
+    }
+
+    // Where the reader is in the flow. Drawn only when the conversation is taller than the pane —
+    // a fully-visible conversation has no scroll position worth reporting.
+    if let (Some(gutter), true) = (gutter, total > height) {
+        let mut state = ScrollbarState::new(total as usize)
+            .position(top as usize)
+            .viewport_content_length(height as usize);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .style(dim_style())
+                .thumb_style(role_style(ThemeRole::Accent))
+                .begin_symbol(None)
+                .end_symbol(None),
+            gutter,
+            &mut state,
+        );
     }
 }
 
@@ -342,7 +400,32 @@ fn chat_items(app: &App, width: u16) -> Vec<Item<'_>> {
     let mut out: Vec<Item<'_>> = Vec::new();
     let wrap_w = width.max(8) as usize;
     for msg in &app.chat {
+        // Markdown, already rendered by the refresh pass — borrowed rather than rebuilt.
+        if let Some(lines) = msg.cached_markdown(width) {
+            out.extend(lines.iter().map(Item::Cached));
+            out.push(Item::Line(Line::raw("")));
+            continue;
+        }
         match &msg.body {
+            // Finished assistant prose renders as markdown (010): the model writes it either way, so
+            // showing it raw just litters the pane with `#` and `**`. Still-streaming prose stays
+            // raw — an unclosed fence would make a half-written message flicker between code block
+            // and paragraph on every delta.
+            Body::Text(t) if msg.role == Role::Assistant && msg.done => {
+                out.extend(
+                    super::markdown::render(t, width)
+                        .into_iter()
+                        .map(Item::Line),
+                );
+            }
+            // Markdown the sender declared as such (a skill body), regardless of role.
+            Body::Markdown(t) => {
+                out.extend(
+                    super::markdown::render(t, width)
+                        .into_iter()
+                        .map(Item::Line),
+                );
+            }
             Body::Text(t) => {
                 let style = line_style(msg.role);
                 let prefix = role_prefix(msg.role);
@@ -414,7 +497,9 @@ pub fn viewport_for(app: &App) -> crate::viz::viewport::Viewport {
     crate::viz::viewport::Viewport {
         cols,
         rows,
-        inline_cols,
+        // Net of `render_chat`'s scrollbar gutter, or the tool would accept a widget one column
+        // wider than the flow can actually draw (010). `cols` above stays the true terminal width.
+        inline_cols: inline_cols.saturating_sub(CHAT_GUTTER),
         // Interior width/height of a panel, net of its border.
         panel_cols: panel_w.saturating_sub(2),
         panel_rows: MIN_PANEL_ROWS.saturating_sub(2).max(1),
@@ -528,7 +613,11 @@ fn too_small(frame: &mut Frame<'_>, area: Rect) {
 fn render_help(frame: &mut Frame<'_>, area: Rect) {
     let keys = [
         ("Enter", "send message (Shift+Enter: newline)"),
-        ("↑ ↓", "scroll history / input history"),
+        (
+            "↑ ↓  wheel",
+            "scroll the chat (or move within a multi-line input)",
+        ),
+        ("Ctrl-P/N", "previous / next input history"),
         ("PgUp PgDn", "page the chat"),
         ("gg G", "top / bottom"),
         ("Tab", "cycle focus (input · chat)"),
@@ -1006,6 +1095,55 @@ mod tests {
         );
     }
 
+    // --- 010: markdown in the chat pane ---------------------------------------------------------
+
+    #[test]
+    fn settled_assistant_prose_renders_as_markdown_and_streaming_prose_does_not() {
+        let mut app = App::new(120, 40);
+        app.chat
+            .push(ChatMessage::text(Role::Assistant, "a **bold** claim"));
+
+        // Still streaming: shown verbatim, because an unclosed fence would make the message flicker
+        // between code block and paragraph on every delta.
+        let open = render_settled(&mut app, 60, 12);
+        assert!(open.contains("**bold**"), "raw while open:\n{open}");
+
+        // Closed: the markup became style, so the asterisks are gone from the glyphs.
+        app.chat.last_mut().unwrap().mark_done();
+        let closed = render_settled(&mut app, 60, 12);
+        assert!(closed.contains("bold"), "the word survived:\n{closed}");
+        assert!(
+            !closed.contains("**"),
+            "the asterisks became weight:\n{closed}"
+        );
+    }
+
+    #[test]
+    fn a_declared_markdown_block_renders_styled_whatever_its_role() {
+        // A skill body arrives as System-role markdown; it is rendered because the *sender* said it
+        // is markdown, not because anything sniffed the content.
+        let mut app = App::new(120, 40);
+        app.chat.push(ChatMessage::markdown(
+            Role::System,
+            "# Skill\n\nuse **care**",
+        ));
+        let out = render_settled(&mut app, 60, 12);
+        assert!(out.contains("Skill"), "heading text present:\n{out}");
+        assert!(out.contains("care"));
+        assert!(!out.contains("**"), "emphasis became style:\n{out}");
+    }
+
+    #[test]
+    fn only_assistant_prose_is_treated_as_markdown() {
+        // A tool result that happens to contain `**` is data, not markup — rendering it as markdown
+        // would silently eat characters out of a command's output.
+        let mut app = App::new(120, 40);
+        app.chat
+            .push(ChatMessage::text(Role::Tool, "✓ grep found **match**"));
+        let out = render_settled(&mut app, 60, 12);
+        assert!(out.contains("**match**"), "left verbatim:\n{out}");
+    }
+
     #[test]
     fn the_published_viewport_reflects_the_level_so_the_tool_sizes_to_it() {
         // The render tool checks widgets against `panel_cols`; if that were the un-capped width the
@@ -1014,7 +1152,13 @@ mod tests {
         app.panels.upsert("m", RenderSpec::Separator);
         let vp = viewport_for(&app);
         assert!(vp.panel_cols > 0 && vp.panel_cols <= 120 / 3);
-        assert_eq!(vp.inline_cols, 120 - (vp.panel_cols + 2));
+        // Net of the panel column *and* the scrollbar gutter (010): `inline_cols` is what the chat
+        // flow can actually draw into, not the width of the region it was handed.
+        assert_eq!(vp.inline_cols, 120 - (vp.panel_cols + 2) - CHAT_GUTTER);
+        assert_eq!(
+            vp.cols, 120,
+            "the reported terminal width is still the truth"
+        );
     }
 
     // --- 009 US3 (T038/T039/T044/T046): the takeover and its escape hatch ----------------------

@@ -33,6 +33,7 @@ available — only these drawing functions:\n\
   gauge(title, value_0_to_1) -> g;  g.label(s);  g.color(name)\n\
   dots(title) -> d;  d.pass(label);  d.fail(label);  d.skip(label)\n\
   text(content) -> t;  t.style(name);  t.bold();  t.dim()\n\
+  markdown(source) -> m   // headings, lists, emphasis, links, code — styled by the operator's theme\n\
   ascii_art([lines]);  separator()\n\
   vsplit() / hsplit() -> layout;  layout.add(widget)   (max nesting depth 3)\n\
   palette() -> p;  p.set(\"K\", \"#1A1A1A\");  p.set(\".\", \"transparent\")\n\

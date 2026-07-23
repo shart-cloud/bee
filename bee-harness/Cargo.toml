@@ -46,6 +46,7 @@ tui = [
     "dep:color-eyre",
     "dep:textwrap",
     "dep:tachyonfx",
+    "dep:tui-markdown",
     "ratatui/crossterm",
     "tokio/sync",
 ]
@@ -103,6 +104,16 @@ tachyonfx = { version = "0.25", default-features = false, features = [
 # domain-gated remote transport (US9 — rmcp 2.x removed the SSE client, so `transport = "sse"` is a
 # deprecated alias routed here, research R2).
 rmcp = { version = "2.2", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"], optional = true }
+
+# Markdown → ratatui `Text` (010, bee-harness only — MUST NOT propagate to bee-core/bee-common).
+# Optional + `tui`-gated, like every other terminal dep. NOT the `ratatui-markdown` crate: that one
+# still pins `ratatui ^0.29`, which cannot unify with the 0.30 the TUI is built on, so cargo would
+# resolve a *second* ratatui whose `Text`/`Buffer` are different types — widgets from one cannot
+# render into the other's buffer. `tui-markdown` 0.3.8 moved to `ratatui-core ^0.1`, which is exactly
+# what ratatui 0.30 is built on, so there is one ratatui in the tree. `default-features = false`
+# drops `highlight-code` (and its `syntect` + `ansi-to-tui` deps): bee colors code blocks from the
+# active theme's roles (005-themes), not from a second, theme-blind highlighter.
+tui-markdown = { version = "0.3.8", default-features = false, optional = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

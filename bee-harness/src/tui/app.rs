@@ -233,7 +233,10 @@ impl App {
     /// form worth putting on a clipboard, so they are skipped.
     fn newest_text(&self) -> Option<String> {
         self.chat.iter().rev().find_map(|m| match &m.body {
-            super::chat::Body::Text(t) if !t.trim().is_empty() => Some(t.clone()),
+            // Markdown yanks as its source, which is the form worth pasting elsewhere.
+            super::chat::Body::Text(t) | super::chat::Body::Markdown(t) if !t.trim().is_empty() => {
+                Some(t.clone())
+            }
             _ => None,
         })
     }
@@ -302,6 +305,10 @@ pub fn update(app: &mut App, msg: Message) {
             app.invalidate_effects();
         }
         Message::Paste(s) => app.input.insert_str(&s),
+        // Scrolling is focus-independent (010): the wheel and PgUp/PgDn move the chat flow whether
+        // the operator is typing or reading, because neither is a text-editing gesture.
+        Message::ScrollUp(n) => app.scroll_up(n as usize),
+        Message::ScrollDown(n) => app.scroll_down(n as usize),
         Message::Tick | Message::Suspend | Message::Resume => {}
         Message::Key(key) => handle_key(app, key),
         Message::Session(ev) => handle_session(app, *ev),
@@ -378,8 +385,27 @@ fn handle_input_key(app: &mut App, key: KeyEvent) {
         KeyCode::Right => app.input.right(),
         KeyCode::Home => app.input.home(),
         KeyCode::End => app.input.end(),
-        KeyCode::Up => app.input.history_prev(),
-        KeyCode::Down => app.input.history_next(),
+        // Input history moved off the arrows (010). ↑/↓ now move within a soft-wrapped buffer when
+        // there is a line to move to — which was previously impossible — and scroll the conversation
+        // otherwise, so a single-line input always scrolls. Recall lives on the readline binding.
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.input.history_prev()
+        }
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.input.history_next()
+        }
+        KeyCode::Up => {
+            if !app.input.cursor_up() {
+                app.scroll_up(1);
+            }
+        }
+        KeyCode::Down => {
+            if !app.input.cursor_down() {
+                app.scroll_down(1);
+            }
+        }
+        KeyCode::PageUp => app.scroll_up(10),
+        KeyCode::PageDown => app.scroll_down(10),
         KeyCode::Esc => app.input.clear(),
         _ => {}
     }
@@ -440,7 +466,15 @@ fn handle_session(app: &mut App, ev: SessionEvent) {
             app.turn = TurnState::Streaming;
             app.autoscroll();
         }
-        SessionEvent::AssistantEnd => {}
+        // The prose block is finished: close it so the view renders it as markdown, and so the next
+        // delta starts a fresh message rather than appending to a message the model has moved past.
+        SessionEvent::AssistantEnd => {
+            if let Some(last) = app.chat.last_mut() {
+                if last.is_open_assistant() {
+                    last.mark_done();
+                }
+            }
+        }
         SessionEvent::ToolCall { name, arguments } => {
             app.push_line(Role::Tool, format!("▸ {name}{}", compact_args(&arguments)));
         }
@@ -472,9 +506,22 @@ fn handle_session(app: &mut App, ev: SessionEvent) {
         SessionEvent::PanelUpdate { id, spec } => app.panels.upsert(id, spec),
         // A lifecycle effect: create/replace (with an optional TTL), remove one, or clear them all.
         SessionEvent::PanelOp(op) => app.panels.apply(op),
+        // Declared markdown (a skill's instructions): rendered styled, and never confused with the
+        // Info lines around it, which are plain by nature.
+        SessionEvent::Markdown(md) => {
+            app.chat.push(ChatMessage::markdown(Role::System, md));
+            app.autoscroll();
+        }
         SessionEvent::Error(s) => app.push_line(Role::System, format!("error: {s}")),
         SessionEvent::Info(s) | SessionEvent::Footer(s) | SessionEvent::Steering(s) => {
             app.push_line(Role::System, s)
+        }
+        // `/clear` dropped the model's message log; the pane holds the only other copy, so it goes
+        // too (010). Panels are agent-owned view state rather than conversation, so they stay — the
+        // command says "conversation history", and it means it.
+        SessionEvent::Cleared => {
+            app.chat.clear();
+            app.scroll_to_bottom();
         }
         SessionEvent::TurnStarted => app.turn = TurnState::Streaming,
         SessionEvent::TurnDone => app.turn = TurnState::Idle,
@@ -608,6 +655,108 @@ mod tests {
         update(&mut a, Message::char('G'));
         assert_eq!(a.scroll, 0);
         assert!(a.follow_tail);
+    }
+
+    // --- 010: scrolling from the input line, the wheel, and /clear ------------------------------
+
+    #[test]
+    fn the_arrows_scroll_the_chat_from_the_input_line() {
+        // The reported bug: ↑ from the input (the default focus) walked input history instead of
+        // moving the conversation, and the scroll keys were reachable only after Tab.
+        let mut a = app();
+        assert_eq!(a.focus, Focus::Input);
+        update(&mut a, Message::key(KeyCode::Up));
+        assert_eq!(a.scroll, 1);
+        assert!(!a.follow_tail);
+        update(&mut a, Message::key(KeyCode::PageUp));
+        assert_eq!(a.scroll, 11);
+        update(&mut a, Message::key(KeyCode::PageDown));
+        update(&mut a, Message::key(KeyCode::Down));
+        assert_eq!(a.scroll, 0);
+        assert!(a.follow_tail, "back at the bottom the view follows again");
+    }
+
+    #[test]
+    fn the_arrows_move_within_a_multi_line_input_before_they_scroll() {
+        let mut a = app();
+        type_str(&mut a, "one");
+        update(
+            &mut a,
+            Message::key_mods(KeyCode::Enter, KeyModifiers::SHIFT),
+        );
+        type_str(&mut a, "two");
+        assert!(a.input.is_multiline());
+
+        update(&mut a, Message::key(KeyCode::Up));
+        assert_eq!(a.input.line_col(), (0, 3), "moved inside the buffer");
+        assert!(a.follow_tail, "moving the cursor is not scrolling");
+
+        // Nowhere left to go inside the buffer, so the same key now scrolls.
+        update(&mut a, Message::key(KeyCode::Up));
+        assert_eq!(a.input.line_col(), (0, 3));
+        assert_eq!(a.scroll, 1);
+    }
+
+    #[test]
+    fn ctrl_p_and_n_walk_the_input_history_now_that_the_arrows_do_not() {
+        let mut a = app();
+        type_str(&mut a, "first");
+        update(&mut a, Message::key(KeyCode::Enter));
+        type_str(&mut a, "second");
+        update(&mut a, Message::key(KeyCode::Enter));
+        assert!(a.input.is_empty());
+
+        update(&mut a, Message::char_mods('p', KeyModifiers::CONTROL));
+        assert_eq!(a.input.text(), "second");
+        update(&mut a, Message::char_mods('p', KeyModifiers::CONTROL));
+        assert_eq!(a.input.text(), "first");
+        update(&mut a, Message::char_mods('n', KeyModifiers::CONTROL));
+        assert_eq!(a.input.text(), "second");
+
+        update(&mut a, Message::key(KeyCode::Up));
+        assert_eq!(a.input.text(), "second", "↑ scrolled; it did not recall");
+        assert_eq!(a.scroll, 1);
+    }
+
+    #[test]
+    fn the_wheel_scrolls_from_either_focus() {
+        let mut a = app();
+        update(&mut a, Message::ScrollUp(3));
+        assert_eq!(a.scroll, 3);
+        assert!(!a.follow_tail);
+        update(&mut a, Message::key(KeyCode::Tab));
+        assert_eq!(a.focus, Focus::Chat);
+        update(&mut a, Message::ScrollUp(3));
+        assert_eq!(a.scroll, 6, "the wheel is focus-independent");
+        update(&mut a, Message::ScrollDown(6));
+        assert_eq!(a.scroll, 0);
+        assert!(a.follow_tail);
+    }
+
+    #[test]
+    fn clearing_the_conversation_empties_the_chat_pane() {
+        // The reported bug: /clear emptied the model's message log and said so, but the pane went on
+        // showing the whole conversation.
+        let mut a = app();
+        type_str(&mut a, "hello");
+        update(&mut a, Message::key(KeyCode::Enter));
+        update(
+            &mut a,
+            Message::session(SessionEvent::AssistantDelta("hi".into())),
+        );
+        a.panels.upsert("m", RenderSpec::Separator);
+        update(&mut a, Message::ScrollUp(5));
+        assert!(!a.chat.is_empty());
+
+        update(&mut a, Message::session(SessionEvent::Cleared));
+        assert!(a.chat.is_empty(), "the pane holds the only other copy");
+        assert_eq!(a.scroll, 0);
+        assert!(a.follow_tail);
+        assert_eq!(
+            a.panels.len(),
+            1,
+            "panels are agent-owned view state, not conversation"
+        );
     }
 
     // --- US3 (T035/T036): overlay toggle, yank, and reserved keys -------------------------------

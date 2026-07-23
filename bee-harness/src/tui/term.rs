@@ -6,25 +6,54 @@
 //! FR-002). OSC-52 copy (T035) and SIGTSTP suspend are layered on in US3.
 
 use std::io::{self, Stdout};
+use std::sync::Once;
 
-use crossterm::event::{Event as CtEvent, KeyEventKind};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, Event as CtEvent, KeyEventKind, MouseEventKind,
+};
+use crossterm::execute;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use super::message::Message;
 
+/// Rows a single wheel notch scrolls (010). Three is the conventional terminal step — one row per
+/// notch feels broken, and a full page overshoots.
+const WHEEL_ROWS: u16 = 3;
+
 /// The concrete terminal the TUI draws on.
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
+
+static MOUSE_PANIC_HOOK: Once = Once::new();
 
 /// Enter the alternate screen + raw mode and return the ratatui terminal. `ratatui::init` also
 /// installs a panic hook that restores the terminal first (SC-001) — install `color-eyre` before this
 /// (in `main`) so the restored terminal then shows a pretty report.
+///
+/// Mouse reporting is enabled here so the wheel scrolls the chat (010). The trade is that
+/// drag-to-select becomes the *application's* gesture rather than the terminal's; most emulators
+/// still give it back under `Shift`, and `y` yanks the newest message via OSC 52 regardless.
 pub fn init() -> Tui {
-    ratatui::init()
+    let terminal = ratatui::init();
+    let _ = execute!(io::stdout(), EnableMouseCapture);
+    // ratatui's own hook restores the screen but knows nothing about mouse mode, so a panic would
+    // leave the terminal reporting clicks as escape garbage. Chain ours in front of it — once, since
+    // `init` runs again on every Ctrl-Z resume and stacked hooks would each re-run the whole chain.
+    MOUSE_PANIC_HOOK.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = execute!(io::stdout(), DisableMouseCapture);
+            prev(info);
+        }));
+    });
+    terminal
 }
 
 /// Leave the alternate screen, disable raw mode, show the cursor. Safe to call more than once.
 pub fn restore() {
+    // Before the screen goes back: leaving mouse mode on would make the shell the user lands in
+    // print escape sequences on every click.
+    let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
 }
 
@@ -101,6 +130,13 @@ pub fn message_from_event(ev: CtEvent) -> Option<Message> {
         CtEvent::Key(k) if k.kind != KeyEventKind::Release => Some(Message::Key(k)),
         CtEvent::Resize(cols, rows) => Some(Message::Resize(cols, rows)),
         CtEvent::Paste(s) => Some(Message::Paste(s)),
+        // Only the wheel means anything to this UI (010). Clicks, drags and moves are deliberately
+        // ignored: binding them would take gestures away from the terminal for no gain.
+        CtEvent::Mouse(m) => match m.kind {
+            MouseEventKind::ScrollUp => Some(Message::ScrollUp(WHEEL_ROWS)),
+            MouseEventKind::ScrollDown => Some(Message::ScrollDown(WHEEL_ROWS)),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -157,6 +193,30 @@ mod tests {
             message_from_event(CtEvent::Paste("hi".into())),
             Some(Message::Paste(s)) if s == "hi"
         ));
+    }
+
+    #[test]
+    fn the_wheel_maps_to_scroll_and_every_other_mouse_gesture_is_ignored() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let ev = |kind| {
+            CtEvent::Mouse(MouseEvent {
+                kind,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        assert!(matches!(
+            message_from_event(ev(MouseEventKind::ScrollUp)),
+            Some(Message::ScrollUp(n)) if n == WHEEL_ROWS
+        ));
+        assert!(matches!(
+            message_from_event(ev(MouseEventKind::ScrollDown)),
+            Some(Message::ScrollDown(n)) if n == WHEEL_ROWS
+        ));
+        // Clicks and moves stay the terminal's business (010).
+        assert!(message_from_event(ev(MouseEventKind::Down(MouseButton::Left))).is_none());
+        assert!(message_from_event(ev(MouseEventKind::Moved)).is_none());
     }
 
     #[test]

@@ -60,9 +60,19 @@ cargo build --release -p bee-harness --features tui --bin bee-repl
 The agent can address a rendered widget to a named side panel with `render_to("metrics", widget)`
 (and `render_to_ttl` / `remove_panel` / `clear_panels` to manage them); an untargeted `render(widget)`
 still flows inline. `--tui` degrades honestly — piped output, `TERM=dumb`, or a terminal below 40×10
-fall back to the inline REPL with a one-line note. Keys: `Tab` focus, `p` panel overlay on narrow
-terminals, `y` yank, `?` help, `q` quit. The feature is **off by default**, so the standard build
-pulls in no terminal backend.
+fall back to the inline REPL with a one-line note. The feature is **off by default**, so the standard
+build pulls in no terminal backend.
+
+Assistant replies render as **markdown** once the message finishes streaming — headings, emphasis,
+lists, links and code, styled through the active theme's semantic roles rather than a second palette.
+A skill's instructions render the same way when you `/skill <name>`, and the agent can emit a block
+itself with `markdown(source)` in a render script.
+
+Keys: `↑`/`↓` and the mouse wheel scroll the conversation (they move the cursor first when the input
+holds a `Shift+Enter` newline), `PgUp`/`PgDn` page it, `gg`/`G` jump to the ends, `Ctrl-P`/`Ctrl-N`
+walk input history, `Tab` focus, `p` panel overlay on narrow terminals, `y` yank, `?` help, `q` quit.
+Mouse reporting is on so the wheel works, which means drag-to-select is the terminal's `Shift`-click
+gesture there.
 
 ## Kernel requirements (for enforcement)
 

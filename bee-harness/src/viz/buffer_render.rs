@@ -49,6 +49,22 @@ pub fn terminal_dims() -> (u16, bool) {
     (80, false)
 }
 
+/// The rows a markdown block occupies at `width`, styled where a renderer exists.
+///
+/// With `tui` this is the real styled rendering, so height and drawing can never disagree. Headless
+/// it is the source split into lines: the markdown parser is `tui`-gated on purpose (a batch run has
+/// no chat pane and should not carry one), and markdown source is designed to read as plain text —
+/// so the fallback shows the block as written rather than as nothing (010).
+#[cfg(feature = "tui")]
+fn markdown_rows(content: &str, width: u16) -> Vec<Line<'static>> {
+    crate::tui::markdown::render(content, width)
+}
+
+#[cfg(not(feature = "tui"))]
+fn markdown_rows(content: &str, _width: u16) -> Vec<Line<'static>> {
+    content.lines().map(|l| Line::raw(l.to_string())).collect()
+}
+
 /// The deterministic terminal-row height a spec occupies at `width` (before the [`MAX_HEIGHT`] clamp).
 /// Bordered widgets include their 2 frame rows. Exposed so tests can assert composed-layout heights
 /// (SC-014). `width` is threaded through for width-dependent wrapping (future) and nested layouts.
@@ -57,6 +73,10 @@ pub fn spec_height(spec: &RenderSpec, width: u16) -> u16 {
     let h = match spec {
         RenderSpec::Separator => 1,
         RenderSpec::Text { content, .. } => (content.lines().count().max(1)) as u16,
+        // Height must equal what `render_into` will actually draw, so both go through the same
+        // function — a markdown block's rendered row count is not its source's line count (a fenced
+        // block gains its fences, a long line wraps).
+        RenderSpec::Markdown { content } => markdown_rows(content, width).len().max(1) as u16,
         RenderSpec::AsciiArt { lines } => lines.len().max(1) as u16,
         RenderSpec::Gauge { .. } => 3,
         RenderSpec::Sparkline { .. } => 3,
@@ -236,6 +256,14 @@ pub fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
                 st = st.add_modifier(ratatui::style::Modifier::BOLD);
             }
             Paragraph::new(content.as_str()).style(st).render(area, buf);
+        }
+        RenderSpec::Markdown { content } => {
+            // Already wrapped to `area.width` by `markdown_rows`, so no `Wrap` here — that would
+            // re-flow rows the height calculation has already committed to.
+            Paragraph::new(ratatui::text::Text::from(markdown_rows(
+                content, area.width,
+            )))
+            .render(area, buf);
         }
         RenderSpec::AsciiArt { lines } => {
             let text = lines.join("\n");
