@@ -4,12 +4,13 @@
 //! basic-ANSI (3/4-bit) SGR only (no truecolor in Slice 1) and handed to the caller's printer.
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Direction as LayoutDir, Layout, Rect};
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
+use ratatui::layout::{Alignment, Constraint, Direction as LayoutDir, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::Marker;
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Bar as RBar, BarChart, BarGroup, Block, Cell, Gauge, Paragraph, Row as RRow, Sparkline, Table,
-    Widget,
+    Axis, Bar as RBar, BarChart, BarGroup, Block, Cell, Chart, Dataset, Gauge, GraphType,
+    Paragraph, Row as RRow, Sparkline, Table, Widget,
 };
 
 use crate::render_spec::{Direction, DotState, RenderSpec, SpriteSpec};
@@ -83,6 +84,13 @@ pub fn spec_height(spec: &RenderSpec, width: u16) -> u16 {
         RenderSpec::DotGrid { .. } => 3,
         RenderSpec::BarChart { .. } => 10,
         RenderSpec::LineChart { .. } => 10,
+        RenderSpec::ScatterPlot { .. } => 10,
+        RenderSpec::AreaChart { .. } => 10,
+        RenderSpec::Heatmap { rows, .. } => 2 + rows.len().max(1) as u16,
+        // The tail's height is its window, not its history: border(2) + up to max_rows of content.
+        RenderSpec::LogTail {
+            lines, max_rows, ..
+        } => 2 + (lines.len() as u16).clamp(1, max_rows.unwrap_or(8).max(1)),
         RenderSpec::Table { rows, .. } => 3 + rows.len() as u16, // border(2)+header(1)+rows
         RenderSpec::Layout {
             direction,
@@ -194,6 +202,109 @@ fn color_of(name: &str) -> Color {
     theme_to_ratatui_color(&theme::resolve_color_name(theme::active_theme(), name))
 }
 
+/// A foreground [`Style`] for a semantic role — unstyled under `NO_COLOR`, so every widget below
+/// stays legible in monochrome without each arm re-checking.
+fn role_fg(role: theme::Role) -> Style {
+    if !palette::is_color_enabled() {
+        return Style::default();
+    }
+    Style::default().fg(theme_to_ratatui_color(theme::active_theme().get(role)))
+}
+
+/// A caller-named color as a fg style, or the theme role when the caller didn't pick one.
+fn named_or_role(name: Option<&str>, role: theme::Role) -> Style {
+    match name {
+        Some(n) if palette::is_color_enabled() => Style::default().fg(color_of(n)),
+        _ => role_fg(role),
+    }
+}
+
+/// The one bordered frame every widget wears: dim single-line border, bold title in the text color.
+/// Chrome recedes; the title and the data carry the weight.
+fn titled_block(title: &str) -> Block<'static> {
+    Block::bordered()
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(role_fg(theme::Role::Dim))
+        .title(Span::styled(
+            format!(" {title} "),
+            role_fg(theme::Role::Text).add_modifier(Modifier::BOLD),
+        ))
+}
+
+/// Categorical series colors in **fixed assignment order** (identity, not rank): accent first, then
+/// theme-coordinated hues from the extended palette where the theme has one, else the basic-ANSI
+/// spread `honeycomb` has always used. Series index → color; the order never re-shuffles when a
+/// series is added or removed.
+fn series_palette() -> Vec<Color> {
+    let t = theme::active_theme();
+    let mut out = vec![theme_to_ratatui_color(t.get(theme::Role::Accent))];
+    // Extended hues chosen for pairwise hue separation (blue → yellow → green → purple → orange).
+    let extended = ["peach", "orange", "teal", "mauve", "purple", "pink"];
+    for name in extended {
+        if let Some(c) = t.extended(name) {
+            let c = theme_to_ratatui_color(c);
+            if !out.contains(&c) {
+                out.push(c);
+            }
+        }
+    }
+    for fallback in [
+        theme_to_ratatui_color(t.get(theme::Role::Info)),
+        theme_to_ratatui_color(t.get(theme::Role::Success)),
+        Color::Magenta,
+        Color::LightRed,
+    ] {
+        if out.len() >= 5 {
+            break;
+        }
+        if !out.contains(&fallback) {
+            out.push(fallback);
+        }
+    }
+    out
+}
+
+/// The shared chart frame: data bounds → dim axes with min/max labels. Every chart used to derive
+/// this inline, three times, with undimmed labels.
+fn chart_axes(
+    series: &[crate::render_spec::Series],
+    zero_y_floor: bool,
+) -> (Axis<'static>, Axis<'static>) {
+    let (x_min, x_max, y_min, y_max) = series.iter().flat_map(|s| &s.points).fold(
+        (f64::MAX, f64::MIN, f64::MAX, f64::MIN),
+        |(xn, xx, yn, yx), p| (xn.min(p.x), xx.max(p.x), yn.min(p.y), yx.max(p.y)),
+    );
+    let (x_min, x_max) = if x_min >= x_max {
+        (x_min - 1.0, x_max + 1.0)
+    } else {
+        (x_min, x_max)
+    };
+    let (y_min, y_max) = if zero_y_floor {
+        // Areas fill down to the axis, so the axis must sit at zero or the fill lies about magnitude.
+        if y_min >= y_max {
+            (0.0, y_max + 1.0)
+        } else {
+            (0.0, y_max)
+        }
+    } else if y_min >= y_max {
+        (y_min - 1.0, y_max + 1.0)
+    } else {
+        (y_min, y_max)
+    };
+    let dim = role_fg(theme::Role::Dim);
+    let label = |v: f64| Span::styled(format!("{v:.0}"), dim);
+    (
+        Axis::default()
+            .style(dim)
+            .bounds([x_min, x_max])
+            .labels(vec![label(x_min), label(x_max)]),
+        Axis::default()
+            .style(dim)
+            .bounds([y_min, y_max])
+            .labels(vec![label(y_min), label(y_max)]),
+    )
+}
+
 /// Map a [`ThemeColor`] to a ratatui [`Color`] (005-themes): `Rgb` → [`Color::Rgb`] (serialized
 /// truecolor/quantized by [`buffer_to_ansi`]); `Ansi` → the matching basic [`Color`].
 pub fn theme_to_ratatui_color(c: &ThemeColor) -> Color {
@@ -275,54 +386,359 @@ pub fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
             label,
             color,
         } => {
+            // `use_unicode` fills the bar's last cell with an eighth-block, so the edge lands where
+            // the value is instead of snapping to the nearest whole cell.
             let mut g = Gauge::default()
-                .block(Block::bordered().title(title.clone()))
+                .block(titled_block(title))
+                .gauge_style(named_or_role(color.as_deref(), theme::Role::Accent))
+                .use_unicode(true)
                 .ratio(value.clamp(0.0, 1.0));
-            if let Some(c) = color {
-                g = g.gauge_style(Style::default().fg(color_of(c)));
-            }
             if let Some(l) = label {
-                g = g.label(l.clone());
+                // The label sits centered, so past ~55% the fill is underneath it: flip its ink to
+                // dark so "73%" doesn't wash out light-on-light. Below that it sits on the empty
+                // (dark) half and keeps the text color. Unstyled under NO_COLOR either way.
+                let ink = if *value > 0.55 && palette::is_color_enabled() {
+                    Style::default().fg(Color::Black)
+                } else {
+                    role_fg(theme::Role::Text)
+                };
+                g = g.label(Span::styled(l.clone(), ink.add_modifier(Modifier::BOLD)));
             }
             g.render(area, buf);
         }
         RenderSpec::Sparkline { title, data } => {
+            let block = titled_block(title);
+            let inner = block.inner(area);
             Sparkline::default()
-                .block(Block::bordered().title(title.clone()))
+                .block(block)
+                .style(role_fg(theme::Role::Info))
                 .data(data)
                 .render(area, buf);
+            // Honey gradient: each bar's brightness follows its height, so magnitude is encoded
+            // twice — height for reading, brightness for scanning. Only where the theme gives an
+            // RGB honey to scale; ANSI themes keep the flat role color, NO_COLOR keeps none.
+            if palette::is_color_enabled() {
+                if let ThemeColor::Rgb { r, g, b } = theme::active_theme().get(theme::Role::Info) {
+                    const LEVELS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+                    for y in inner.top()..inner.bottom() {
+                        for x in inner.left()..inner.right() {
+                            let cell = &mut buf[(x, y)];
+                            if let Some(i) = LEVELS.iter().position(|l| *l == cell.symbol()) {
+                                let t = 0.45 + 0.55 * (i as f64 / (LEVELS.len() - 1) as f64);
+                                let scale = |c: u8| (f64::from(c) * t) as u8;
+                                cell.set_fg(Color::Rgb(scale(*r), scale(*g), scale(*b)));
+                            }
+                        }
+                    }
+                }
+            }
         }
         RenderSpec::LineChart { title, series } => {
-            // Slice 1: render the first series' y-values as a sparkline inside a titled frame — a
-            // faithful ratatui Chart with axes is deferred (only the bar chart is exercised by SCs).
-            let data: Vec<u64> = series
-                .first()
-                .map(|s| s.points.iter().map(|p| p.y.max(0.0) as u64).collect())
-                .unwrap_or_default();
-            Sparkline::default()
-                .block(Block::bordered().title(title.clone()))
-                .data(&data)
+            let colors = series_palette();
+            let datasets: Vec<Vec<(f64, f64)>> = series
+                .iter()
+                .map(|s| s.points.iter().map(|p| (p.x, p.y)).collect())
+                .collect();
+            // `GraphType::Line` is the whole point: the default `Scatter` drew a line chart as a
+            // constellation of disconnected braille dots.
+            let ds: Vec<Dataset<'_>> = series
+                .iter()
+                .zip(datasets.iter())
+                .enumerate()
+                .map(|(i, (s, pts))| {
+                    let d = Dataset::default()
+                        .marker(Marker::Braille)
+                        .graph_type(GraphType::Line)
+                        .style(Style::default().fg(colors[i % colors.len()]))
+                        .data(pts);
+                    // A name summons the legend. One series needs none — the title names it — and
+                    // for two or more the legend is mandatory: two colored lines with no key is
+                    // color-alone signaling.
+                    if series.len() > 1 {
+                        d.name(s.label.clone())
+                    } else {
+                        d
+                    }
+                })
+                .collect();
+            let (x_axis, y_axis) = chart_axes(series, false);
+            Chart::new(ds)
+                .block(titled_block(title))
+                .x_axis(x_axis)
+                .y_axis(y_axis)
+                // The default hides the legend once it exceeds a quarter of the graph, which a
+                // 10-row chart with 2 series always trips. Let it use the full height and half the
+                // width — hiding identity beats obscuring a corner of the data only when the series
+                // count is absurd, and at that point the width cap still applies.
+                .hidden_legend_constraints((
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(100),
+                ))
                 .render(area, buf);
+        }
+        RenderSpec::ScatterPlot { title, series } => {
+            let colors = series_palette();
+            let datasets: Vec<Vec<(f64, f64)>> = series
+                .iter()
+                .map(|s| s.points.iter().map(|p| (p.x, p.y)).collect())
+                .collect();
+            let ds: Vec<Dataset<'_>> = series
+                .iter()
+                .zip(datasets.iter())
+                .enumerate()
+                .map(|(i, (s, pts))| {
+                    let d = Dataset::default()
+                        .marker(Marker::Dot)
+                        .graph_type(GraphType::Scatter)
+                        .style(Style::default().fg(colors[i % colors.len()]))
+                        .data(pts);
+                    if series.len() > 1 {
+                        d.name(s.label.clone())
+                    } else {
+                        d
+                    }
+                })
+                .collect();
+            let (x_axis, y_axis) = chart_axes(series, false);
+            Chart::new(ds)
+                .block(titled_block(title))
+                .x_axis(x_axis)
+                .y_axis(y_axis)
+                .hidden_legend_constraints((
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(100),
+                ))
+                .render(area, buf);
+        }
+        RenderSpec::AreaChart {
+            title,
+            series,
+            color,
+        } => {
+            let colors = match color.as_deref() {
+                // The caller picked the hue; extra series still get distinct ones after it.
+                Some(c) => {
+                    let base = color_of(c);
+                    let mut v = vec![base];
+                    v.extend(series_palette().into_iter().filter(|x| *x != base));
+                    v
+                }
+                None => series_palette(),
+            };
+            let datasets: Vec<Vec<(f64, f64)>> = series
+                .iter()
+                .map(|s| s.points.iter().map(|p| (p.x, p.y)).collect())
+                .collect();
+            // `GraphType::Area` interpolates between points like `Line` and fills down to
+            // `fill_to_y` — a real surface. Half-block markers keep the fill solid rather than a
+            // braille stipple.
+            let ds: Vec<Dataset<'_>> = series
+                .iter()
+                .zip(datasets.iter())
+                .enumerate()
+                .map(|(i, (s, pts))| {
+                    let d = Dataset::default()
+                        .marker(Marker::HalfBlock)
+                        .graph_type(GraphType::Area)
+                        .fill_to_y(0.0)
+                        .style(Style::default().fg(colors[i % colors.len()]))
+                        .data(pts);
+                    if series.len() > 1 {
+                        d.name(s.label.clone())
+                    } else {
+                        d
+                    }
+                })
+                .collect();
+            let (x_axis, y_axis) = chart_axes(series, true);
+            Chart::new(ds)
+                .block(titled_block(title))
+                .x_axis(x_axis)
+                .y_axis(y_axis)
+                .hidden_legend_constraints((
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(100),
+                ))
+                .render(area, buf);
+        }
+        RenderSpec::Heatmap {
+            title, rows, color, ..
+        } => {
+            let block = titled_block(title);
+            let inner = block.inner(area);
+            block.render(area, buf);
+            if rows.is_empty() || inner.width == 0 || inner.height == 0 {
+                return;
+            }
+            // One hue, light→dark in *saturation of that hue* — never to black. The old ramp
+            // multiplied the channel by t, so low values were near-black cells that read as dead
+            // pixels rather than as "small".
+            let (hr, hg, hb) = match color.as_deref().map(color_of) {
+                Some(Color::Rgb(r, g, b)) => (r, g, b),
+                Some(Color::Green) => (64, 220, 64),
+                Some(Color::Red) => (230, 70, 70),
+                Some(Color::Yellow) => (235, 200, 60),
+                Some(Color::Magenta) => (210, 90, 210),
+                _ => match theme_to_ratatui_color(theme::active_theme().get(theme::Role::Accent)) {
+                    Color::Rgb(r, g, b) => (r, g, b),
+                    _ => (60, 170, 230),
+                },
+            };
+            // The floor tints the darkest cell with ~22% of the hue: still clearly "low", never void.
+            let ramp = |t: f64| {
+                let lerp = |c: u8| (f64::from(c) * (0.22 + 0.78 * t)) as u8;
+                Color::Rgb(lerp(hr), lerp(hg), lerp(hb))
+            };
+            let ncols = rows
+                .iter()
+                .map(|r| r.values.len())
+                .max()
+                .unwrap_or(1)
+                .max(1);
+            let nrows = rows.len();
+            let label_w = rows
+                .iter()
+                .map(|r| r.label.len())
+                .max()
+                .unwrap_or(0)
+                .min(12) as u16;
+            let data_w = inner.width.saturating_sub(label_w + 1);
+            let cell_w = (data_w / ncols as u16).max(1);
+            let cell_h = ((inner.height) / nrows as u16).max(1);
+            let (vmin, vmax) = rows
+                .iter()
+                .flat_map(|r| &r.values)
+                .fold((f64::MAX, f64::MIN), |(mn, mx), &v| (mn.min(v), mx.max(v)));
+            let range = if (vmax - vmin).abs() < f64::EPSILON {
+                1.0
+            } else {
+                vmax - vmin
+            };
+            let dim_fg = theme_to_ratatui_color(theme::active_theme().get(theme::Role::Dim));
+            for (ri, row) in rows
+                .iter()
+                .enumerate()
+                .take(inner.height as usize / cell_h.max(1) as usize)
+            {
+                let y = inner.y + ri as u16 * cell_h;
+                let label: String = row.label.chars().take(label_w as usize).collect();
+                for (ci, ch) in label.chars().enumerate() {
+                    if inner.x + ci as u16 <= inner.right() && y < inner.bottom() {
+                        buf[(inner.x + ci as u16, y)].set_char(ch).set_fg(dim_fg);
+                    }
+                }
+                for (ci, &val) in row.values.iter().enumerate() {
+                    let t = ((val - vmin) / range).clamp(0.0, 1.0);
+                    let bg = ramp(t);
+                    // Ink flips against the cell's own luma so the value stays readable at both ends.
+                    let luma =
+                        0.299 * f64::from(hr) + 0.587 * f64::from(hg) + 0.114 * f64::from(hb);
+                    let fg = if t * luma > 110.0 {
+                        Color::Black
+                    } else {
+                        Color::White
+                    };
+                    let cx = inner.x + label_w + 1 + ci as u16 * cell_w;
+                    // The value annotates the cell only where it fits with a cell of padding —
+                    // cramming "0.4" into a 3-wide cell left no color visible to compare.
+                    let label_str = format!("{val:.1}");
+                    let annotate = cell_w as usize >= label_str.len() + 2;
+                    for dy in 0..cell_h {
+                        for dx in 0..cell_w {
+                            let px = cx + dx;
+                            let py = y + dy;
+                            // The rightmost column of each cell stays the surface color: the 1-cell
+                            // spacer that keeps adjacent fills readable as separate cells.
+                            if px < inner.right() && py < inner.bottom() {
+                                if dx + 1 == cell_w && cell_w > 1 {
+                                    continue;
+                                }
+                                let ch = if annotate && dy == 0 && (dx as usize) < label_str.len() {
+                                    label_str.as_bytes()[dx as usize] as char
+                                } else {
+                                    ' '
+                                };
+                                buf[(px, py)].set_char(ch).set_fg(fg).set_bg(bg);
+                            }
+                        }
+                    }
+                }
+            }
         }
         RenderSpec::BarChart {
             title, bars, color, ..
         } => {
+            let label_style = role_fg(theme::Role::Dim);
             let rbars: Vec<RBar<'_>> = bars
                 .iter()
                 .map(|b| {
                     RBar::default()
-                        .label(Line::from(b.label.clone()))
+                        .label(Line::styled(b.label.clone(), label_style))
                         .value(b.value.max(0) as u64)
                 })
                 .collect();
-            let mut bc = BarChart::default()
-                .block(Block::bordered().title(title.clone()))
+            // Bars share the inner width instead of a fixed 7 cells: n bars + (n-1) gaps, clamped so
+            // a two-bar chart doesn't become two slabs and a twelve-bar one doesn't vanish.
+            let n = bars.len().max(1) as u16;
+            let inner_w = area.width.saturating_sub(2);
+            let bar_w = (inner_w.saturating_sub(n - 1) / n).clamp(3, 9);
+            let fill = named_or_role(color.as_deref(), theme::Role::Info);
+            BarChart::default()
+                .block(titled_block(title))
                 .data(BarGroup::default().bars(&rbars))
-                .bar_width(7)
-                .bar_gap(1);
-            let fill = color.as_deref().map(color_of).unwrap_or(Color::Yellow);
-            bc = bc.bar_style(Style::default().fg(fill));
-            bc.render(area, buf);
+                .bar_width(bar_w)
+                .bar_gap(1)
+                .bar_style(fill)
+                // The value prints in the bar's bottom cell; reversed ink keeps it legible on the
+                // fill without inventing a second color.
+                .value_style(fill.add_modifier(Modifier::REVERSED | Modifier::BOLD))
+                .render(area, buf);
+        }
+        RenderSpec::LogTail { title, lines, .. } => {
+            let block = titled_block(title);
+            let inner = block.inner(area);
+            block.render(area, buf);
+            if inner.width == 0 || inner.height == 0 {
+                return;
+            }
+            // Bottom-anchored: the newest lines that fit, newest on the last row — a tail, not a
+            // page. Lines truncate rather than wrap so the stream keeps its column alignment.
+            let visible = lines
+                .iter()
+                .rev()
+                .take(inner.height as usize)
+                .collect::<Vec<_>>();
+            for (i, line) in visible.iter().rev().enumerate() {
+                // Letter + color per level: the letter is what survives monochrome (never
+                // color-alone), the color is what makes an error findable at a glance.
+                let (mark, style) = match line.level.as_deref() {
+                    Some("error" | "fatal") => ("E", role_fg(theme::Role::Error)),
+                    Some("warn" | "warning") => ("W", role_fg(theme::Role::Info)),
+                    Some("info") => ("I", role_fg(theme::Role::Text)),
+                    Some("debug" | "trace") => ("D", role_fg(theme::Role::Dim)),
+                    _ => (" ", role_fg(theme::Role::Text)),
+                };
+                // Errors carry their color through the text (they are what the eye hunts for);
+                // debug/trace recede whole; everything else keeps quiet text with a marked gutter.
+                let text_style = match line.level.as_deref() {
+                    Some("error" | "fatal") => role_fg(theme::Role::Error),
+                    Some("debug" | "trace") => role_fg(theme::Role::Dim),
+                    _ => role_fg(theme::Role::Text),
+                };
+                let y = inner.y + i as u16;
+                let row = Rect::new(inner.x, y, inner.width, 1);
+                let content: String = line
+                    .text
+                    .chars()
+                    .take(inner.width.saturating_sub(2) as usize)
+                    .collect();
+                Paragraph::new(Line::from(vec![
+                    Span::styled(mark.to_string(), style.add_modifier(Modifier::BOLD)),
+                    Span::raw(" "),
+                    Span::styled(content, text_style),
+                ]))
+                .render(row, buf);
+            }
         }
         RenderSpec::Table {
             title,
@@ -333,21 +749,49 @@ pub fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
             let widths: Vec<Constraint> = (0..ncols)
                 .map(|_| Constraint::Percentage((100 / ncols) as u16))
                 .collect();
-            let header = RRow::new(headers.iter().map(|h| Cell::from(h.clone())))
-                .style(Style::default().add_modifier(ratatui::style::Modifier::BOLD));
-            let body: Vec<RRow<'_>> = rows
-                .iter()
-                .map(|r| {
-                    let mut row = RRow::new(r.cells.iter().map(|c| Cell::from(c.clone())));
-                    if let Some(c) = &r.color {
-                        row = row.style(Style::default().fg(color_of(c)));
-                    }
-                    row
+            // Numeric columns read right-aligned (ones under ones); a column is numeric when every
+            // populated cell in it leads with a digit/sign — "14.8s" and "88ms" count.
+            let numeric_col: Vec<bool> = (0..ncols)
+                .map(|i| {
+                    let mut any = false;
+                    let all = rows.iter().all(|r| match r.cells.get(i) {
+                        Some(c) if !c.is_empty() => {
+                            any = true;
+                            c.starts_with(|ch: char| ch.is_ascii_digit() || ch == '-' || ch == '+')
+                        }
+                        _ => true,
+                    });
+                    any && all
                 })
                 .collect();
+            let align = |i: usize| {
+                if numeric_col.get(i).copied().unwrap_or(false) {
+                    Alignment::Right
+                } else {
+                    Alignment::Left
+                }
+            };
+            let header = RRow::new(headers.iter().enumerate().map(|(i, h)| {
+                Cell::from(Text::from(h.clone()).alignment(align(i))).style(
+                    role_fg(theme::Role::Dim).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                )
+            }));
+            let body: Vec<RRow<'_>> =
+                rows.iter()
+                    .map(|r| {
+                        let mut row =
+                            RRow::new(r.cells.iter().enumerate().map(|(i, c)| {
+                                Cell::from(Text::from(c.clone()).alignment(align(i)))
+                            }));
+                        if let Some(c) = &r.color {
+                            row = row.style(Style::default().fg(color_of(c)));
+                        }
+                        row
+                    })
+                    .collect();
             Table::new(body, widths)
                 .header(header)
-                .block(Block::bordered().title(title.clone()))
+                .block(titled_block(title))
                 .render(area, buf);
         }
         RenderSpec::DotGrid { title, dots } => {
@@ -365,7 +809,7 @@ pub fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
                 spans.push(Span::styled(glyph, Style::default().fg(sgr_to_color(code))));
             }
             Paragraph::new(Line::from(spans))
-                .block(Block::bordered().title(title.clone()))
+                .block(titled_block(title))
                 .render(area, buf);
         }
         RenderSpec::Layout {
@@ -471,7 +915,7 @@ pub fn render_into(spec: &RenderSpec, area: Rect, buf: &mut Buffer) {
                 // widget draws directly (most widgets carry their own titled block).
                 let inner = match &cell.title {
                     Some(t) => {
-                        let block = Block::bordered().title(t.clone());
+                        let block = titled_block(t);
                         let inner = block.inner(rect);
                         block.render(rect, buf);
                         inner
@@ -609,4 +1053,64 @@ fn buffer_to_ansi(buf: &Buffer, color: bool) -> Vec<String> {
         out.push(line);
     }
     out
+}
+
+#[cfg(test)]
+mod log_tail_tests {
+    use super::*;
+    use crate::render_spec::LogLine;
+
+    fn tail(n: usize, max_rows: Option<u16>) -> RenderSpec {
+        RenderSpec::LogTail {
+            title: "audit".into(),
+            lines: (0..n)
+                .map(|i| LogLine {
+                    text: format!("line-{i}"),
+                    level: if i % 2 == 0 {
+                        Some("error".into())
+                    } else {
+                        None
+                    },
+                })
+                .collect(),
+            max_rows,
+        }
+    }
+
+    fn symbols(spec: &RenderSpec, w: u16, h: u16) -> String {
+        let area = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(area);
+        render_into(spec, area, &mut buf);
+        let mut s = String::new();
+        for y in 0..h {
+            for x in 0..w {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            s.push('\n');
+        }
+        s
+    }
+
+    #[test]
+    fn the_tail_keeps_the_newest_lines_and_drops_the_oldest() {
+        let spec = tail(20, Some(5));
+        assert_eq!(spec_height(&spec, 40), 7, "border(2) + max_rows(5)");
+        let out = symbols(&spec, 40, 7);
+        assert!(out.contains("line-19"), "newest line shown:\n{out}");
+        assert!(
+            out.contains("line-15"),
+            "window reaches back 5 lines:\n{out}"
+        );
+        assert!(!out.contains("line-14"), "older lines scrolled off:\n{out}");
+        // Bottom-anchored: the newest line sits on the last content row.
+        let rows: Vec<&str> = out.lines().collect();
+        assert!(rows[5].contains("line-19"), "newest at the bottom:\n{out}");
+    }
+
+    #[test]
+    fn levels_mark_the_gutter_with_letters_that_survive_monochrome() {
+        let out = symbols(&tail(2, None), 40, 4);
+        assert!(out.contains("E line-0"), "error marked with E:\n{out}");
+        assert!(out.contains("  line-1"), "unleveled lines unmarked:\n{out}");
+    }
 }

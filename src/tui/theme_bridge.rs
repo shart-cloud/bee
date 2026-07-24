@@ -5,7 +5,7 @@
 //! color is disabled it returns an unstyled `Style`, so the full-screen path stays legible in
 //! monochrome exactly like the inline REPL (FR-014 / SC-005; resolves analysis G2).
 
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 
 use crate::viz::buffer_render::theme_to_ratatui_color;
 use crate::viz::palette;
@@ -29,6 +29,19 @@ pub fn role_style_bold(role: Role) -> Style {
 /// The dim style for metadata / footers (`Role::Dim`), unstyled under `NO_COLOR`.
 pub fn dim_style() -> Style {
     role_style(Role::Dim)
+}
+
+/// A filled badge — dark ink on the role's color, for the header's `bee` mark. Under `NO_COLOR` it
+/// degrades to bold reverse video, which carries the same "this is a label, not text" weight on a
+/// monochrome terminal.
+pub fn badge_style(role: Role) -> Style {
+    if !palette::is_color_enabled() {
+        return Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED);
+    }
+    Style::default()
+        .fg(Color::Black)
+        .bg(theme_to_ratatui_color(theme::active_theme().get(role)))
+        .add_modifier(Modifier::BOLD)
 }
 
 #[cfg(test)]

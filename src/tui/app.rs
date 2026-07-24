@@ -19,11 +19,13 @@ use crate::config::VisualConfig;
 use crate::render_spec::RenderSpec;
 use crate::session::SessionEvent;
 
-/// Which region has keyboard focus. (Panels focus arrives with US2.)
+/// Which region has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Input,
     Chat,
+    /// The panel column (or the panel overlay): j/k select, Space collapses, x closes.
+    Panels,
 }
 
 /// Whether an assistant turn is in flight (drives the spinner / "thinking" line).
@@ -111,6 +113,15 @@ pub struct App {
     /// Whether the panel column is currently on screen, so its arrival animates once rather than on
     /// every frame it happens to be visible (009 US5).
     pub column_shown: bool,
+    /// The model the session is talking to, shown in the header. Empty when unknown (tests).
+    pub model_id: String,
+    /// Which panel the operator has selected while the panel column has focus (index into the
+    /// registry's insertion order, clamped by every consumer — panels come and go under it).
+    pub panel_sel: usize,
+    /// Count of session events received (deltas, tool calls, results). The header's working
+    /// indicator takes its animation phase from this, so it moves exactly when data is flowing and
+    /// holds still when the turn has stalled — motion as a report, not as decoration.
+    pub activity: u64,
 }
 
 impl App {
@@ -144,7 +155,16 @@ impl App {
             // every 008 test does) shows settled chrome rather than the first frame of a fade.
             chrome_cues: Vec::new(),
             column_shown: false,
+            model_id: String::new(),
+            panel_sel: 0,
+            activity: 0,
         }
+    }
+
+    /// The same session with the model's id in the header (008 header context).
+    pub fn with_model(mut self, id: impl Into<String>) -> Self {
+        self.model_id = id.into();
+        self
     }
 
     /// The same session under an explicit visual configuration (009). Kept separate from
@@ -241,10 +261,20 @@ impl App {
         })
     }
 
+    /// Whether the panel region is on screen and can take focus: a populated column in `TwoPane`,
+    /// or the open overlay in `SinglePane`.
+    pub fn panels_reachable(&self) -> bool {
+        !self.panels.is_empty() && (self.layout_mode == LayoutMode::TwoPane || self.panels_visible)
+    }
+
     fn cycle_focus(&mut self) {
         self.focus = match self.focus {
             Focus::Input => Focus::Chat,
+            // Panels join the cycle only while they are actually on screen — Tab never lands focus
+            // on a region the operator cannot see.
+            Focus::Chat if self.panels_reachable() => Focus::Panels,
             Focus::Chat => Focus::Input,
+            Focus::Panels => Focus::Input,
         };
     }
 
@@ -364,9 +394,49 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         app.cycle_focus();
         return;
     }
+    // Panels focus with no panels left (pruned, cleared, TTL'd) falls back to input rather than
+    // routing keys at a region that isn't there.
+    if app.focus == Focus::Panels && !app.panels_reachable() {
+        app.focus = Focus::Input;
+    }
     match app.focus {
         Focus::Input => handle_input_key(app, key),
         Focus::Chat => handle_chat_key(app, key),
+        Focus::Panels => handle_panels_key(app, key),
+    }
+}
+
+/// Keys while the panel column (or overlay) has focus: vertical selection, collapse, close.
+fn handle_panels_key(app: &mut App, key: KeyEvent) {
+    let len = app.panels.len();
+    app.panel_sel = app.panel_sel.min(len.saturating_sub(1));
+    match key.code {
+        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('?') => app.help_open = true,
+        KeyCode::Up | KeyCode::Char('k') => app.panel_sel = app.panel_sel.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.panel_sel = (app.panel_sel + 1).min(len.saturating_sub(1))
+        }
+        // Collapse is operator state: it survives the agent's upserts, so a panel the operator
+        // folded away stays folded no matter how often its content refreshes.
+        KeyCode::Char(' ') | KeyCode::Enter => app.panels.toggle_collapse_at(app.panel_sel),
+        KeyCode::Char('x') => {
+            app.panels.remove_at(app.panel_sel);
+            if app.panels.is_empty() {
+                // The region just vanished from under the focus.
+                app.panels_visible = false;
+                app.focus = Focus::Input;
+            } else {
+                app.panel_sel = app.panel_sel.min(app.panels.len() - 1);
+            }
+        }
+        KeyCode::Char('i') => app.focus = Focus::Input,
+        // Esc (or `p` where the overlay is what put panels on screen) leaves the region entirely.
+        KeyCode::Char('p') | KeyCode::Esc => {
+            app.panels_visible = false;
+            app.focus = Focus::Input;
+        }
+        _ => {}
     }
 }
 
@@ -419,7 +489,14 @@ fn handle_chat_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('?') => app.help_open = true,
         // Toggle the panel overlay (single-pane layouts, US3 T036). Bound in chat focus so `p` stays
         // an ordinary character while typing — the contract's "any" context, minus the input line.
-        KeyCode::Char('p') => app.panels_visible = !app.panels_visible,
+        // Opening it moves focus to the panels: the overlay is what the operator just asked to
+        // drive, and j/k/Space/x should work immediately rather than after a Tab.
+        KeyCode::Char('p') => {
+            app.panels_visible = !app.panels_visible;
+            if app.panels_reachable() && app.panels_visible {
+                app.focus = Focus::Panels;
+            }
+        }
         // Yank the newest prose message to the system clipboard via OSC 52 (FR-016, US3 T035).
         KeyCode::Char('y') => app.yank = app.newest_text(),
         // Esc closes the overlay first, before falling through to anything else.
@@ -442,6 +519,8 @@ fn handle_chat_key(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_session(app: &mut App, ev: SessionEvent) {
+    // Every session event is data arriving; the header's working indicator phases off this count.
+    app.activity = app.activity.wrapping_add(1);
     match ev {
         SessionEvent::AssistantDelta(s) => {
             // FR-019: the model's reply to a message the operator sent *since* the overlay appeared
@@ -494,8 +573,8 @@ fn handle_session(app: &mut App, ev: SessionEvent) {
                 Chrome::ToolResult
             });
         }
-        SessionEvent::RenderWidget { spec } => {
-            app.chat.push(ChatMessage::widget(spec));
+        SessionEvent::RenderWidget { spec, effect } => {
+            app.chat.push(ChatMessage::widget_with_effect(spec, effect));
             app.autoscroll();
         }
         // A full-screen takeover (009 US3). It reached here only because the visual gate admitted
@@ -612,6 +691,88 @@ mod tests {
         assert_eq!(a.focus, Focus::Chat);
         update(&mut a, Message::char_mods('c', KeyModifiers::CONTROL));
         assert!(a.should_quit);
+    }
+
+    #[test]
+    fn tab_reaches_panels_only_when_they_are_on_screen() {
+        // No panels: the cycle is input · chat, exactly as before panels focus existed.
+        let mut bare = App::new(120, 24);
+        update(&mut bare, Message::key(KeyCode::Tab));
+        assert_eq!(bare.focus, Focus::Chat);
+        update(&mut bare, Message::key(KeyCode::Tab));
+        assert_eq!(bare.focus, Focus::Input);
+
+        // A populated TwoPane column joins the cycle.
+        let mut with = App::new(120, 24);
+        with.panels
+            .upsert("m", crate::render_spec::RenderSpec::Separator);
+        update(&mut with, Message::key(KeyCode::Tab));
+        assert_eq!(with.focus, Focus::Chat);
+        update(&mut with, Message::key(KeyCode::Tab));
+        assert_eq!(with.focus, Focus::Panels);
+        update(&mut with, Message::key(KeyCode::Tab));
+        assert_eq!(with.focus, Focus::Input);
+
+        // SinglePane with the overlay closed: panels are off screen, so Tab skips them.
+        let mut narrow = App::new(80, 24);
+        narrow
+            .panels
+            .upsert("m", crate::render_spec::RenderSpec::Separator);
+        update(&mut narrow, Message::key(KeyCode::Tab));
+        update(&mut narrow, Message::key(KeyCode::Tab));
+        assert_eq!(narrow.focus, Focus::Input);
+    }
+
+    #[test]
+    fn panels_focus_selects_collapses_and_closes() {
+        let mut a = App::new(120, 24);
+        a.panels
+            .upsert("one", crate::render_spec::RenderSpec::Separator);
+        a.panels
+            .upsert("two", crate::render_spec::RenderSpec::Separator);
+        update(&mut a, Message::key(KeyCode::Tab));
+        update(&mut a, Message::key(KeyCode::Tab));
+        assert_eq!(a.focus, Focus::Panels);
+
+        // j moves the selection down, k back up, both clamped.
+        update(&mut a, Message::char('j'));
+        assert_eq!(a.panel_sel, 1);
+        update(&mut a, Message::char('j'));
+        assert_eq!(a.panel_sel, 1, "clamped at the last panel");
+        update(&mut a, Message::char('k'));
+        assert_eq!(a.panel_sel, 0);
+
+        // Space folds the selected panel; a fresh upsert must not unfold it (operator state).
+        update(&mut a, Message::char(' '));
+        assert!(a.panels.iter_panels().next().unwrap().collapsed);
+        a.panels
+            .upsert("one", crate::render_spec::RenderSpec::Separator);
+        assert!(
+            a.panels.iter_panels().next().unwrap().collapsed,
+            "an agent upsert cannot unfold what the operator folded"
+        );
+
+        // x closes the selected panel; closing the last one returns focus to input.
+        update(&mut a, Message::char('x'));
+        assert_eq!(a.panels.len(), 1);
+        assert_eq!(a.focus, Focus::Panels);
+        update(&mut a, Message::char('x'));
+        assert!(a.panels.is_empty());
+        assert_eq!(a.focus, Focus::Input);
+    }
+
+    #[test]
+    fn opening_the_overlay_focuses_panels_and_esc_leaves() {
+        let mut a = App::new(80, 24); // SinglePane
+        a.panels
+            .upsert("m", crate::render_spec::RenderSpec::Separator);
+        update(&mut a, Message::key(KeyCode::Tab)); // chat focus, where `p` lives
+        update(&mut a, Message::char('p'));
+        assert!(a.panels_visible);
+        assert_eq!(a.focus, Focus::Panels, "the overlay opens ready to drive");
+        update(&mut a, Message::key(KeyCode::Esc));
+        assert!(!a.panels_visible);
+        assert_eq!(a.focus, Focus::Input);
     }
 
     #[test]
@@ -937,6 +1098,7 @@ mod tests {
             &mut a,
             Message::session(SessionEvent::RenderWidget {
                 spec: text_spec("inline"),
+                effect: None,
             }),
         );
         assert_eq!(a.chat.len(), 1, "inline render appends a chat widget");

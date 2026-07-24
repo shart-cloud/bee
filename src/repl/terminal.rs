@@ -17,7 +17,7 @@ use rustyline::ExternalPrinter;
 use tokio::task::JoinHandle;
 
 use super::ReplOutput;
-use crate::render_spec::{AnimationSpec, RenderSpec};
+use crate::render_spec::{AnimationSpec, EffectSpec, RenderSpec};
 use crate::tools::ToolResult;
 use crate::viz::theme::Role;
 use crate::viz::{animator, glyph, palette, sprite_render};
@@ -331,7 +331,7 @@ impl ReplOutput for TerminalOutput {
         self.emit(&self.role(Role::Accent, msg)); // accent — user's steering nudge
     }
 
-    fn render_widget(&self, spec: &RenderSpec) {
+    fn render_widget(&self, spec: &RenderSpec, _effect: Option<&EffectSpec>) {
         // Sprites/animations use the hand-rolled half-block renderer (truecolor, Slice 2); every other
         // widget goes through the headless ratatui pipeline (FR-025). Each row goes through the same
         // `ExternalPrinter` path as every other line — no alt-screen, no raw mode (SC-011).
@@ -527,7 +527,7 @@ mod tests {
         let (t, _buf) = term();
         t.busy_start();
         assert_eq!(t.kind.load(Ordering::SeqCst), KIND_SPINNER);
-        t.render_widget(&RenderSpec::Animation { spec: tiny_anim() });
+        t.render_widget(&RenderSpec::Animation { spec: tiny_anim() }, None);
         assert_eq!(
             t.kind.load(Ordering::SeqCst),
             KIND_ANIM,
@@ -540,7 +540,7 @@ mod tests {
     async fn animation_reclaims_all_its_rows() {
         // SC-016(c): a 2-row animation, once stopped, leaves 2 rows for the next output to reclaim.
         let (t, buf) = term();
-        t.render_widget(&RenderSpec::Animation { spec: tiny_anim() });
+        t.render_widget(&RenderSpec::Animation { spec: tiny_anim() }, None);
         t.stop_active();
         assert_eq!(
             t.reclaim_rows.load(Ordering::SeqCst),

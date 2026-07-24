@@ -9,7 +9,7 @@
 use bee_core::AuditEvent;
 use serde_json::Value;
 
-use crate::render_spec::RenderSpec;
+use crate::render_spec::{EffectSpec, RenderSpec};
 use crate::tools::ToolResult;
 
 /// One thing the session core emitted, mirroring one [`crate::repl::ReplOutput`] callback.
@@ -27,7 +27,10 @@ pub enum SessionEvent {
         audit: Vec<AuditEvent>,
     },
     /// A visualization to draw inline in the chat flow (`render_widget`).
-    RenderWidget { spec: RenderSpec },
+    RenderWidget {
+        spec: RenderSpec,
+        effect: Option<EffectSpec>,
+    },
     /// A render addressed to a named, persistent panel (`panel_update`, 008-grid-tui US2). The TUI
     /// upserts `spec` into panel `id` beside chat — same id replaces in place (FR-008/009).
     PanelUpdate { id: String, spec: RenderSpec },

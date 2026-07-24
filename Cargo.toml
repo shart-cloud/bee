@@ -89,7 +89,7 @@ name = "bee"
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["tui"]
 # Real kernel enforcement. Pulls bee-userspace's eBPF-LSM path (nightly bpf toolchain + BPF-LSM
 # kernel to build/attach). WITHOUT this feature the harness runs tools as hardened, credential-
 # stripped host processes with NO scope — enough for offline (MockModel) tests and live-provider
@@ -179,10 +179,12 @@ rmcp = { version = "2.2", default-features = false, features = ["client", "trans
 # still pins `ratatui ^0.29`, which cannot unify with the 0.30 the TUI is built on, so cargo would
 # resolve a *second* ratatui whose `Text`/`Buffer` are different types — widgets from one cannot
 # render into the other's buffer. `tui-markdown` 0.3.8 moved to `ratatui-core ^0.1`, which is exactly
-# what ratatui 0.30 is built on, so there is one ratatui in the tree. `default-features = false`
-# drops `highlight-code` (and its `syntect` + `ansi-to-tui` deps): bee colors code blocks from the
-# active theme's roles (005-themes), not from a second, theme-blind highlighter.
-tui-markdown = { version = "0.3.8", default-features = false, optional = true }
+# what ratatui 0.30 is built on, so there is one ratatui in the tree. `highlight-code` (syntect)
+# colors recognized fenced blocks; 005's objection — a second, theme-blind highlighter — is answered
+# in `tui::markdown`, which picks the bundled code theme nearest the active bee theme and strips the
+# highlighter's colors under `NO_COLOR`. `default-features = false` + the explicit feature keeps the
+# list deliberate rather than whatever the crate's default grows into.
+tui-markdown = { version = "0.3.8", default-features = false, features = ["highlight-code"], optional = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

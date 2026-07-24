@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use rhai::{Array, Dynamic, Engine, EvalAltResult};
 
 use crate::render_spec::{
-    AnimationSpec, Bar, Direction, Dot, DotState, EffectSpec, GridCell, PanelOp, Point, RenderSpec,
-    Renderable, Row, Series, SpriteSpec,
+    AnimationSpec, Bar, Direction, Dot, DotState, EffectSpec, GridCell, HeatRow, PanelOp, Point,
+    RenderSpec, Renderable, Row, Series, SpriteSpec,
 };
 use crate::visual_gate;
 
@@ -229,6 +229,8 @@ fn validate_panel_id(id: &str) -> Result<(), Box<EvalAltResult>> {
 enum ChartKind {
     Bar,
     Line,
+    Scatter,
+    Area,
     Spark,
 }
 
@@ -282,6 +284,29 @@ impl ChartBuilder {
                     })
                     .collect(),
             },
+            ChartKind::Scatter => RenderSpec::ScatterPlot {
+                title: self.title.clone(),
+                series: self
+                    .series
+                    .iter()
+                    .map(|(label, pts)| Series {
+                        label: label.clone(),
+                        points: pts.lock().expect("series").clone(),
+                    })
+                    .collect(),
+            },
+            ChartKind::Area => RenderSpec::AreaChart {
+                title: self.title.clone(),
+                series: self
+                    .series
+                    .iter()
+                    .map(|(label, pts)| Series {
+                        label: label.clone(),
+                        points: pts.lock().expect("series").clone(),
+                    })
+                    .collect(),
+                color: self.color.clone(),
+            },
             ChartKind::Spark => RenderSpec::Sparkline {
                 title: self.title.clone(),
                 data: self.spark.clone(),
@@ -294,6 +319,25 @@ impl ChartBuilder {
 #[derive(Clone)]
 pub struct SeriesHandle {
     points: Arc<Mutex<Vec<Point>>>,
+}
+
+/// Builder behind `heatmap`.
+#[derive(Clone)]
+pub struct HeatmapBuilder {
+    title: String,
+    rows: Vec<HeatRow>,
+    color: Option<String>,
+    effect: Option<EffectSpec>,
+}
+
+impl HeatmapBuilder {
+    fn to_spec(&self) -> RenderSpec {
+        RenderSpec::Heatmap {
+            title: self.title.clone(),
+            rows: self.rows.clone(),
+            color: self.color.clone(),
+        }
+    }
 }
 
 /// Builder behind `table`.
@@ -355,6 +399,27 @@ impl DotGridBuilder {
         RenderSpec::DotGrid {
             title: self.title.clone(),
             dots: self.dots.clone(),
+        }
+    }
+}
+
+/// Builder behind `log_tail`.
+#[derive(Clone)]
+pub struct LogTailBuilder {
+    title: String,
+    lines: Vec<crate::render_spec::LogLine>,
+    max_rows: Option<u16>,
+    /// The transition the agent attached with `widget.effect(e)` (009 FR-022).
+    /// `None` means the default transition for the target, never "no animation".
+    effect: Option<EffectSpec>,
+}
+
+impl LogTailBuilder {
+    fn to_spec(&self) -> RenderSpec {
+        RenderSpec::LogTail {
+            title: self.title.clone(),
+            lines: self.lines.clone(),
+            max_rows: self.max_rows,
         }
     }
 }
@@ -596,6 +661,13 @@ fn dynamic_to_renderable(d: Dynamic) -> Result<Renderable, Box<EvalAltResult>> {
             effect: b.effect,
         });
     }
+    if d.is::<HeatmapBuilder>() {
+        let b = d.cast::<HeatmapBuilder>();
+        return Ok(Renderable {
+            spec: b.to_spec(),
+            effect: b.effect,
+        });
+    }
     if d.is::<TableBuilder>() {
         let b = d.cast::<TableBuilder>();
         return Ok(Renderable {
@@ -612,6 +684,13 @@ fn dynamic_to_renderable(d: Dynamic) -> Result<Renderable, Box<EvalAltResult>> {
     }
     if d.is::<DotGridBuilder>() {
         let b = d.cast::<DotGridBuilder>();
+        return Ok(Renderable {
+            spec: b.to_spec(),
+            effect: b.effect,
+        });
+    }
+    if d.is::<LogTailBuilder>() {
+        let b = d.cast::<LogTailBuilder>();
         return Ok(Renderable {
             spec: b.to_spec(),
             effect: b.effect,
@@ -686,6 +765,7 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
     engine.register_type_with_name::<TableBuilder>("Table");
     engine.register_type_with_name::<GaugeBuilder>("Gauge");
     engine.register_type_with_name::<DotGridBuilder>("DotGrid");
+    engine.register_type_with_name::<LogTailBuilder>("LogTail");
     engine.register_type_with_name::<TextBuilder>("Text");
     engine.register_type_with_name::<LayoutBuilder>("Layout");
     engine.register_type_with_name::<RenderSpec>("Widget");
@@ -697,6 +777,12 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
     });
     engine.register_fn("line_chart", |title: String| {
         ChartBuilder::new(ChartKind::Line, title)
+    });
+    engine.register_fn("scatter", |title: String| {
+        ChartBuilder::new(ChartKind::Scatter, title)
+    });
+    engine.register_fn("area_chart", |title: String| {
+        ChartBuilder::new(ChartKind::Area, title)
     });
     engine.register_fn("sparkline", |title: String, data: Array| {
         let mut c = ChartBuilder::new(ChartKind::Spark, title);
@@ -722,6 +808,42 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
     });
     engine.register_fn("point", |s: &mut SeriesHandle, x: f64, y: f64| {
         s.points.lock().expect("series").push(Point { x, y });
+    });
+    engine.register_fn("point", |s: &mut SeriesHandle, x: i64, y: i64| {
+        s.points.lock().expect("series").push(Point {
+            x: x as f64,
+            y: y as f64,
+        });
+    });
+
+    // --- Heatmaps ---
+    engine.register_type_with_name::<HeatmapBuilder>("Heatmap");
+    engine.register_fn("heatmap", |title: String| HeatmapBuilder {
+        title,
+        rows: Vec::new(),
+        color: None,
+        effect: None,
+    });
+    engine.register_fn(
+        "row",
+        |h: &mut HeatmapBuilder, label: String, values: Array| {
+            h.rows.push(HeatRow {
+                label,
+                values: values
+                    .into_iter()
+                    .map(|v| {
+                        if let Ok(f) = v.as_float() {
+                            f
+                        } else {
+                            v.as_int().unwrap_or(0) as f64
+                        }
+                    })
+                    .collect(),
+            });
+        },
+    );
+    engine.register_fn("color", |h: &mut HeatmapBuilder, name: String| {
+        h.color = Some(name);
     });
 
     // --- Tables ---
@@ -762,6 +884,29 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
     engine.register_fn("color", |g: &mut GaugeBuilder, name: String| {
         g.color = Some(name)
     });
+    engine.register_fn("log_tail", |title: String| LogTailBuilder {
+        title,
+        lines: Vec::new(),
+        max_rows: None,
+        effect: None,
+    });
+    engine.register_fn("line", |l: &mut LogTailBuilder, text: String| {
+        l.lines
+            .push(crate::render_spec::LogLine { text, level: None });
+    });
+    engine.register_fn(
+        "line",
+        |l: &mut LogTailBuilder, text: String, level: String| {
+            l.lines.push(crate::render_spec::LogLine {
+                text,
+                level: Some(level),
+            });
+        },
+    );
+    engine.register_fn("max_rows", |l: &mut LogTailBuilder, n: i64| {
+        l.max_rows = Some(n.clamp(1, 40) as u16);
+    });
+
     engine.register_fn("dots", |title: String| DotGridBuilder {
         title,
         dots: Vec::new(),
@@ -795,6 +940,9 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
         effect: None,
     });
     engine.register_fn("style", |t: &mut TextBuilder, name: String| {
+        t.style = Some(name)
+    });
+    engine.register_fn("color", |t: &mut TextBuilder, name: String| {
         t.style = Some(name)
     });
     engine.register_fn("bold", |t: &mut TextBuilder| t.bold = true);
@@ -1079,8 +1227,10 @@ pub fn register(engine: &mut Engine, ctx: RenderContext) {
     }
     attach_effect!(
         ChartBuilder,
+        HeatmapBuilder,
         TableBuilder,
         GaugeBuilder,
+        LogTailBuilder,
         DotGridBuilder,
         TextBuilder,
         LayoutBuilder,
@@ -1182,6 +1332,36 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn log_tail_builds_lines_with_and_without_levels() {
+        let out = run(concat!(
+            r#"let l = log_tail("denials");"#,
+            r#" l.line("policy loaded");"#,
+            r#" l.line("open /etc/shadow blocked", "error");"#,
+            r#" l.max_rows(4);"#,
+            r#" render_to("audit", l);"#,
+        ))
+        .unwrap();
+        let [PanelOp::Upsert { id, spec, .. }] = &out.panel_ops[..] else {
+            panic!("expected one upsert, got {:?}", out.panel_ops);
+        };
+        assert_eq!(id, "audit");
+        match spec {
+            RenderSpec::LogTail {
+                title,
+                lines,
+                max_rows,
+            } => {
+                assert_eq!(title, "denials");
+                assert_eq!(max_rows, &Some(4));
+                assert_eq!(lines.len(), 2);
+                assert_eq!(lines[0].level, None);
+                assert_eq!(lines[1].level.as_deref(), Some("error"));
+            }
+            other => panic!("expected a log tail, got {other:?}"),
+        }
     }
 
     #[test]

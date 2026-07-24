@@ -35,6 +35,9 @@ pub fn builtin(name: &str) -> Option<Theme> {
         "catppuccin-macchiato" | "macchiato" => catppuccin_macchiato(),
         "dracula" => dracula(),
         "nord" => nord(),
+        "gruvbox" | "gruvbox-dark" => gruvbox(),
+        "tokyo-night" | "tokyonight" => tokyo_night(),
+        "rose-pine" | "rosé-pine" => rose_pine(),
         _ => return None,
     })
 }
@@ -48,6 +51,9 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "catppuccin-macchiato",
     "dracula",
     "nord",
+    "gruvbox",
+    "tokyo-night",
+    "rose-pine",
 ];
 
 /// `honeycomb` — the original 003 palette, basic-ANSI for maximum compatibility. No extended palette
@@ -203,6 +209,74 @@ pub fn nord() -> Theme {
             ("orange", "#d08770"),
             ("purple", "#b48ead"),
             ("frost", "#5e81ac"),
+        ]),
+    }
+}
+
+/// Gruvbox (dark, medium contrast) — <https://github.com/morhetz/gruvbox>. Extended keys double as
+/// the fixed categorical order `series_palette` looks up (`orange`/`teal`/`purple`), under their
+/// gruvbox names too.
+pub fn gruvbox() -> Theme {
+    Theme {
+        name: "gruvbox".into(),
+        success: h("#b8bb26"),
+        error: h("#fb4934"),
+        info: h("#fabd2f"),
+        dim: h("#928374"),
+        accent: h("#83a598"),
+        text: h("#ebdbb2"),
+        extended: ext(&[
+            ("orange", "#fe8019"),
+            ("peach", "#fe8019"),
+            ("teal", "#8ec07c"),
+            ("aqua", "#8ec07c"),
+            ("purple", "#d3869b"),
+            ("mauve", "#d3869b"),
+        ]),
+    }
+}
+
+/// Tokyo Night (night flavor) — <https://github.com/folke/tokyonight.nvim>.
+pub fn tokyo_night() -> Theme {
+    Theme {
+        name: "tokyo-night".into(),
+        success: h("#9ece6a"),
+        error: h("#f7768e"),
+        info: h("#e0af68"),
+        dim: h("#565f89"),
+        accent: h("#7aa2f7"),
+        text: h("#c0caf5"),
+        extended: ext(&[
+            ("orange", "#ff9e64"),
+            ("peach", "#ff9e64"),
+            ("teal", "#73daca"),
+            ("sky", "#7dcfff"),
+            ("purple", "#bb9af7"),
+            ("mauve", "#bb9af7"),
+        ]),
+    }
+}
+
+/// Rosé Pine (main flavor) — <https://rosepinetheme.com>. No true green in the palette: `foam`
+/// carries success, as the theme's own editor ports do.
+pub fn rose_pine() -> Theme {
+    Theme {
+        name: "rose-pine".into(),
+        success: h("#9ccfd8"),
+        error: h("#eb6f92"),
+        info: h("#f6c177"),
+        dim: h("#6e6a86"),
+        accent: h("#c4a7e7"),
+        text: h("#e0def4"),
+        extended: ext(&[
+            ("rose", "#ebbcba"),
+            ("peach", "#ebbcba"),
+            ("gold", "#f6c177"),
+            ("pine", "#31748f"),
+            ("teal", "#31748f"),
+            ("foam", "#9ccfd8"),
+            ("iris", "#c4a7e7"),
+            ("love", "#eb6f92"),
         ]),
     }
 }

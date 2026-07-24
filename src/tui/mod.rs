@@ -73,7 +73,9 @@ pub async fn run(
     let mut terminal = term::init();
     let mut restore_guard = term::RestoreGuard::terminal();
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-    let mut app = App::new(cols, rows).with_visual(config.visual);
+    let mut app = App::new(cols, rows)
+        .with_visual(config.visual)
+        .with_model(model.id().to_string());
     // bee's own opening: the header fades up and the footer slides in behind it (US5 §1, FR-026).
     app.chrome_cues
         .extend([effects::Chrome::Header, effects::Chrome::Footer]);

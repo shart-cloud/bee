@@ -109,7 +109,7 @@ fn ops_call(id: &str, ops: Vec<bee::render_spec::PanelOp>) -> RecordedCall {
             name: "render".into(),
             arguments: serde_json::json!({ "script": "…" }),
         },
-        result: ToolResult::rendered_with_ops("Rendered.", None, ops),
+        result: ToolResult::rendered_with_ops("Rendered.", None, ops, None),
         audit: vec![],
     }
 }

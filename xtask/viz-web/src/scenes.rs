@@ -480,9 +480,11 @@ fn draw_status(buf: &mut Buffer, area: Rect) {
     .render(area, buf);
 }
 
-/// bee's header bar.
+/// bee's header bar — the same shape `tui::view::render_header` draws: badge, dim model id, and
+/// the activity-phased working indicator right-aligned. Kept in lockstep with the real chrome so
+/// the scene pictures the UI that ships, not an older sketch of it.
 fn draw_header(buf: &mut Buffer, area: Rect) {
-    Paragraph::new(Line::from(vec![
+    let left = Line::from(vec![
         Span::styled(
             " bee ",
             Style::default()
@@ -490,26 +492,32 @@ fn draw_header(buf: &mut Buffer, area: Rect) {
                 .bg(palette::INFO)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" episode 0c4f ", Style::default().fg(palette::TEXT)),
-        dim("· scope: workspace-rw · model: claude-opus-4-8"),
-    ]))
-    .style(Style::default().bg(palette::SURFACE0))
-    .render(area, buf);
+        dim("  claude-opus-4-8"),
+    ]);
+    let right = Span::styled("⠹ working ", Style::default().fg(palette::ACCENT));
+    let pad = (area.width as usize).saturating_sub(left.width() + right.content.chars().count());
+    let mut spans = left.spans;
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(right);
+    Paragraph::new(Line::from(spans)).render(area, buf);
 }
 
-/// bee's footer hint bar.
+/// bee's footer hint bar — accent keys, dim labels, mirroring `tui::view::render_footer`.
 fn draw_footer(buf: &mut Buffer, area: Rect) {
+    let accent = |s: &'static str| Span::styled(s, Style::default().fg(palette::ACCENT));
     Paragraph::new(Line::from(vec![
-        dim(" ^C "),
-        text("quit"),
-        dim("   ^L "),
-        text("clear"),
-        dim("   tab "),
-        text("panels"),
-        dim("   ? "),
-        text("help"),
+        Span::raw(" "),
+        accent("Enter"),
+        dim(" send   "),
+        accent("Tab"),
+        dim(" focus   "),
+        accent("y"),
+        dim(" yank   "),
+        accent("?"),
+        dim(" help   "),
+        accent("q"),
+        dim(" quit"),
     ]))
-    .style(Style::default().bg(palette::SURFACE0))
     .render(area, buf);
 }
 

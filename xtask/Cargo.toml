@@ -17,3 +17,5 @@ exclude = ["viz-web"]
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
+bee = { path = "..", features = ["tui"] }
+ratatui = { version = "0.30", default-features = false }
