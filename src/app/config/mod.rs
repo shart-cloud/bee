@@ -38,12 +38,13 @@ use bee_core::Policy;
 use file::{Layer, LoadError, Origin};
 
 /// Tools an agent gets when nothing configures otherwise. Matches what `bee-repl` has shipped:
-/// `render` is included so the agent can draw in the terminal.
+/// `render` is included so the agent can draw in the terminal, `search` for ripgrep over the scope.
 pub const DEFAULT_TOOLS: &[&str] = &[
     "bash",
     "read_file",
     "write_file",
     "list_directory",
+    "search",
     "render",
 ];
 /// Max model calls per user message — a safety cap against a runaway agent.

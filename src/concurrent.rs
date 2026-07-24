@@ -211,7 +211,9 @@ pub async fn run_concurrent(
                 ..LoopOptions::default()
             };
             let mut t = run_loop(model.as_ref(), &scenario, &mut registry, &mut sb, &opts).await;
-            sb.teardown();
+            if let Err(e) = sb.teardown() {
+                eprintln!("bee: WARNING: {e} — a process may have outlived enforcement");
+            }
             if scenario.mode == ScoringMode::Ctf {
                 t.score = Some(ScoreReport::from_transcript(&t));
             }

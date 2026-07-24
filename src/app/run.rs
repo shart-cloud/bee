@@ -69,6 +69,14 @@ pub struct RunArgs {
     #[arg(long, requires = "task")]
     pub timeout_secs: Option<u64>,
 
+    /// Directory the scenario's `[scenario.workdir]` files and dirs must be created under.
+    ///
+    /// These are written on the host, as the launcher, before any sandbox exists, so the root is an
+    /// operator decision and never a scenario one. Defaults to a per-episode temp directory; a
+    /// scenario path that resolves outside the root is refused rather than rebased.
+    #[arg(long)]
+    pub workdir_root: Option<PathBuf>,
+
     /// Write the transcript JSON here instead of stdout.
     #[arg(long)]
     pub out: Option<PathBuf>,
@@ -117,7 +125,11 @@ impl RunArgs {
     /// checked-in scenario mean different things in different working directories.
     fn resolve_scenario(&self, cfg: &EffectiveConfig) -> Result<Scenario, String> {
         if let Some(path) = &self.scenario {
-            return Scenario::from_path(path).map_err(|e| e.to_string());
+            let mut scenario = Scenario::from_path(path).map_err(|e| e.to_string())?;
+            // The containment root for host-side workdir materialization comes from the operator,
+            // never from the (untrusted) scenario file — see `WorkdirSetup::root`.
+            scenario.workdir.root = self.workdir_root.clone();
+            return Ok(scenario);
         }
         let task = self
             .task
@@ -323,13 +335,20 @@ async fn run_batch_mode(args: &RunArgs, cwd: &Path) -> ExitCode {
     install_presentation_for_batch(args, cwd);
 
     if args.concurrent {
-        return run_concurrent_mode(scenarios, providers, &args.out, progress_sink(args.quiet))
-            .await;
+        return run_concurrent_mode(
+            scenarios,
+            providers,
+            args.workdir_root.clone(),
+            &args.out,
+            progress_sink(args.quiet),
+        )
+        .await;
     }
 
     let config = BatchConfig {
         scenarios,
         providers,
+        workdir_root: args.workdir_root.clone(),
     };
     let result = run_batch(&config, progress_sink(args.quiet)).await;
 
@@ -427,6 +446,7 @@ fn emit_transcripts(
 async fn run_concurrent_mode(
     scenario_paths: Vec<PathBuf>,
     provider_paths: Vec<PathBuf>,
+    workdir_root: Option<PathBuf>,
     out: &Option<PathBuf>,
     progress: Option<bee::ProgressSink>,
 ) -> ExitCode {
@@ -437,7 +457,11 @@ async fn run_concurrent_mode(
     let mut scenarios = Vec::new();
     for p in &scenario_paths {
         match Scenario::from_path(p) {
-            Ok(s) => scenarios.push(s),
+            Ok(mut s) => {
+                // Operator-declared, never scenario-declared (see `WorkdirSetup::root`).
+                s.workdir.root = workdir_root.clone();
+                scenarios.push(s)
+            }
             Err(e) => {
                 eprintln!("{CMD}: scenario {}: {e}", p.display());
                 return ExitCode::from(EX_USAGE);
@@ -473,6 +497,7 @@ async fn run_concurrent_mode(
 async fn run_concurrent_mode(
     _scenario_paths: Vec<PathBuf>,
     _provider_paths: Vec<PathBuf>,
+    _workdir_root: Option<PathBuf>,
     _out: &Option<PathBuf>,
     _progress: Option<bee::ProgressSink>,
 ) -> ExitCode {

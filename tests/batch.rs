@@ -70,6 +70,7 @@ async fn batch_two_mocks_same_scenario() {
     let cfg = BatchConfig {
         scenarios: vec![scn],
         providers: vec![a, b],
+        workdir_root: None,
     };
     let result = run_batch(&cfg, None).await;
 
@@ -116,6 +117,7 @@ api_key_env = "OPENAI_API_KEY"
     let cfg = BatchConfig {
         scenarios: vec![scn],
         providers: vec![good, bad],
+        workdir_root: None,
     };
     let result = run_batch(&cfg, None).await;
 
@@ -172,6 +174,7 @@ async fn parse_failure_is_a_batch_error() {
     let cfg = BatchConfig {
         scenarios: vec![scn],
         providers: vec![good, broken.clone()],
+        workdir_root: None,
     };
     let result = run_batch(&cfg, None).await;
 

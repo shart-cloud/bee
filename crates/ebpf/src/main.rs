@@ -36,8 +36,8 @@ use core::ffi::c_void;
 use aya_ebpf::{
     bindings::path,
     helpers::{
-        bpf_d_path, bpf_get_current_cgroup_id, bpf_get_current_pid_tgid, bpf_ktime_get_ns,
-        bpf_probe_read_kernel,
+        bpf_d_path, bpf_get_current_ancestor_cgroup_id, bpf_get_current_cgroup_id,
+        bpf_get_current_pid_tgid, bpf_ktime_get_ns, bpf_probe_read_kernel,
     },
     macros::{lsm, map},
     maps::{HashMap, PerCpuArray, RingBuf},
@@ -69,6 +69,44 @@ const AF_INET6: u16 = 10;
 #[map]
 static SCOPES: HashMap<u64, ScopeMeta> = HashMap::with_max_entries(1024, 0);
 
+/// How many cgroup ancestor levels [`resolve_scope`] walks. A bee scope lives at
+/// `/sys/fs/cgroup/bee/<id>` — three or four levels from the root — so the scope is always well
+/// within this bound; the levels *below* it (the sub-cgroups a migrating process would create) do
+/// not need to be reached, only the scope itself. Kept small so the walk fits the verifier budget.
+const MAX_CGROUP_DEPTH: i32 = 16;
+
+/// Resolve the bee scope governing the current task, returning its **scope** cgroup id (the map key
+/// for every per-scope rule list) and metadata.
+///
+/// The exact current cgroup id is tried first — the common case, a tool child sitting directly in
+/// its scope. If that is not a bee scope, walk the cgroup ancestors: a process that was privileged
+/// enough to `mkdir` a child cgroup and migrate into it has a *different* current cgroup id, which
+/// an exact-match lookup misses — and a miss means "not ours, allow", i.e. the process walks out of
+/// enforcement. Checking ancestors closes that: the scope is still an ancestor of wherever it moved.
+///
+/// Every caller must key `FS_DENY` / `EXEC_ALLOW` / `NET_ALLOW` and audit records off the returned
+/// scope id, not `bpf_get_current_cgroup_id()`, or a migrated task's rules would not be found.
+fn resolve_scope() -> Option<(u64, ScopeMeta)> {
+    let cur = unsafe { bpf_get_current_cgroup_id() };
+    if let Some(meta) = unsafe { SCOPES.get(&cur) } {
+        return Some((cur, *meta));
+    }
+    // `bpf_get_current_ancestor_cgroup_id(level)` counts levels from the root (level 0). We do not
+    // know the current task's depth, so probe each level up to the bound; levels past the task's own
+    // depth return 0 and are skipped. The scope, being an ancestor, appears at its (shallow) level.
+    let mut level: i32 = 0;
+    while level < MAX_CGROUP_DEPTH {
+        let id = unsafe { bpf_get_current_ancestor_cgroup_id(level) };
+        if id != 0 && id != cur {
+            if let Some(meta) = unsafe { SCOPES.get(&id) } {
+                return Some((id, *meta));
+            }
+        }
+        level += 1;
+    }
+    None
+}
+
 /// Per-cgroup file deny prefixes.
 #[map]
 static FS_DENY: HashMap<u64, DenyList> = HashMap::with_max_entries(1024, 0);
@@ -91,9 +129,8 @@ static AUDIT_RB: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
 
 #[lsm(hook = "socket_connect")]
 pub fn socket_connect(ctx: LsmContext) -> i32 {
-    let cgid = unsafe { bpf_get_current_cgroup_id() };
-    let meta = match unsafe { SCOPES.get(&cgid) } {
-        Some(m) => *m,
+    let (cgid, meta) = match resolve_scope() {
+        Some(s) => s,
         None => return 0,
     };
     if meta.flags & FLAG_NET_ENFORCED == 0 {
@@ -141,9 +178,8 @@ pub fn socket_connect(ctx: LsmContext) -> i32 {
 
 #[lsm(hook = "file_open")]
 pub fn file_open(ctx: LsmContext) -> i32 {
-    let cgid = unsafe { bpf_get_current_cgroup_id() };
-    let meta = match unsafe { SCOPES.get(&cgid) } {
-        Some(m) => *m,
+    let (cgid, meta) = match resolve_scope() {
+        Some(s) => s,
         None => return 0,
     };
     let list = match unsafe { FS_DENY.get(&cgid) } {
@@ -192,9 +228,8 @@ pub fn file_open(ctx: LsmContext) -> i32 {
 
 #[lsm(hook = "bprm_check_security")]
 pub fn bprm_check_security(ctx: LsmContext) -> i32 {
-    let cgid = unsafe { bpf_get_current_cgroup_id() };
-    let meta = match unsafe { SCOPES.get(&cgid) } {
-        Some(m) => *m,
+    let (cgid, meta) = match resolve_scope() {
+        Some(s) => s,
         None => return 0,
     };
     // No exec allowlist for this scope ⇒ exec is not enforced.

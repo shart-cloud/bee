@@ -35,6 +35,7 @@ pub mod render_spec;
 pub mod repl;
 pub mod sandbox;
 pub mod scenario;
+pub mod search;
 // Shared conversation engine (008-grid-tui, plan M2). Gated behind `tui` for now — the inline REPL
 // rewire (task T006) makes it unconditional. Emits `SessionEvent`s both front-ends consume.
 #[cfg(feature = "tui")]

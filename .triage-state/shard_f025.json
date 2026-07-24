@@ -1,18 +1,1 @@
-{
-  "id": "f025",
-  "verdict": "false_positive",
-  "vote_breakdown": {
-    "true_positive": 0,
-    "false_positive": 3,
-    "cannot_verify": 0
-  },
-  "confidence": 9.7,
-  "exclusion_rule": 12,
-  "refute_reasons": [
-    "not_actionable"
-  ],
-  "first_links": [
-    "bee-harness/src/concurrent.rs:114"
-  ],
-  "rationale": "Events do share the bee-concurrent label, but authoritative isolation and routing use kernel cgroup_id and each sandbox rechecks it (bee-userspace/src/audit_demux.rs:110-118; bee-harness/src/sandbox.rs:224-235). The transcript carries scenario identity separately, leaving only low-impact metadata inaccuracy."
-}
+{"id":"f025","verdict":"true_positive","vote_breakdown":{"true_positive":3,"false_positive":0,"cannot_verify":0},"confidence":9.9,"exclusion_rule":null,"refute_reasons":[],"first_links":["src/app/config/mod.rs:361","src/main.rs:194","src/skills/grant.rs:160"],"rationale":"crates/core/src/attenuation.rs:159-167 strips ! before comparing parent and child executable entries, but compilation preserves the distinction as pin_inode. An unpinned child therefore passes a pinned ceiling and avoids the backend's fail-closed rejection at crates/userspace/src/plan.rs:195-201."}

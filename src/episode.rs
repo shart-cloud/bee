@@ -518,16 +518,87 @@ fn infra_error(scenario: &Scenario, model: &dyn Model, detail: String) -> Episod
 /// Create the scenario's declared dirs/files (relative to the current working directory), plus the
 /// planted CTF flag (US3) when one is declared.
 pub(crate) fn materialize_workdir(w: &WorkdirSetup) -> std::io::Result<()> {
+    let root = workdir_root(w)?;
     for d in &w.create_dirs {
-        std::fs::create_dir_all(d)?;
+        std::fs::create_dir_all(contain(&root, d)?)?;
     }
     for f in &w.create_files {
-        write_with_parents(&f.path, f.content.as_bytes())?;
+        write_with_parents(&contain(&root, &f.path)?, f.content.as_bytes())?;
     }
     if let Some(flag) = &w.flag {
-        write_with_parents(&flag.path, flag.value.as_bytes())?;
+        write_with_parents(&contain(&root, &flag.path)?, flag.value.as_bytes())?;
     }
     Ok(())
+}
+
+/// The operator-declared containment root, created if missing, or a fresh per-episode temp
+/// directory when the operator declared none.
+fn workdir_root(w: &WorkdirSetup) -> std::io::Result<std::path::PathBuf> {
+    let root = match &w.root {
+        Some(r) => r.clone(),
+        None => std::env::temp_dir().join(format!("bee-workdir-{}", std::process::id())),
+    };
+    std::fs::create_dir_all(&root)?;
+    // Canonicalize *after* creating it, so the comparison in `contain` is against a real path with
+    // every symlink already resolved — otherwise a symlinked root would fail its own prefix check.
+    root.canonicalize()
+}
+
+/// Resolve a scenario-supplied path against `root` and refuse anything that escapes it.
+///
+/// A relative path is joined onto the root; an absolute path is taken as-is and must already live
+/// under it. Escapes are refused rather than clamped: silently rewriting `/etc/cron.d/x` to
+/// `<root>/etc/cron.d/x` would let a scenario believe it had planted something it had not, and a
+/// CTF scenario would score against a file the agent was never able to find.
+///
+/// Containment is checked against the canonicalized deepest *existing* ancestor, so a symlink
+/// planted anywhere along the path cannot be used to step outside the root. Components below that
+/// ancestor do not exist yet, so they only need to be free of `..`.
+fn contain(root: &std::path::Path, path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    use std::path::Component;
+
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+
+    let refuse = |detail: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "workdir path {} escapes the containment root {}: {detail}",
+                path.display(),
+                root.display()
+            ),
+        )
+    };
+
+    // Walk up to the deepest ancestor that exists, then canonicalize it. Everything below is about
+    // to be created by us, so it cannot be a pre-planted symlink.
+    let mut existing = joined.as_path();
+    loop {
+        if existing.exists() {
+            break;
+        }
+        match existing.parent() {
+            Some(p) => existing = p,
+            None => return Err(refuse("no existing ancestor")),
+        }
+    }
+    let anchor = existing.canonicalize()?;
+    if !anchor.starts_with(root) {
+        return Err(refuse("resolves outside the root"));
+    }
+    // The not-yet-existing tail must not climb back out with `..`.
+    let tail = joined
+        .strip_prefix(existing)
+        .map_err(|_| refuse("cannot relate path to its existing ancestor"))?;
+    if tail.components().any(|c| c == Component::ParentDir) {
+        return Err(refuse("contains a `..` component"));
+    }
+
+    Ok(anchor.join(tail))
 }
 
 /// Write `bytes` to `path`, creating any missing parent directories first.
@@ -693,7 +764,14 @@ pub async fn run_episode(
         opts.refresh_tools = None;
         drop(bridge);
     }
-    sandbox.teardown();
+    // A scope that will not empty means something survived the episode and is about to lose its
+    // enforcement when the engine drops. Surface it on the progress sink rather than discarding it.
+    if let Err(e) = sandbox.teardown() {
+        emit(
+            &opts,
+            format!("WARNING: {e} — a process may have outlived enforcement"),
+        );
+    }
 
     // CTF episodes carry a score derived from the audit trail (US3).
     if scenario.mode == crate::scenario::ScoringMode::Ctf {
@@ -919,5 +997,126 @@ mod mcp_cgroup_spike {
             let _ = e.scope.teardown();
         }
         let _ = std::fs::remove_dir_all(tmp);
+    }
+}
+
+#[cfg(test)]
+mod workdir_containment_tests {
+    use super::{materialize_workdir, WorkdirSetup};
+    use crate::scenario::{FileSpec, FlagSpec};
+    use std::path::PathBuf;
+
+    /// A fresh containment root, plus a sibling directory that is deliberately *outside* it.
+    fn roots(name: &str) -> (PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("bee-contain-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("root");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        (root, outside)
+    }
+
+    fn setup(root: &std::path::Path) -> WorkdirSetup {
+        WorkdirSetup {
+            root: Some(root.to_path_buf()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn relative_paths_land_under_the_root() {
+        let (root, _) = roots("rel");
+        let mut w = setup(&root);
+        w.create_dirs = vec!["project/src".into()];
+        w.create_files = vec![FileSpec {
+            path: "project/src/lib.rs".into(),
+            content: "// source\n".into(),
+        }];
+        materialize_workdir(&w).expect("relative paths are contained");
+        assert!(root.join("project/src/lib.rs").is_file());
+    }
+
+    #[test]
+    fn absolute_path_under_the_root_is_allowed() {
+        let (root, _) = roots("abs-in");
+        let mut w = setup(&root);
+        w.flag = Some(FlagSpec {
+            path: root.join("secrets/flag.txt"),
+            value: "FLAG{ok}".into(),
+        });
+        materialize_workdir(&w).expect("an absolute path inside the root is fine");
+        assert_eq!(
+            std::fs::read_to_string(root.join("secrets/flag.txt")).unwrap(),
+            "FLAG{ok}"
+        );
+    }
+
+    #[test]
+    fn absolute_path_outside_the_root_is_refused() {
+        let (root, outside) = roots("abs-out");
+        let mut w = setup(&root);
+        w.create_files = vec![FileSpec {
+            path: outside.join("pwned"),
+            content: "x".into(),
+        }];
+        materialize_workdir(&w).expect_err("an absolute escape must be refused");
+        assert!(
+            !outside.join("pwned").exists(),
+            "host file was written anyway"
+        );
+    }
+
+    #[test]
+    fn parent_traversal_is_refused() {
+        let (root, outside) = roots("dotdot");
+        let mut w = setup(&root);
+        w.create_files = vec![FileSpec {
+            path: "../outside/pwned".into(),
+            content: "x".into(),
+        }];
+        materialize_workdir(&w).expect_err("`..` traversal must be refused");
+        assert!(
+            !outside.join("pwned").exists(),
+            "host file was written anyway"
+        );
+    }
+
+    /// The check has to resolve symlinks, not just look at the literal path: a scenario that names
+    /// a relative, `..`-free path can still land outside the root if an ancestor is a link.
+    #[test]
+    #[cfg(unix)]
+    fn symlink_crossing_the_root_is_refused() {
+        let (root, outside) = roots("symlink");
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+        let mut w = setup(&root);
+        w.create_files = vec![FileSpec {
+            path: "escape/pwned".into(),
+            content: "x".into(),
+        }];
+        materialize_workdir(&w).expect_err("a symlinked ancestor must be refused");
+        assert!(
+            !outside.join("pwned").exists(),
+            "host file was written anyway"
+        );
+    }
+
+    /// Without an operator-declared root the default is a temp directory — never the CWD, and never
+    /// wherever the scenario happened to point.
+    #[test]
+    fn default_root_contains_an_absolute_escape() {
+        let (_, outside) = roots("default");
+        let w = WorkdirSetup {
+            create_files: vec![FileSpec {
+                path: outside.join("pwned"),
+                content: "x".into(),
+            }],
+            ..Default::default()
+        };
+        materialize_workdir(&w).expect_err("default root must still contain");
+        assert!(
+            !outside.join("pwned").exists(),
+            "host file was written anyway"
+        );
     }
 }

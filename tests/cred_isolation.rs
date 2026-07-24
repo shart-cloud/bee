@@ -1,6 +1,7 @@
 //! FR-018 host test (T011): a spawned tool child must NOT inherit the provider key env var, even
-//! though the harness process holds it. A non-stripped var is the control — it *is* visible, so the
-//! test proves the strip did the work (not that the env was empty).
+//! though the harness process holds it — nor any other ambient credential the operator's shell
+//! happens to carry. `PATH` is the control: it *is* visible, so the test proves the child got a
+//! real (if narrow) environment rather than an empty one.
 
 use bee::provider::mock_model::MockModel;
 use bee::provider::{ToolCall, Turn};
@@ -28,17 +29,18 @@ fn scenario() -> Scenario {
 
 #[tokio::test]
 async fn tool_child_cannot_read_provider_key() {
-    // SAFETY: single-threaded within this test's control; set both a "secret" key var and a
-    // non-secret control var in the harness (parent) environment.
+    // SAFETY: single-threaded within this test's control. `FAKE_PROVIDER_KEY` is the configured
+    // provider key; `AWS_SECRET_ACCESS_KEY` stands for every ambient credential the old four-name
+    // denylist never knew about and therefore handed straight to the model.
     std::env::set_var("FAKE_PROVIDER_KEY", "sk-super-secret-value");
-    std::env::set_var("FAKE_VISIBLE_VAR", "i-am-visible");
+    std::env::set_var("AWS_SECRET_ACCESS_KEY", "ambient-cloud-credential");
 
     let model = MockModel::scripted(vec![
         Turn::calls(vec![ToolCall {
             id: "1".into(),
             name: "bash".into(),
             arguments: serde_json::json!({
-                "command": "echo KEY=[$FAKE_PROVIDER_KEY] VIS=[$FAKE_VISIBLE_VAR]"
+                "command": "echo KEY=[$FAKE_PROVIDER_KEY] AMB=[$AWS_SECRET_ACCESS_KEY] PATH_SET=[${PATH:+yes}]"
             }),
         }]),
         Turn::text("done"),
@@ -67,12 +69,23 @@ async fn tool_child_cannot_read_provider_key() {
         out.contains("KEY=[]"),
         "key var should be empty in the child: {out}"
     );
-    // Control: a var we did NOT strip is still visible, proving the strip is selective.
+    // An ambient credential the strip list never named must be gone too — the allowlist, not the
+    // denylist, is what makes this hold.
     assert!(
-        out.contains("i-am-visible"),
-        "non-stripped control var missing: {out}"
+        !out.contains("ambient-cloud-credential"),
+        "ambient credential leaked to tool child: {out}"
+    );
+    assert!(
+        out.contains("AMB=[]"),
+        "ambient credential should be empty in the child: {out}"
+    );
+    // Control: an allowlisted var IS present, proving the child has a usable environment and the
+    // assertions above are not just measuring an empty one.
+    assert!(
+        out.contains("PATH_SET=[yes]"),
+        "allowlisted PATH missing from the child: {out}"
     );
 
     std::env::remove_var("FAKE_PROVIDER_KEY");
-    std::env::remove_var("FAKE_VISIBLE_VAR");
+    std::env::remove_var("AWS_SECRET_ACCESS_KEY");
 }

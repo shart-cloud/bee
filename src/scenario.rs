@@ -43,6 +43,15 @@ pub struct WorkdirSetup {
     pub create_files: Vec<FileSpec>,
     #[serde(default)]
     pub flag: Option<FlagSpec>,
+    /// The directory every materialized path must resolve under.
+    ///
+    /// **`serde(skip)` is the security property, not a convenience.** These writes happen on the
+    /// trusted host, as the launcher (root, under `--features enforce`), *before* any sandbox
+    /// exists — so a scenario that could name its own containment root could name `/` and overwrite
+    /// anything the launcher can reach. The scenario proposes paths; only the operator says where
+    /// they may land, via `--workdir-root`. `None` means a fresh per-episode temp directory.
+    #[serde(skip)]
+    pub root: Option<PathBuf>,
 }
 
 /// A scenario: policy + task + limits + enabled tools.

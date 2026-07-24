@@ -2,9 +2,15 @@
   "triage_completed": true,
   "triage_context": {
     "mode": "interactive",
-    "environment": "CLI/agent harness; operator configuration is trusted, but repositories, models, skills, tool output, and MCP responses may be malicious.",
+    "environment": "CLI/batch tool and interactive REPL. Operator-supplied configuration and direct operator inputs are trusted; repository files, scenarios, project configuration, model output, tool output, skills, and MCP content are untrusted.",
     "threat_model": [
-      "Confused-deputy privilege escalation causing unauthorized host access, command execution, secret exposure, or network egress."
+      "Privilege escalation to administrator or root (highest priority)",
+      "Sandbox or confinement escape (highest priority)",
+      "Host credential and sensitive-data exposure",
+      "Supply-chain compromise of downstream users",
+      "Unauthorized network or service access",
+      "Integrity loss in policy, audit, transcript, or evaluation evidence",
+      "Denial of service through algorithmic or unbounded in-process work"
     ],
     "scoring": "Derived HIGH/MEDIUM/LOW from preconditions",
     "noise_tolerance": "precision",
@@ -12,39 +18,39 @@
     "repo": "/home/jg/git/bee"
   },
   "summary": {
-    "input_count": 27,
-    "duplicates": 0,
-    "false_positives": 9,
-    "true_positives": 18,
-    "needs_manual_test": 2,
+    "input_count": 53,
+    "duplicates": 12,
+    "false_positives": 11,
+    "true_positives": 30,
+    "needs_manual_test": 1,
     "by_severity": {
       "HIGH": 6,
-      "MEDIUM": 11,
-      "LOW": 1
+      "MEDIUM": 24,
+      "LOW": 0
     }
   },
   "findings": [
     {
-      "id": "f008",
-      "source": "VULN-FINDINGS.json#7",
-      "title": "Every discovered skill receives capability grants before any skill is invoked",
-      "file": "bee-harness/src/episode.rs",
-      "line": 502,
-      "category": "capability-grant-without-invocation",
+      "id": "f018",
+      "source": "VULN-FINDINGS.json#17",
+      "title": "Provider TOML can send an arbitrary environment secret to an attacker endpoint",
+      "file": "src/batch.rs",
+      "line": 133,
+      "category": "credential-exposure",
       "claimed_severity": "HIGH",
       "verdict": "true_positive",
       "verify_verdict": "exploitable",
-      "confidence": 10,
+      "confidence": 10.0,
       "severity": "HIGH",
       "severity_label": "HIGH",
-      "severity_alignment": 3,
+      "severity_alignment": 4,
       "preconditions": [
-        "A configured skill root includes an attacker-controlled skill with a tool request",
-        "An attacker-controlled model invokes the registered tool"
+        "attacker-controlled provider TOML selected in batch",
+        "named host secret exists"
       ],
-      "access_level": "unauthenticated_remote",
-      "threat_match": "Unauthorized command/tool authority",
-      "rationale": "run_episode resolves grants for every discovered skill before invocation (bee-harness/src/episode.rs:596-608; bee-harness/src/skills/grant.rs:147-183). Hidden or uninvoked malicious project skills can therefore globally register tools, and tool-only requests are outside the policy ceiling.\n\nTwo realistic conditions yield MEDIUM, raised to HIGH because the defect directly grants unauthorized command/tool authority.",
+      "access_level": "authenticated",
+      "threat_match": "credential disclosure and unauthorized egress",
+      "rationale": "Batch mode passes repository provider files directly to run_batch, which reads the configured api_key_env at src/batch.rs:128-134. The same object controls base_url and src/provider/rig_model.rs:209-220 binds the selected secret to that arbitrary compatible endpoint without the ordinary project-config trust rejection.\n\nRanking: authenticated access; 2 preconditions; threat match: credential disclosure and unauthorized egress. Derived HIGH.",
       "vote_breakdown": {
         "true_positive": 3,
         "false_positive": 0,
@@ -53,46 +59,7 @@
       "refute_reasons": [],
       "exclusion_rule": null,
       "first_links": [
-        "bee-harness/src/episode.rs:597"
-      ],
-      "duplicate_of": null,
-      "absorbed": [],
-      "owner_hint": "top committer: jg (9/9 recent commits); no CODEOWNERS entry",
-      "missing_fields": [
-        "preconditions"
-      ]
-    },
-    {
-      "id": "f012",
-      "source": "VULN-FINDINGS.json#11",
-      "title": "Background descendants survive scope teardown and become unsandboxed when the engine detaches",
-      "file": "bee-userspace/src/cgroup.rs",
-      "line": 42,
-      "category": "auth-bypass",
-      "claimed_severity": "HIGH",
-      "verdict": "true_positive",
-      "verify_verdict": "exploitable",
-      "confidence": 10,
-      "severity": "HIGH",
-      "severity_label": "HIGH",
-      "severity_alignment": 3,
-      "preconditions": [
-        "An attacker-controlled tool daemonizes a descendant and redirects inherited pipes",
-        "The episode ends while the descendant remains alive"
-      ],
-      "access_level": "unauthenticated_remote",
-      "threat_match": "Sandbox escape and unauthorized command execution",
-      "rationale": "Tool execution tracks only the direct child, while teardown merely removes the cgroup and ignores a populated-cgroup failure (bee-harness/src/tools/exec.rs:38-55; bee-userspace/src/cgroup.rs:41-44; bee-harness/src/sandbox.rs:240-249). Dropping Engine then detaches enforcement, leaving a daemonized descendant alive.\n\nTwo realistic conditions yield MEDIUM, raised to HIGH for a direct enforcement escape.",
-      "vote_breakdown": {
-        "true_positive": 3,
-        "false_positive": 0,
-        "cannot_verify": 0
-      },
-      "refute_reasons": [],
-      "exclusion_rule": null,
-      "first_links": [
-        "bee-userspace/src/lib.rs:329",
-        "bee-harness/src/sandbox.rs:244"
+        "src/app/run.rs:334"
       ],
       "duplicate_of": null,
       "absorbed": [],
@@ -104,62 +71,24 @@
     {
       "id": "f020",
       "source": "VULN-FINDINGS.json#19",
-      "title": "Stdio MCP servers inherit host credentials outside a small name-based denylist",
-      "file": "bee-harness/src/mcp/transport.rs",
-      "line": 42,
-      "category": "credential-boundary-bypass",
+      "title": "Repository-controlled workdir paths permit arbitrary host overwrite before sandboxing",
+      "file": "src/episode.rs",
+      "line": 579,
+      "category": "path-traversal",
       "claimed_severity": "HIGH",
       "verdict": "true_positive",
       "verify_verdict": "exploitable",
-      "confidence": 10,
-      "severity": "HIGH",
-      "severity_label": "HIGH",
-      "severity_alignment": 3,
-      "preconditions": [
-        "Trusted configuration launches a malicious or compromised stdio MCP",
-        "The harness has a useful ambient credential outside the strip list"
-      ],
-      "access_level": "authenticated",
-      "threat_match": "Secret exposure",
-      "rationale": "spawn_stdio creates an ordinary inherited-environment command (bee-harness/src/mcp/bridge.rs:291-301; bee-harness/src/mcp/transport.rs:40-48). The sandbox removes only a small list of provider and configured token names and never env_clear's, so a malicious MCP child receives unrelated cloud, Git, proxy, and agent credentials.\n\nTwo realistic preconditions yield MEDIUM, raised to HIGH for direct secret exposure.",
-      "vote_breakdown": {
-        "true_positive": 3,
-        "false_positive": 0,
-        "cannot_verify": 0
-      },
-      "refute_reasons": [],
-      "exclusion_rule": null,
-      "first_links": [
-        "bee-harness/src/mcp/bridge.rs:296"
-      ],
-      "duplicate_of": null,
-      "absorbed": [],
-      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
-      "missing_fields": [
-        "preconditions"
-      ]
-    },
-    {
-      "id": "f014",
-      "source": "VULN-FINDINGS.json#13",
-      "title": "Sandboxed tools inherit the privileged launcher's UID and BPF/cgroup capabilities",
-      "file": "bee-userspace/src/spawn.rs",
-      "line": 92,
-      "category": "privilege-escalation",
-      "claimed_severity": "HIGH",
-      "verdict": "true_positive",
-      "verify_verdict": "exploitable",
-      "confidence": 9.7,
+      "confidence": 10.0,
       "severity": "HIGH",
       "severity_label": "HIGH",
       "severity_alignment": 4,
       "preconditions": [
-        "Bee is launched with root or equivalent enforcement capabilities",
-        "An attacker-controlled source reaches a process-backed tool"
+        "attacker-controlled scenario selected",
+        "launcher can write target"
       ],
-      "access_level": "unauthenticated_remote",
-      "threat_match": "Privilege escalation and unauthorized command execution",
-      "rationale": "Model-controlled tool execution reaches hardened_command in the enforced sandbox (bee-harness/src/tools/bash.rs:43-52; bee-harness/src/sandbox.rs:164-190). Its pre-exec hardening disables dumps but never drops UID/GID/capabilities or sets no_new_privs (bee-userspace/src/spawn.rs:92-97; bee-hardening/src/lib.rs:29-32), so a privileged loader spawns privileged tools.\n\nTwo conditions yield MEDIUM, raised to HIGH for the exact privileged confused-deputy threat.",
+      "access_level": "authenticated",
+      "threat_match": "host modification and persistence",
+      "rationale": "Scenario validation does not constrain create_dirs, create_files, or flag paths at src/scenario.rs:144-200. src/episode.rs:579-621 materializes them with host create_dir_all and write before constructing the sandbox, allowing absolute, parent-traversal, and symlink-crossing overwrites.\n\nRanking: authenticated access; 2 preconditions; threat match: host modification and persistence. Derived HIGH.",
       "vote_breakdown": {
         "true_positive": 3,
         "false_positive": 0,
@@ -168,12 +97,13 @@
       "refute_reasons": [],
       "exclusion_rule": null,
       "first_links": [
-        "bee-harness/src/sandbox.rs:178",
-        "bee-harness/src/sandbox.rs:168"
+        "src/app/run.rs:241"
       ],
       "duplicate_of": null,
-      "absorbed": [],
-      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
+      "absorbed": [
+        "f019"
+      ],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
       "missing_fields": [
         "preconditions"
       ]
@@ -181,24 +111,24 @@
     {
       "id": "f022",
       "source": "VULN-FINDINGS.json#21",
-      "title": "Tool grants are not bounded by the capability ceiling",
-      "file": "bee-harness/src/skills/grant.rs",
-      "line": 142,
-      "category": "tool-authority-bypass",
+      "title": "Background descendants survive tool deadlines and outlive enforcement",
+      "file": "src/tools/exec.rs",
+      "line": 38,
+      "category": "sandbox-bypass",
       "claimed_severity": "HIGH",
       "verdict": "true_positive",
       "verify_verdict": "exploitable",
-      "confidence": 9.7,
+      "confidence": 10.0,
       "severity": "HIGH",
       "severity_label": "HIGH",
-      "severity_alignment": 3,
+      "severity_alignment": 4,
       "preconditions": [
-        "A malicious skill requests a recognized security-relevant tool absent from the base registry",
-        "Grant resolution uses AllowWithinCeiling or receives approval"
+        "process tool daemonizes redirected descendant",
+        "episode ends while descendant lives"
       ],
       "access_level": "authenticated",
-      "threat_match": "Unauthorized command execution",
-      "rationale": "The ceiling derivation covers only filesystem Policy, while requested tools are appended after approval (bee-harness/src/skills/grant.rs:152-182,195-207). Episode setup uses AllowWithinCeiling and registers those tools before the loop, so a malicious tool-only skill can add bash or write_file outside the operator's tool set.\n\nTwo realistic conditions yield MEDIUM, raised to HIGH for confused-deputy command authority.",
+      "threat_match": "direct sandbox escape",
+      "rationale": "run_child waits and kills only the direct shell at src/tools/exec.rs:30-55. A redirected background descendant keeps the cgroup populated; src/sandbox.rs:241-250 ignores remove_dir failure and dropping the sandbox detaches its Engine, leaving the descendant alive without enforcement.\n\nRanking: authenticated access; 2 preconditions; threat match: direct sandbox escape. Derived HIGH.",
       "vote_breakdown": {
         "true_positive": 3,
         "false_positive": 0,
@@ -207,52 +137,175 @@
       "refute_reasons": [],
       "exclusion_rule": null,
       "first_links": [
-        "bee-harness/src/episode.rs:743",
-        "bee-harness/src/episode.rs:597"
+        "src/tools/bash.rs:48"
       ],
       "duplicate_of": null,
-      "absorbed": [],
-      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
+      "absorbed": [
+        "f011"
+      ],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
       "missing_fields": [
         "preconditions"
       ]
     },
     {
-      "id": "f007",
-      "source": "VULN-FINDINGS.json#6",
-      "title": "Repository-controlled workdir paths are written on the trusted host before sandboxing",
-      "file": "bee-harness/src/episode.rs",
-      "line": 424,
-      "category": "arbitrary-host-write",
+      "id": "f030",
+      "source": "VULN-FINDINGS.json#29",
+      "title": "Credential stripping denylist exposes ambient secrets to model tools",
+      "file": "src/sandbox.rs",
+      "line": 20,
+      "category": "sensitive-data-exposure",
       "claimed_severity": "HIGH",
       "verdict": "true_positive",
       "verify_verdict": "exploitable",
-      "confidence": 9,
+      "confidence": 9.6,
       "severity": "HIGH",
       "severity_label": "HIGH",
-      "severity_alignment": 1,
+      "severity_alignment": 4,
       "preconditions": [
-        "A trusted relative materialization target crosses a repository-controlled symlink",
-        "The escaped host target is writable by the launcher"
+        "untrusted model can invoke process tool",
+        "useful ambient credential outside strip list"
       ],
-      "access_level": "unauthenticated_remote",
-      "threat_match": "Unauthorized host access",
-      "rationale": "materialize_workdir performs unanchored host writes before sandbox construction (bee-harness/src/episode.rs:518-538,577-619). Although scenario paths are trusted config, an untrusted repository can pre-place a symlink beneath a trusted relative target, so the winning votes found a reachable host-write escape.\n\nTwo conditions yield MEDIUM, raised to HIGH for direct unauthorized host access; only the repository-symlink variant survives the trusted-config boundary.",
+      "access_level": "authenticated",
+      "threat_match": "credential disclosure and downstream access",
+      "rationale": "Tool children inherit the parent environment because hardened_command does not env_clear. src/sandbox.rs:18-25,103-111,254-258 removes only a short provider/MCP list, so model-controlled bash can read other ambient cloud, GitHub, Kubernetes, or agent credentials and return them to the model.\n\nRanking: authenticated access; 2 preconditions; threat match: credential disclosure and downstream access. Derived HIGH.",
       "vote_breakdown": {
-        "true_positive": 2,
-        "false_positive": 1,
+        "true_positive": 3,
+        "false_positive": 0,
         "cannot_verify": 0
       },
-      "refute_reasons": [
-        "implausible_trigger"
-      ],
-      "exclusion_rule": 8,
+      "refute_reasons": [],
+      "exclusion_rule": null,
       "first_links": [
-        "bee-harness/src/episode.rs:577"
+        "src/sandbox.rs:169",
+        "src/tools/exec.rs:25"
       ],
       "duplicate_of": null,
       "absorbed": [],
-      "owner_hint": "top committer: jg (9/9 recent commits); no CODEOWNERS entry",
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f028",
+      "source": "VULN-FINDINGS.json#27",
+      "title": "Privileged-target refusal checks only the first executable",
+      "file": "crates/userspace/src/spawn.rs",
+      "line": 74,
+      "category": "privileged-target-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.5,
+      "severity": "HIGH",
+      "severity_label": "HIGH",
+      "severity_alignment": 3,
+      "preconditions": [
+        "attacker controls process tool",
+        "usable setid/capability binary accessible"
+      ],
+      "access_level": "authenticated",
+      "threat_match": "privilege escalation",
+      "rationale": "hardened_command checks privileged metadata only on the initial program at crates/userspace/src/spawn.rs:74-80. Pre-exec hardening sets neither no_new_privs nor credential drops, so an ordinary shell can later execute a setid or file-capability image, especially when exec policy is absent.\n\nRanking: authenticated access; 2 preconditions; threat match: privilege escalation. Derived HIGH.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "src/sandbox.rs:179",
+        "src/tools/exec.rs:25"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f026",
+      "source": "VULN-FINDINGS.json#25",
+      "title": "Exact cgroup-ID lookup lets migrated processes leave enforcement",
+      "file": "crates/ebpf/src/main.rs",
+      "line": 95,
+      "category": "auth-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.2,
+      "severity": "HIGH",
+      "severity_label": "HIGH",
+      "severity_alignment": 4,
+      "preconditions": [
+        "attacker-controlled scoped process",
+        "inherited or delegated cgroup migration authority"
+      ],
+      "access_level": "authenticated",
+      "threat_match": "direct sandbox escape",
+      "rationale": "All three LSM hooks use only the exact current cgroup ID and allow when SCOPES lacks it at crates/ebpf/src/main.rs:92-100,142-151,193-204. Child hardening drops no privilege, so a privileged or delegated workload can migrate to another cgroup without any ancestor lookup.\n\nRanking: authenticated access; 2 preconditions; threat match: direct sandbox escape. Derived HIGH.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "src/episode.rs:787",
+        "src/sandbox.rs:179",
+        "src/tools/exec.rs:25"
+      ],
+      "duplicate_of": null,
+      "absorbed": [
+        "f015"
+      ],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f023",
+      "source": "VULN-FINDINGS.json#22",
+      "title": "Scenario ID escapes the batch transcript output directory",
+      "file": "src/app/run.rs",
+      "line": 407,
+      "category": "path-traversal",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 10.0,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": 2,
+      "preconditions": [
+        "attacker scenario id processed in batch",
+        "escaped parent writable",
+        "model suffix predictable"
+      ],
+      "access_level": "local",
+      "threat_match": "host-file and transcript integrity",
+      "rationale": "Scenario validation only rejects an empty ID at src/scenario.rs:144-155. Batch output interpolates the untrusted ID and joins it beneath --out at src/app/run.rs:395-409, so parent or absolute components escape before std::fs::write.\n\nRanking: local access; 3 preconditions; threat match: host-file and transcript integrity. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "src/app/run.rs:350",
+        "src/scenario.rs:104"
+      ],
+      "duplicate_of": null,
+      "absorbed": [
+        "f024"
+      ],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
       "missing_fields": [
         "preconditions"
       ]
@@ -260,26 +313,26 @@
     {
       "id": "f001",
       "source": "VULN-FINDINGS.json#0",
-      "title": "Removing all child write grants disables the parent's default-deny write boundary",
-      "file": "bee-core/src/attenuation.rs",
-      "line": 62,
-      "category": "capability-widening",
+      "title": "Child policies can omit parent deny regions and regain default-allowed reads",
+      "file": "crates/core/src/attenuation.rs",
+      "line": 63,
+      "category": "attenuation-bypass",
       "claimed_severity": "HIGH",
       "verdict": "true_positive",
       "verify_verdict": "exploitable",
       "confidence": 10.0,
       "severity": "MEDIUM",
       "severity_label": "MEDIUM",
-      "severity_alignment": -3,
+      "severity_alignment": -2,
       "preconditions": [
-        "Enforcement mode with a parent write grant",
-        "Attacker-controlled child policy removes all filesystem grants",
-        "Operator launches the derived child",
-        "A same-UID writable host path exists outside the grant"
+        "enforced filesystem mediation",
+        "trusted parent denial",
+        "untrusted child omits denial",
+        "target readable under host DAC"
       ],
       "access_level": "local",
-      "threat_match": "Unauthorized host access",
-      "rationale": "check_filesystem iterates only child entries, so an empty child succeeds (bee-core/src/attenuation.rs:63). The live CLI compiles the derived child directly (bee-cli/src/main.rs:169-184). Planning leaves FLAG_FS_WRITE_DEFAULT_DENY unset without a child write rule (bee-userspace/src/plan.rs:48), and unmatched writes are then allowed (bee-ebpf/src/main.rs:331); the parent boundary does not survive.\n\nMultiple local preconditions yield LOW, raised once to MEDIUM for direct unauthorized host access; claimed HIGH is inflated.",
+      "threat_match": "sandbox-policy bypass and host data/credential exposure",
+      "rationale": "Untrusted project configuration can reach ceiling.derive at src/app/config/mod.rs:353-362. crates/core/src/attenuation.rs:62-90 checks only child filesystem entries and returns the unmerged request, while crates/ebpf/src/main.rs:331-335 allows unmatched reads, so an omitted parent deny concretely widens authority.\n\nRanking: local access; 4 preconditions; threat match: sandbox-policy bypass and host data/credential exposure. Derived MEDIUM.",
       "vote_breakdown": {
         "true_positive": 3,
         "false_positive": 0,
@@ -288,13 +341,13 @@
       "refute_reasons": [],
       "exclusion_rule": null,
       "first_links": [
-        "bee-cli/src/main.rs:104",
-        "bee-cli/src/main.rs:169",
-        "bee-core/src/attenuation.rs:54"
+        "src/app/config/mod.rs:361"
       ],
       "duplicate_of": null,
-      "absorbed": [],
-      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
+      "absorbed": [
+        "f032"
+      ],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
       "missing_fields": [
         "preconditions"
       ]
@@ -302,26 +355,26 @@
     {
       "id": "f002",
       "source": "VULN-FINDINGS.json#1",
-      "title": "An empty child executable allowlist turns restricted execution into unrestricted execution",
-      "file": "bee-core/src/attenuation.rs",
-      "line": 159,
-      "category": "capability-widening",
+      "title": "A child policy can override protected defaults absent from the attenuation ceiling",
+      "file": "crates/core/src/compiler.rs",
+      "line": 86,
+      "category": "attenuation-bypass",
       "claimed_severity": "HIGH",
       "verdict": "true_positive",
       "verify_verdict": "exploitable",
       "confidence": 10.0,
       "severity": "MEDIUM",
       "severity_label": "MEDIUM",
-      "severity_alignment": -3,
+      "severity_alignment": -2,
       "preconditions": [
-        "Enforcement mode with a parent exec allowlist",
-        "Attacker controls a child policy with an empty exec list",
-        "Operator launches the derived child",
-        "A disallowed executable is accessible"
+        "broad trusted parent grant",
+        "protected default exists only at compile time",
+        "untrusted child adds specific protected-path grant",
+        "host DAC permits access"
       ],
       "access_level": "local",
-      "threat_match": "Unauthorized command execution",
-      "rationale": "The production child path passes the child through parent.derive at bee-cli/src/main.rs:169. check_exec iterates only child entries (bee-core/src/attenuation.rs:160-174), so an empty child succeeds; compilation/planning omit EXEC_ALLOW (bee-core/src/compiler.rs:102-113; bee-userspace/src/plan.rs:61-64), and the LSM permits all execution when the map entry is absent (bee-ebpf/src/main.rs:200-204).\n\nLocal delegated-policy control and an accessible binary yield LOW, raised to MEDIUM for direct command execution.",
+      "threat_match": "host credential exposure and policy bypass",
+      "rationale": "Protected defaults are introduced only during compilation at crates/core/src/compiler.rs:83-100, after attenuation. A specific child grant can pass crates/core/src/attenuation.rs:101-155 and then outrank or replace the injected protected rule during crates/userspace/src/plan.rs:151-173.\n\nRanking: local access; 4 preconditions; threat match: host credential exposure and policy bypass. Derived MEDIUM.",
       "vote_breakdown": {
         "true_positive": 3,
         "false_positive": 0,
@@ -330,39 +383,40 @@
       "refute_reasons": [],
       "exclusion_rule": null,
       "first_links": [
-        "bee-cli/src/main.rs:169",
-        "bee-cli/src/main.rs:104"
+        "src/app/config/mod.rs:361",
+        "src/app/session.rs:311",
+        "src/app/session.rs:312"
       ],
       "duplicate_of": null,
       "absorbed": [],
-      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
       "missing_fields": [
         "preconditions"
       ]
     },
     {
-      "id": "f003",
-      "source": "VULN-FINDINGS.json#2",
-      "title": "An empty child network allowlist disables egress enforcement",
-      "file": "bee-core/src/attenuation.rs",
-      "line": 177,
-      "category": "capability-widening",
+      "id": "f012",
+      "source": "VULN-FINDINGS.json#11",
+      "title": "An empty child network list disables the parent egress allowlist",
+      "file": "crates/userspace/src/plan.rs",
+      "line": 45,
+      "category": "network-policy-bypass",
       "claimed_severity": "HIGH",
       "verdict": "true_positive",
       "verify_verdict": "exploitable",
       "confidence": 10.0,
       "severity": "MEDIUM",
       "severity_label": "MEDIUM",
-      "severity_alignment": -3,
+      "severity_alignment": -2,
       "preconditions": [
-        "Enforcement mode with a parent network allowlist",
-        "Attacker controls an empty child network list",
-        "Operator launches the derived child",
-        "A disallowed destination is reachable"
+        "restrictive parent network list",
+        "untrusted empty child list",
+        "child planning clears enforcement",
+        "reachable destination"
       ],
       "access_level": "local",
-      "threat_match": "Unauthorized network egress",
-      "rationale": "check_network vacuously accepts an empty child list (bee-core/src/attenuation.rs:177; confirmed by bee-core/tests/attenuation.rs:95). Compilation produces no network rules, planning leaves FLAG_NET_ENFORCED unset (bee-userspace/src/plan.rs:45), and socket_connect permits every connection when that flag is absent (bee-ebpf/src/main.rs:99). The production path invokes derive at bee-cli/src/main.rs:169.\n\nLocal scoped execution and delegated-policy control yield LOW, raised to MEDIUM for direct network egress.",
+      "threat_match": "attenuation bypass and unauthorized network access",
+      "rationale": "Network attenuation checks only child destinations at crates/core/src/attenuation.rs:177-186, so an empty child passes. crates/userspace/src/plan.rs:45-47 clears FLAG_NET_ENFORCED and crates/ebpf/src/main.rs:94-101 then allows all connections for the exact child cgroup.\n\nRanking: local access; 4 preconditions; threat match: attenuation bypass and unauthorized network access. Derived MEDIUM.",
       "vote_breakdown": {
         "true_positive": 3,
         "false_positive": 0,
@@ -371,22 +425,67 @@
       "refute_reasons": [],
       "exclusion_rule": null,
       "first_links": [
-        "bee-cli/src/main.rs:104",
-        "bee-cli/src/main.rs:169"
+        "src/app/config/mod.rs:361",
+        "src/main.rs:194",
+        "src/main.rs:221"
       ],
       "duplicate_of": null,
       "absorbed": [],
-      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
       "missing_fields": [
         "preconditions"
       ]
     },
     {
-      "id": "f005",
-      "source": "VULN-FINDINGS.json#4",
-      "title": "Path rules can be bypassed by relinking or renaming denied files",
-      "file": "bee-ebpf/src/main.rs",
-      "line": 142,
+      "id": "f014",
+      "source": "VULN-FINDINGS.json#13",
+      "title": "An empty child executable list turns a restricted parent into unrestricted execution",
+      "file": "crates/userspace/src/plan.rs",
+      "line": 63,
+      "category": "exec-allowlist-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 10.0,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": -2,
+      "preconditions": [
+        "restrictive parent exec list",
+        "untrusted empty child list",
+        "missing child map",
+        "accessible disallowed binary"
+      ],
+      "access_level": "local",
+      "threat_match": "exec attenuation failure and escape",
+      "rationale": "Executable attenuation validates only child-listed entries at crates/core/src/attenuation.rs:159-174, so an empty list passes. Planning installs no EXEC_ALLOW and crates/ebpf/src/main.rs:193-204 interprets the absent exact-child entry as unrestricted execution.\n\nRanking: local access; 4 preconditions; threat match: exec attenuation failure and escape. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "src/app/config/mod.rs:361",
+        "src/main.rs:194",
+        "src/main.rs:221"
+      ],
+      "duplicate_of": null,
+      "absorbed": [
+        "f006"
+      ],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f009",
+      "source": "VULN-FINDINGS.json#8",
+      "title": "Kernel subtree matcher mishandles root and trailing-slash rules",
+      "file": "crates/ebpf/src/main.rs",
+      "line": 363,
       "category": "filesystem-policy-bypass",
       "claimed_severity": "HIGH",
       "verdict": "true_positive",
@@ -396,14 +495,14 @@
       "severity_label": "MEDIUM",
       "severity_alignment": -3,
       "preconditions": [
-        "Enforced pathname policy",
-        "Attacker controls a same-UID scoped process",
-        "Hardlink or rename is permitted",
-        "Target DAC permissions permit access"
+        "root or trailing-slash restrictive rule",
+        "raw spelling reaches kernel",
+        "attacker accesses missed descendant",
+        "host DAC permits access"
       ],
       "access_level": "local",
-      "threat_match": "Unauthorized host access or secret exposure",
-      "rationale": "The loader attaches only socket_connect, file_open, and bprm_check_security (bee-userspace/src/loader.rs:14), leaving link and rename operations uncovered. file_open authorizes only the rendered path (bee-ebpf/src/main.rs:169-180), so a permitted hardlink alias is evaluated under its allowed name rather than the protected source path; README.md:72 acknowledges this gap.\n\nFilesystem and permission prerequisites yield LOW, raised to MEDIUM for host access or secret exposure.",
+      "threat_match": "policy/enforcement divergence",
+      "rationale": "The shared matcher normalizes root and trailing slashes at crates/common/src/matcher.rs:8-25, while crates/ebpf/src/main.rs:363-379 compares raw rule bytes and requires another separator. Compilation preserves these forms, so valid deny or read-only rules can silently miss descendants.\n\nRanking: local access; 4 preconditions; threat match: policy/enforcement divergence. Derived MEDIUM.",
       "vote_breakdown": {
         "true_positive": 3,
         "false_positive": 0,
@@ -412,8 +511,750 @@
       "refute_reasons": [],
       "exclusion_rule": null,
       "first_links": [
-        "bee-userspace/src/loader.rs:14",
-        "bee-ebpf/src/main.rs:142"
+        "crates/ebpf/src/main.rs:260"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f040",
+      "source": "VULN-FINDINGS.json#39",
+      "title": "Model and sandbox output is interpreted as terminal control sequences",
+      "file": "src/repl/terminal.rs",
+      "line": 122,
+      "category": "terminal-injection",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.9,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": 5,
+      "preconditions": [
+        "live terminal output enabled",
+        "attacker text contains controls",
+        "terminal interprets controls"
+      ],
+      "access_level": "authenticated",
+      "threat_match": "terminal-state integrity",
+      "rationale": "Raw model deltas and tool results reach ExternalPrinter::print through src/repl.rs:352-375 and src/repl/terminal.rs:119-123,241-312 without control-character escaping. Color wrappers and caps do not neutralize embedded ESC, CSI, or OSC sequences.\n\nRanking: authenticated access; 3 preconditions; threat match: terminal-state integrity. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "src/repl.rs:375"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f041",
+      "source": "VULN-FINDINGS.json#40",
+      "title": "Unbounded animation cycles trigger attacker-sized playback allocation",
+      "file": "src/viz/animator.rs",
+      "line": 32,
+      "category": "unbounded-allocation",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.9,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": 5,
+      "preconditions": [
+        "render tool and inline REPL",
+        "nonempty animation",
+        "large cycles value"
+      ],
+      "access_level": "authenticated",
+      "threat_match": "algorithmic denial of service",
+      "rationale": "Model Rhai can set cycles to an unrestricted u32 at src/render_api.rs:982-985. Inline terminal rendering calls playback, which allocates and materializes period_len times cycles at src/viz/animator.rs:26-36 outside Rhai operation and array limits, enabling deterministic process OOM.\n\nRanking: authenticated access; 3 preconditions; threat match: algorithmic denial of service. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "src/repl/terminal.rs:183"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f025",
+      "source": "VULN-FINDINGS.json#24",
+      "title": "A child can remove an executable inode-pin requirement",
+      "file": "crates/core/src/attenuation.rs",
+      "line": 161,
+      "category": "executable-identity-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.9,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": -3,
+      "preconditions": [
+        "pinned parent entry",
+        "attacker controls child policy",
+        "allowlisted path attacker-mutable"
+      ],
+      "access_level": "local",
+      "threat_match": "executable substitution",
+      "rationale": "crates/core/src/attenuation.rs:159-167 strips ! before comparing parent and child executable entries, but compilation preserves the distinction as pin_inode. An unpinned child therefore passes a pinned ceiling and avoids the backend's fail-closed rejection at crates/userspace/src/plan.rs:195-201.\n\nRanking: local access; 3 preconditions; threat match: executable substitution. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "src/app/config/mod.rs:361",
+        "src/main.rs:194",
+        "src/skills/grant.rs:160"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f010",
+      "source": "VULN-FINDINGS.json#9",
+      "title": "Tool children retain launcher privileges and can execute privileged descendants",
+      "file": "crates/userspace/src/hardening.rs",
+      "line": 29,
+      "category": "privilege-escalation",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.7,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": -1,
+      "preconditions": [
+        "privileged bee launcher",
+        "model-controlled tool child",
+        "initial executable passes check",
+        "no external privilege drop"
+      ],
+      "access_level": "local",
+      "threat_match": "root/capability retention and sandbox escape",
+      "rationale": "Every model tool reaches pre_exec_hardening through crates/userspace/src/spawn.rs:91-98, but crates/userspace/src/hardening.rs:29-32 only changes dump settings. No UID/GID/capability drop or no_new_privs exists, and the privileged-image check covers only the initial executable.\n\nRanking: local access; 4 preconditions; threat match: root/capability retention and sandbox escape. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "crates/userspace/src/spawn.rs:93"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f003",
+      "source": "VULN-FINDINGS.json#2",
+      "title": "UDP sendto bypasses the connect-only egress allowlist",
+      "file": "crates/ebpf/src/main.rs",
+      "line": 92,
+      "category": "network-policy-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.7,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": -2,
+      "preconditions": [
+        "enforced network policy",
+        "model-controlled scoped process",
+        "connectionless UDP send",
+        "reachable destination"
+      ],
+      "access_level": "local",
+      "threat_match": "unauthorized network access and exfiltration",
+      "rationale": "The loader attaches only socket_connect, file_open, and bprm_check_security at crates/userspace/src/loader.rs:13-32. Model-controlled scoped children from src/tools/bash.rs:43-55 can use connectionless UDP sendto/sendmsg without traversing crates/ebpf/src/main.rs:92-139.\n\nRanking: local access; 4 preconditions; threat match: unauthorized network access and exfiltration. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "crates/userspace/src/loader.rs:14",
+        "crates/userspace/src/loader.rs:23",
+        "src/tools/bash.rs:48"
+      ],
+      "duplicate_of": null,
+      "absorbed": [
+        "f004"
+      ],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f016",
+      "source": "VULN-FINDINGS.json#15",
+      "title": "Untrusted project config becomes an unbounded execution policy without a user ceiling",
+      "file": "src/app/config/mod.rs",
+      "line": 364,
+      "category": "auth-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.7,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": -2,
+      "preconditions": [
+        "attacker-controlled repository config",
+        "operator opens repository",
+        "no trusted ceiling",
+        "model exercises requested authority"
+      ],
+      "access_level": "local",
+      "threat_match": "malicious-repository supply chain and authority widening",
+      "rationale": "Project configuration is explicitly untrusted yet may set policy.path and is auto-loaded from .bee/config.toml at src/app/config/file.rs:21-27,79-90,265-285. src/app/config/mod.rs:353-367 accepts that requested policy unchanged when no trusted ceiling exists, and REPL/session startup compiles it into authority.\n\nRanking: local access; 4 preconditions; threat match: malicious-repository supply chain and authority widening. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "src/app/repl.rs:120"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f037",
+      "source": "VULN-FINDINGS.json#36",
+      "title": "Reactive retry removes the triggering denial from call evidence",
+      "file": "src/episode.rs",
+      "line": 386,
+      "category": "audit-misattribution",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.5,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": 5,
+      "preconditions": [
+        "initial denial",
+        "reactive escalation enabled",
+        "grant within ceiling",
+        "retry completes"
+      ],
+      "access_level": "authenticated",
+      "threat_match": "audit and evaluation integrity",
+      "rationale": "After a denial-triggered grant, src/episode.rs:376-387 replaces call-local audit with retry_audit. RecordedCall, ScoreReport, and enforcement_trace read call.audit rather than the preserved global audit trail, so a successful retry deterministically removes the triggering denial from derived evidence and scores.\n\nRanking: authenticated access; 4 preconditions; threat match: audit and evaluation integrity. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 2,
+        "false_positive": 1,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "not_actionable"
+      ],
+      "exclusion_rule": "13",
+      "first_links": [
+        "src/episode.rs:338",
+        "src/episode.rs:380",
+        "src/episode.rs:700"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f033",
+      "source": "VULN-FINDINGS.json#32",
+      "title": "Unknown policy fields are silently ignored",
+      "file": "crates/core/src/policy.rs",
+      "line": 104,
+      "category": "policy-validation-bypass",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.5,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": 2,
+      "preconditions": [
+        "misspelled security field",
+        "policy launched without detection",
+        "workload exercises defaulted capability"
+      ],
+      "access_level": "local",
+      "threat_match": "policy integrity and fail-open authority",
+      "rationale": "Policy and nested security structs lack deny_unknown_fields at crates/core/src/policy.rs:78-125. A misspelled restrictive key defaults the section empty, which clears network enforcement or omits EXEC_ALLOW and reaches fail-open hooks; two verifiers found this a concrete enforcement loss rather than typo-only hardening.\n\nRanking: local access; 3 preconditions; threat match: policy integrity and fail-open authority. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 2,
+        "false_positive": 1,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "not_actionable"
+      ],
+      "exclusion_rule": "13",
+      "first_links": [
+        "src/app/config/mod.rs:397"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f005",
+      "source": "VULN-FINDINGS.json#4",
+      "title": "File-open-only mediation permits metadata mutation and hard-link path aliasing",
+      "file": "crates/ebpf/src/main.rs",
+      "line": 142,
+      "category": "filesystem-policy-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.3,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": -3,
+      "preconditions": [
+        "pathname-only enforcement",
+        "model-controlled process",
+        "host DAC permits metadata or hard-link operation",
+        "allowed alias path"
+      ],
+      "access_level": "local",
+      "threat_match": "host data disclosure or integrity loss",
+      "rationale": "Only file_open mediates filesystem access in crates/userspace/src/loader.rs:13-32. The hook authorizes only the resolved alias path at crates/ebpf/src/main.rs:142-180, leaving metadata operations uncovered and allowing hard-link aliases to escape protected-name rules.\n\nRanking: local access; 4 preconditions; threat match: host data disclosure or integrity loss. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "crates/userspace/src/loader.rs:14",
+        "crates/userspace/src/loader.rs:23",
+        "src/tools/bash.rs:48"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f034",
+      "source": "VULN-FINDINGS.json#33",
+      "title": "Network-enforced scopes allow every non-IP socket family",
+      "file": "crates/ebpf/src/main.rs",
+      "line": 126,
+      "category": "network-policy-bypass",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.2,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": 2,
+      "preconditions": [
+        "network-enforced attacker process",
+        "sensitive AF_UNIX endpoint",
+        "DAC permits connect"
+      ],
+      "access_level": "local",
+      "threat_match": "local-service access and possible escape",
+      "rationale": "With FLAG_NET_ENFORCED, crates/ebpf/src/main.rs:93-126 checks only IPv4/IPv6 and explicitly allows every other family. Model/tool processes in the enforced cgroup can therefore reach accessible AF_UNIX agents or local control services without NET_ALLOW or a compensating hook.\n\nRanking: local access; 3 preconditions; threat match: local-service access and possible escape. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "crates/userspace/src/loader.rs:23",
+        "src/tools/exec.rs:25"
+      ],
+      "duplicate_of": null,
+      "absorbed": [
+        "f027"
+      ],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f039",
+      "source": "VULN-FINDINGS.json#38",
+      "title": "Post-hoc nesting validation permits recursive clone amplification",
+      "file": "src/render_api.rs",
+      "line": 831,
+      "category": "algorithmic-complexity",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.0,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": 5,
+      "preconditions": [
+        "render tool enabled",
+        "script reuses nested builders",
+        "clone growth precedes validation"
+      ],
+      "access_level": "authenticated",
+      "threat_match": "algorithmic denial of service",
+      "rationale": "Model-controlled Rhai runs in-process. layout.add converts and deep-clones existing RenderSpec trees at src/render_api.rs:395-400,627-633,829-835, while structural validation happens only at final commit; cheap repeated reuse can amplify native clone work beyond Rhai operation accounting.\n\nRanking: authenticated access; 3 preconditions; threat match: algorithmic denial of service. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "src/tools/render.rs:259"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f043",
+      "source": "VULN-FINDINGS.json#42",
+      "title": "Relative filesystem restrictions cannot match resolved kernel paths",
+      "file": "crates/core/src/compiler.rs",
+      "line": 160,
+      "category": "filesystem-policy-bypass",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.0,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": 5,
+      "preconditions": [
+        "enforcement active",
+        "relative restrictive rule",
+        "no matching absolute protection",
+        "attacker accesses absolute target"
+      ],
+      "access_level": "authenticated",
+      "threat_match": "policy divergence and host data exposure",
+      "rationale": "Policy validation accepts relative filesystem keys; resolve_tokens leaves them unchanged and planning installs those bytes, while enforcement compares absolute bpf_d_path output. Two verifiers found this silently defeats restrictive rules, although one treated the source as trusted operator misconfiguration.\n\nRanking: authenticated access; 4 preconditions; threat match: policy divergence and host data exposure. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 2,
+        "false_positive": 1,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "implausible_trigger"
+      ],
+      "exclusion_rule": "8",
+      "first_links": [
+        "crates/core/src/compiler.rs:97",
+        "src/app/session.rs:312"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f050",
+      "source": "VULN-FINDINGS.json#49",
+      "title": "Lazy skill-body reads can be redirected to arbitrary host files",
+      "file": "src/skills.rs",
+      "line": 110,
+      "category": "path-traversal",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 9.0,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": -3,
+      "preconditions": [
+        "skill discovered",
+        "attacker mutates path before invocation",
+        "target readable UTF-8",
+        "skill invoked"
+      ],
+      "access_level": "local",
+      "threat_match": "skill TOCTOU and confused-deputy host read",
+      "rationale": "Discovery follows links and stores a mutable pathname, while invocation later performs a fresh host-side read without canonical containment or inode pin at src/skills.rs:106-114. Two verifiers found the long model/tool-turn window attacker-controllable; one considered enforced directory read-only policy sufficient and the race theoretical.\n\nRanking: local access; 4 preconditions; threat match: skill TOCTOU and confused-deputy host read. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 2,
+        "false_positive": 1,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "already_handled"
+      ],
+      "exclusion_rule": "16",
+      "first_links": [
+        "src/tools/skill.rs:109"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f046",
+      "source": "VULN-FINDINGS.json#45",
+      "title": "Terminal control characters in skill metadata can forge consent displays",
+      "file": "src/app/repl.rs",
+      "line": 380,
+      "category": "consent-bypass",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 8.7,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": 5,
+      "preconditions": [
+        "malicious project skill metadata",
+        "request within ceiling",
+        "interactive terminal prompt",
+        "operator approves forged display"
+      ],
+      "access_level": "local",
+      "threat_match": "consent-decision integrity",
+      "rationale": "Project skill metadata is accepted without control-character validation and printed verbatim at src/app/repl.rs:378-391 in the authoritative y/N consent prompt. ANSI or newline sequences can conceal or forge the capability request immediately before approval; the ceiling does not replace this second consent boundary.\n\nRanking: local access; 4 preconditions; threat match: consent-decision integrity. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "src/app/repl.rs:179",
+        "src/app/repl.rs:184"
+      ],
+      "duplicate_of": null,
+      "absorbed": [
+        "f047"
+      ],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f051",
+      "source": "VULN-FINDINGS.json#50",
+      "title": "Repeated panel commits clone large widgets without an aggregate limit",
+      "file": "src/render_api.rs",
+      "line": 1023,
+      "category": "resource-exhaustion",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 8.5,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": 4,
+      "preconditions": [
+        "render tool enabled",
+        "large valid spec",
+        "many commits under op limit",
+        "clones exhaust memory"
+      ],
+      "access_level": "authenticated",
+      "threat_match": "algorithmic denial of service",
+      "rationale": "Every render_to appends an owned RenderSpec to an uncapped panel_ops vector, while validation is per-widget rather than aggregate. Two verifiers found thousands of large retained commits a valid algorithmic memory amplification despite the 10,000-operation cap; one treated the cap as bounded volumetric DoS.\n\nRanking: authenticated access; 4 preconditions; threat match: algorithmic denial of service. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 2,
+        "false_positive": 1,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "already_handled"
+      ],
+      "exclusion_rule": "1",
+      "first_links": [
+        "src/tools/render.rs:259"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f036",
+      "source": "VULN-FINDINGS.json#35",
+      "title": "Fixed-delay audit draining can lose or misattribute records",
+      "file": "src/episode.rs",
+      "line": 334,
+      "category": "audit-loss",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 8.4,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": 5,
+      "preconditions": [
+        "concurrent async-audit path",
+        "audit event emitted",
+        "delivery exceeds five milliseconds",
+        "drain or teardown occurs first"
+      ],
+      "access_level": "authenticated",
+      "threat_match": "incomplete enforcement evidence",
+      "rationale": "run_loop treats a fixed five-millisecond sleep and nonblocking drain as a call boundary at src/episode.rs:323-338 and src/sandbox.rs:196-205. Asynchronous kernel-to-demux-to-channel delivery has no acknowledgement or watermark, so delayed denials can attach to later calls or disappear at teardown.\n\nRanking: authenticated access; 4 preconditions; threat match: incomplete enforcement evidence. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "src/episode.rs:336"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f007",
+      "source": "VULN-FINDINGS.json#6",
+      "title": "Attacker-triggerable path-resolution failure fails open",
+      "file": "crates/ebpf/src/main.rs",
+      "line": 224,
+      "category": "exec-policy-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "true_positive",
+      "verify_verdict": "exploitable",
+      "confidence": 8.3,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": -3,
+      "preconditions": [
+        "nonempty exec policy",
+        "writable path over 4096 resolved bytes",
+        "reachable disallowed executable",
+        "relative invocation"
+      ],
+      "access_level": "local",
+      "threat_match": "executable-policy bypass and escape",
+      "rationale": "Exec enforcement returns allow on bpf_d_path error at crates/ebpf/src/main.rs:218-226 and uses a fixed 4096-byte buffer. A model-controlled process reachable from src/tools/bash.rs:43-55 can build a longer resolved directory chain and invoke a short relative executable without any fallback identity check.\n\nRanking: local access; 4 preconditions; threat match: executable-policy bypass and escape. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 3,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "crates/userspace/src/loader.rs:14",
+        "src/tools/bash.rs:48"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f049",
+      "source": "VULN-FINDINGS.json#48",
+      "title": "Remote MCP redirects bypass the destination allowlist",
+      "file": "src/mcp/bridge.rs",
+      "line": 332,
+      "category": "ssrf",
+      "claimed_severity": "MEDIUM",
+      "verdict": "true_positive",
+      "verify_verdict": "needs_manual_test",
+      "confidence": 7.5,
+      "severity": "MEDIUM",
+      "severity_label": "MEDIUM",
+      "severity_alignment": 3,
+      "preconditions": [
+        "allowlisted attacker MCP server",
+        "redirect to denied destination",
+        "transport follows redirect",
+        "destination reachable"
+      ],
+      "access_level": "authenticated",
+      "threat_match": "redirect destination revalidation",
+      "rationale": "connect_remote validates only the configured initial URL at src/mcp/bridge.rs:321-349 and provides no per-hop policy callback. Two verifiers concluded an allowed but untrusted MCP endpoint can redirect toward a denied/internal destination; one could not statically verify whether the external transport follows redirects.\n\nRanking: authenticated access; 4 preconditions; threat match: redirect destination revalidation. Derived MEDIUM.",
+      "vote_breakdown": {
+        "true_positive": 2,
+        "false_positive": 0,
+        "cannot_verify": 1
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [
+        "src/app/repl.rs:209",
+        "src/mcp/bridge.rs:156"
       ],
       "duplicate_of": null,
       "absorbed": [],
@@ -425,363 +1266,30 @@
     {
       "id": "f004",
       "source": "VULN-FINDINGS.json#3",
-      "title": "UDP sendto bypasses the network allowlist",
-      "file": "bee-ebpf/src/main.rs",
-      "line": 92,
+      "title": "Empty network allowlist disables all egress enforcement",
+      "file": "crates/ebpf/src/main.rs",
+      "line": 99,
       "category": "network-policy-bypass",
       "claimed_severity": "HIGH",
-      "verdict": "true_positive",
-      "verify_verdict": "exploitable",
-      "confidence": 9.7,
-      "severity": "MEDIUM",
-      "severity_label": "MEDIUM",
-      "severity_alignment": -2,
-      "preconditions": [
-        "Enforced scope with a network allowlist",
-        "Attacker controls a scoped process",
-        "Process uses unconnected UDP",
-        "A disallowed UDP destination is reachable"
-      ],
-      "access_level": "local",
-      "threat_match": "Unauthorized network egress",
-      "rationale": "The loader attaches socket_connect but no socket_sendmsg or packet-egress hook (bee-userspace/src/loader.rs:14-23). NET_ALLOW is consulted only in socket_connect (bee-ebpf/src/main.rs:92-129), while the design explicitly defers connectionless sendto filtering (specs/001-ebpf-agent-sandbox/research.md:189), leaving a concrete bypass for an untrusted scoped process.\n\nLocal sandbox execution and reachable UDP yield LOW, raised to MEDIUM for direct egress; HIGH is inflated.",
-      "vote_breakdown": {
-        "true_positive": 3,
-        "false_positive": 0,
-        "cannot_verify": 0
-      },
-      "refute_reasons": [],
-      "exclusion_rule": null,
-      "first_links": [
-        "bee-userspace/src/loader.rs:14",
-        "bee-userspace/src/loader.rs:23",
-        "bee-harness/src/episode.rs:324"
-      ],
-      "duplicate_of": null,
-      "absorbed": [],
-      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
-      "missing_fields": [
-        "preconditions"
-      ]
-    },
-    {
-      "id": "f015",
-      "source": "VULN-FINDINGS.json#14",
-      "title": "Full audit ring silently discards enforcement records without marking transcripts incomplete",
-      "file": "bee-ebpf/src/main.rs",
-      "line": 383,
-      "category": "audit-integrity",
-      "claimed_severity": "MEDIUM",
-      "verdict": "true_positive",
-      "verify_verdict": "exploitable",
-      "confidence": 9.5,
-      "severity": "MEDIUM",
-      "severity_label": "MEDIUM",
-      "severity_alignment": 2,
-      "preconditions": [
-        "An attacker-controlled tool floods enough denials to fill the audit ring",
-        "The event to hide occurs after saturation and before drain"
-      ],
-      "access_level": "unauthenticated_remote",
-      "threat_match": null,
-      "rationale": "Denied operations emit audit records into a bounded 256-KiB ring, but reservation failure silently drops the record without a loss marker (bee-ebpf/src/main.rs:88-90,382-415). Synchronous episodes drain after attacker-controlled tool completion (bee-harness/src/episode.rs:323-338), so a denial flood can make transcripts silently incomplete.\n\nTwo realistic conditions derive MEDIUM; silent audit loss does not directly match the stated authority threats.",
-      "vote_breakdown": {
-        "true_positive": 2,
-        "false_positive": 1,
-        "cannot_verify": 0
-      },
-      "refute_reasons": [
-        "not_actionable"
-      ],
-      "exclusion_rule": 13,
-      "first_links": [
-        "bee-ebpf/src/main.rs:134",
-        "bee-ebpf/src/main.rs:185"
-      ],
-      "duplicate_of": null,
-      "absorbed": [],
-      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
-      "missing_fields": [
-        "preconditions"
-      ]
-    },
-    {
-      "id": "f023",
-      "source": "VULN-FINDINGS.json#22",
-      "title": "Rhai layout cloning permits exponential in-process memory amplification before validation",
-      "file": "bee-harness/src/render_api.rs",
-      "line": 486,
-      "category": "algorithmic-complexity",
-      "claimed_severity": "MEDIUM",
-      "verdict": "true_positive",
-      "verify_verdict": "needs_manual_test",
-      "confidence": 9,
-      "severity": "MEDIUM",
-      "severity_label": "MEDIUM",
-      "severity_alignment": 2,
-      "preconditions": [
-        "The render tool is enabled",
-        "An untrusted model submits an amplifying Rhai script"
-      ],
-      "access_level": "authenticated",
-      "threat_match": null,
-      "rationale": "Model-controlled Rhai reaches layout add, whose conversion deep-clones existing child trees before storage (bee-harness/src/tools/render.rs:101-111; bee-harness/src/render_api.rs:205-210,483-489). Repeated reuse doubles native Rust-owned structures, while structural validation occurs only at final render after allocation (bee-harness/src/render_api.rs:596-603).\n\nTwo preconditions derive MEDIUM, but a human PoC is needed to confirm material amplification under Rhai operation and copy semantics.",
-      "vote_breakdown": {
-        "true_positive": 3,
-        "false_positive": 0,
-        "cannot_verify": 0
-      },
-      "refute_reasons": [],
-      "exclusion_rule": null,
-      "first_links": [
-        "bee-harness/src/tools/render.rs:111",
-        "bee-harness/src/tools/render.rs:72"
-      ],
-      "duplicate_of": null,
-      "absorbed": [],
-      "owner_hint": "top committer: jg (3/3 recent commits); no CODEOWNERS entry",
-      "missing_fields": [
-        "preconditions"
-      ]
-    },
-    {
-      "id": "f021",
-      "source": "VULN-FINDINGS.json#20",
-      "title": "Lazy skill-body reads can be redirected to arbitrary host files after discovery",
-      "file": "bee-harness/src/skills.rs",
-      "line": 109,
-      "category": "symlink-toctou-host-read",
-      "claimed_severity": "HIGH",
-      "verdict": "true_positive",
-      "verify_verdict": "exploitable",
-      "confidence": 9,
-      "severity": "MEDIUM",
-      "severity_label": "MEDIUM",
-      "severity_alignment": -2,
-      "preconditions": [
-        "A repository-controlled skill is discovered by mutable path",
-        "The attacker can replace that path after discovery",
-        "The skill is later invoked",
-        "A sensitive target is readable and observable"
-      ],
-      "access_level": "authenticated",
-      "threat_match": "Unauthorized host access and secret exposure",
-      "rationale": "Discovery follows links and stores a mutable SKILL.md pathname, while model invocation later reopens it with host authority (bee-harness/src/skills.rs:109-114,184-190,269-274; bee-harness/src/tools/skill.rs:109-111). A writable project entry can be replaced by a symlink before invocation to disclose an arbitrary host-readable file.\n\nFour preconditions yield LOW, raised to MEDIUM for host read and secret exposure; claimed HIGH is inflated.",
-      "vote_breakdown": {
-        "true_positive": 3,
-        "false_positive": 0,
-        "cannot_verify": 0
-      },
-      "refute_reasons": [],
-      "exclusion_rule": null,
-      "first_links": [
-        "bee-harness/src/tools/skill.rs:109"
-      ],
-      "duplicate_of": null,
-      "absorbed": [],
-      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
-      "missing_fields": [
-        "preconditions"
-      ]
-    },
-    {
-      "id": "f006",
-      "source": "VULN-FINDINGS.json#5",
-      "title": "Unresolvable long paths fail open for file and executable policy",
-      "file": "bee-ebpf/src/main.rs",
-      "line": 172,
-      "category": "fail-open-enforcement",
-      "claimed_severity": "HIGH",
-      "verdict": "true_positive",
-      "verify_verdict": "exploitable",
-      "confidence": 9.0,
-      "severity": "MEDIUM",
-      "severity_label": "MEDIUM",
-      "severity_alignment": -3,
-      "preconditions": [
-        "Active filesystem or exec enforcement",
-        "Attacker controls a scoped process",
-        "A rendered path can exceed 4096 bytes",
-        "Target DAC permissions permit the operation",
-        "bpf_d_path fails on that path"
-      ],
-      "access_level": "local",
-      "threat_match": "Unauthorized host access or command execution",
-      "rationale": "Both file_open and bprm_check_security use a fixed 4096-byte buffer and return allow when bpf_d_path fails (bee-common/src/lib.rs:20-21; bee-ebpf/src/main.rs:169-174,222-225). No depth restriction or fallback identity check closes the path for model-controlled scoped children reached through bee-harness/src/tools/bash.rs:43-48.\n\nSeveral local path and filesystem prerequisites yield LOW, raised to MEDIUM for the matched host-access/exec threat.",
-      "vote_breakdown": {
-        "true_positive": 3,
-        "false_positive": 0,
-        "cannot_verify": 0
-      },
-      "refute_reasons": [],
-      "exclusion_rule": null,
-      "first_links": [
-        "bee-harness/src/tools/bash.rs:48",
-        "bee-ebpf/src/main.rs:172",
-        "bee-ebpf/src/main.rs:171"
-      ],
-      "duplicate_of": null,
-      "absorbed": [],
-      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
-      "missing_fields": [
-        "preconditions"
-      ]
-    },
-    {
-      "id": "f027",
-      "source": "VULN-FINDINGS.json#26",
-      "title": "Executable authorization is bound only to a mutable path",
-      "file": "bee-core/src/compiler.rs",
-      "line": 108,
-      "category": "exec-identity-toctou",
-      "claimed_severity": "MEDIUM",
-      "verdict": "true_positive",
-      "verify_verdict": "exploitable",
-      "confidence": 8.7,
-      "severity": "MEDIUM",
-      "severity_label": "MEDIUM",
-      "severity_alignment": 2,
-      "preconditions": [
-        "An ordinary path-only exec rule is used",
-        "The attacker can replace the allowlisted executable or parent entry",
-        "Replacement occurs after compilation before invocation"
-      ],
-      "access_level": "authenticated",
-      "threat_match": "Unauthorized command execution",
-      "rationale": "Ordinary exec entries resolve once but store only mutable path bytes, and the backend rejects inode pinning (bee-core/src/compiler.rs:102-112; bee-userspace/src/plan.rs:186-215). The LSM permits whatever file currently occupies the matching pathname, so a writable allowlisted executable can be replaced persistently with attacker-controlled content.\n\nThree preconditions yield LOW, raised to MEDIUM for unauthorized command execution.",
-      "vote_breakdown": {
-        "true_positive": 3,
-        "false_positive": 0,
-        "cannot_verify": 0
-      },
-      "refute_reasons": [],
-      "exclusion_rule": null,
-      "first_links": [
-        "bee-harness/src/episode.rs:770"
-      ],
-      "duplicate_of": null,
-      "absorbed": [],
-      "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
-      "missing_fields": [
-        "preconditions"
-      ]
-    },
-    {
-      "id": "f024",
-      "source": "VULN-FINDINGS.json#23",
-      "title": "Scope teardown leaves BPF rules keyed by reusable cgroup inode IDs",
-      "file": "bee-userspace/src/lib.rs",
-      "line": 223,
-      "category": "cgroup-policy-confusion",
-      "claimed_severity": "MEDIUM",
-      "verdict": "true_positive",
-      "verify_verdict": "needs_manual_test",
-      "confidence": 8,
-      "severity": "MEDIUM",
-      "severity_label": "MEDIUM",
-      "severity_alignment": 2,
-      "preconditions": [
-        "The enforcing BPF backend is active",
-        "An earlier scope installs rules and tears down",
-        "The kernel reuses its cgroup ID",
-        "The new scope does not overwrite every stale key"
-      ],
-      "access_level": "authenticated",
-      "threat_match": "Unauthorized network egress",
-      "rationale": "Scope teardown removes only the cgroup directory and does not delete SCOPES, FS, EXEC, or NET map entries (bee-userspace/src/lib.rs:118-169,327-330). Concurrent teardown occurs while the shared Engine remains alive, so cgroup-ID reuse can misapply stale policy without a generation check.\n\nFour preconditions yield LOW, raised to MEDIUM for unauthorized egress; runtime testing is needed to demonstrate practical ID reuse.",
-      "vote_breakdown": {
-        "true_positive": 2,
-        "false_positive": 1,
-        "cannot_verify": 0
-      },
-      "refute_reasons": [
-        "implausible_trigger"
-      ],
-      "exclusion_rule": 16,
-      "first_links": [
-        "bee-harness/src/sandbox.rs:244",
-        "bee-harness/src/concurrent.rs:214"
-      ],
-      "duplicate_of": null,
-      "absorbed": [],
-      "owner_hint": "top committer: jg (2/2 recent commits); no CODEOWNERS entry",
-      "missing_fields": [
-        "preconditions"
-      ]
-    },
-    {
-      "id": "f017",
-      "source": "VULN-FINDINGS.json#16",
-      "title": "Drain-window correlation attributes unrelated or late audit events to the current tool call",
-      "file": "bee-harness/src/episode.rs",
-      "line": 295,
-      "category": "audit-misattribution",
-      "claimed_severity": "MEDIUM",
-      "verdict": "true_positive",
-      "verify_verdict": "exploitable",
-      "confidence": 8.5,
-      "severity": "LOW",
-      "severity_label": "LOW",
-      "severity_alignment": -2,
-      "preconditions": [
-        "An earlier tool leaves a background descendant",
-        "It emits after the earlier drain and before a later drain",
-        "A later call consumes the undifferentiated event"
-      ],
-      "access_level": "unauthenticated_remote",
-      "threat_match": null,
-      "rationale": "After each call, run_loop drains all cgroup events and assigns them to the current ToolCall without a pre-call watermark or call identifier (bee-harness/src/episode.rs:323-338,444-448; bee-harness/src/sandbox.rs:210-235). A background child can therefore cause delayed events to be attributed to a later call and influence reactive escalation.\n\nThree sequencing conditions force LOW and attribution corruption alone does not directly match the stated authority threats.",
-      "vote_breakdown": {
-        "true_positive": 2,
-        "false_positive": 1,
-        "cannot_verify": 0
-      },
-      "refute_reasons": [
-        "not_actionable"
-      ],
-      "exclusion_rule": 12,
-      "first_links": [
-        "bee-harness/src/episode.rs:337"
-      ],
-      "duplicate_of": null,
-      "absorbed": [],
-      "owner_hint": "top committer: jg (9/9 recent commits); no CODEOWNERS entry",
-      "missing_fields": [
-        "preconditions"
-      ]
-    },
-    {
-      "id": "f009",
-      "source": "VULN-FINDINGS.json#8",
-      "title": "Skill directories are made readable after the ceiling proof",
-      "file": "bee-harness/src/episode.rs",
-      "line": 614,
-      "category": "attenuation-bypass",
-      "claimed_severity": "HIGH",
-      "verdict": "false_positive",
+      "verdict": "duplicate",
       "verify_verdict": null,
-      "confidence": 9,
+      "confidence": 0,
       "severity": null,
       "severity_label": null,
       "severity_alignment": null,
       "preconditions": [],
       "access_level": null,
       "threat_match": null,
-      "rationale": "Skill directories are deliberately authorized as readable from trusted operator-declared skill roots (bee-harness/src/episode.rs:745-754; bee-harness/src/scenario.rs:70-79). The most-specific rule behavior is intentional, and malicious skill frontmatter cannot select a different directory.",
+      "rationale": "duplicate of f003",
       "vote_breakdown": {
-        "true_positive": 1,
-        "false_positive": 2,
+        "true_positive": 0,
+        "false_positive": 0,
         "cannot_verify": 0
       },
-      "refute_reasons": [
-        "intentional_behavior"
-      ],
-      "exclusion_rule": 3,
-      "first_links": [
-        "bee-harness/src/episode.rs:597",
-        "bee-harness/src/batch.rs:145"
-      ],
-      "duplicate_of": null,
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [],
+      "duplicate_of": "f003",
       "absorbed": [],
       "owner_hint": null,
       "missing_fields": [
@@ -789,37 +1297,32 @@
       ]
     },
     {
-      "id": "f010",
-      "source": "VULN-FINDINGS.json#9",
-      "title": "MCP Bearer tokens are sent over unrestricted plaintext HTTP endpoints",
-      "file": "bee-harness/src/mcp/bridge.rs",
-      "line": 338,
-      "category": "cleartext-credential-exposure",
+      "id": "f006",
+      "source": "VULN-FINDINGS.json#5",
+      "title": "Empty executable allowlist disables execution enforcement",
+      "file": "crates/ebpf/src/main.rs",
+      "line": 201,
+      "category": "exec-policy-bypass",
       "claimed_severity": "HIGH",
-      "verdict": "false_positive",
+      "verdict": "duplicate",
       "verify_verdict": null,
-      "confidence": 8.7,
+      "confidence": 0,
       "severity": null,
       "severity_label": null,
       "severity_alignment": null,
       "preconditions": [],
       "access_level": null,
       "threat_match": null,
-      "rationale": "The bridge can attach a token to HTTP (bee-harness/src/mcp/bridge.rs:326-345), but URL and token_env come only from trusted MCP configuration. No malicious model or MCP response can select the configured transport endpoint, so rule 8 applies.",
+      "rationale": "duplicate of f014",
       "vote_breakdown": {
         "true_positive": 0,
-        "false_positive": 3,
+        "false_positive": 0,
         "cannot_verify": 0
       },
-      "refute_reasons": [
-        "implausible_trigger"
-      ],
-      "exclusion_rule": 8,
-      "first_links": [
-        "bee-harness/src/mcp/bridge.rs:156",
-        "bee-harness/src/episode.rs:670"
-      ],
-      "duplicate_of": null,
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [],
+      "duplicate_of": "f014",
       "absorbed": [],
       "owner_hint": null,
       "missing_fields": [
@@ -829,34 +1332,30 @@
     {
       "id": "f011",
       "source": "VULN-FINDINGS.json#10",
-      "title": "Custom URL parsing disagrees with the HTTP client on backslash authority boundaries",
-      "file": "bee-harness/src/mcp/policy.rs",
-      "line": 78,
-      "category": "ssrf-allowlist-bypass",
+      "title": "Background descendants survive teardown and become unrestricted",
+      "file": "crates/userspace/src/lib.rs",
+      "line": 332,
+      "category": "incomplete-cleanup",
       "claimed_severity": "HIGH",
-      "verdict": "false_positive",
+      "verdict": "duplicate",
       "verify_verdict": null,
-      "confidence": 9,
+      "confidence": 0,
       "severity": null,
       "severity_label": null,
       "severity_alignment": null,
       "preconditions": [],
       "access_level": null,
       "threat_match": null,
-      "rationale": "The parser mismatch is plausible in isolation (bee-harness/src/mcp/policy.rs:78-90), but the URL comes only from the trusted configured server list (bee-harness/src/mcp/bridge.rs:147-159). No untrusted runtime source can supply the crafted URL.",
+      "rationale": "duplicate of f022",
       "vote_breakdown": {
         "true_positive": 0,
-        "false_positive": 3,
+        "false_positive": 0,
         "cannot_verify": 0
       },
-      "refute_reasons": [
-        "implausible_trigger"
-      ],
-      "exclusion_rule": 8,
-      "first_links": [
-        "bee-harness/src/mcp/bridge.rs:332"
-      ],
-      "duplicate_of": null,
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [],
+      "duplicate_of": "f022",
       "absorbed": [],
       "owner_hint": null,
       "missing_fields": [
@@ -866,34 +1365,30 @@
     {
       "id": "f013",
       "source": "VULN-FINDINGS.json#12",
-      "title": "Executable entries are encoded as subtree prefixes instead of exact paths",
-      "file": "bee-userspace/src/plan.rs",
-      "line": 210,
-      "category": "exec-allowlist-bypass",
+      "title": "Removing the final child write grant disables default-deny writes",
+      "file": "crates/userspace/src/plan.rs",
+      "line": 48,
+      "category": "capability-widening",
       "claimed_severity": "HIGH",
-      "verdict": "false_positive",
+      "verdict": "duplicate",
       "verify_verdict": null,
-      "confidence": 8.5,
+      "confidence": 0,
       "severity": null,
       "severity_label": null,
       "severity_alignment": null,
       "preconditions": [],
       "access_level": null,
       "threat_match": null,
-      "rationale": "Exec subtree encoding is deliberate (bee-userspace/src/plan.rs:186-215) and the design specifies exact-plus-subtree semantics for executable directories (specs/001-ebpf-agent-sandbox/research.md:160-172). For a normal resolved executable, descendants cannot coexist while it remains a regular file; the majority treated this as intended behavior.",
+      "rationale": "duplicate of f008",
       "vote_breakdown": {
-        "true_positive": 1,
-        "false_positive": 2,
+        "true_positive": 0,
+        "false_positive": 0,
         "cannot_verify": 0
       },
-      "refute_reasons": [
-        "intentional_behavior"
-      ],
-      "exclusion_rule": 3,
-      "first_links": [
-        "bee-userspace/src/plan.rs:37"
-      ],
-      "duplicate_of": null,
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [],
+      "duplicate_of": "f008",
       "absorbed": [],
       "owner_hint": null,
       "missing_fields": [
@@ -901,74 +1396,32 @@
       ]
     },
     {
-      "id": "f016",
-      "source": "VULN-FINDINGS.json#15",
-      "title": "Scenario identifiers escape the batch transcript output directory",
-      "file": "bee-harness/src/bin/bee-episode.rs",
-      "line": 334,
-      "category": "path-traversal",
-      "claimed_severity": "MEDIUM",
-      "verdict": "false_positive",
+      "id": "f015",
+      "source": "VULN-FINDINGS.json#14",
+      "title": "Privileged children can migrate outside the exact cgroup policy key",
+      "file": "crates/userspace/src/spawn.rs",
+      "line": 92,
+      "category": "privilege-retention",
+      "claimed_severity": "HIGH",
+      "verdict": "duplicate",
       "verify_verdict": null,
-      "confidence": 10,
+      "confidence": 0,
       "severity": null,
       "severity_label": null,
       "severity_alignment": null,
       "preconditions": [],
       "access_level": null,
       "threat_match": null,
-      "rationale": "Filename construction is traversal-prone (bee-harness/src/bin/bee-episode.rs:333-336), but scenario_id comes solely from an operator-selected scenario file. Under the trusted-operator-config boundary, no declared untrusted source controls it, so rule 8 applies.",
+      "rationale": "duplicate of f026",
       "vote_breakdown": {
-        "true_positive": 1,
-        "false_positive": 2,
+        "true_positive": 0,
+        "false_positive": 0,
         "cannot_verify": 0
       },
-      "refute_reasons": [
-        "implausible_trigger"
-      ],
-      "exclusion_rule": 8,
-      "first_links": [
-        "bee-harness/src/bin/bee-episode.rs:310"
-      ],
-      "duplicate_of": null,
-      "absorbed": [],
-      "owner_hint": null,
-      "missing_fields": [
-        "preconditions"
-      ]
-    },
-    {
-      "id": "f018",
-      "source": "VULN-FINDINGS.json#17",
-      "title": "Privileged-executable refusal races pathname replacement before exec",
-      "file": "bee-userspace/src/spawn.rs",
-      "line": 75,
-      "category": "toctou",
-      "claimed_severity": "MEDIUM",
-      "verdict": "false_positive",
-      "verify_verdict": null,
-      "confidence": 8,
-      "severity": null,
-      "severity_label": null,
-      "severity_alignment": null,
-      "preconditions": [],
-      "access_level": null,
-      "threat_match": null,
-      "rationale": "There is a pathname check/use gap (bee-userspace/src/spawn.rs:40-80), but model-controlled bash always launches fixed sh and other executable paths are trusted configuration. No realistic untrusted pathname replacement was established under this boundary; the majority applied theoretical-TOCTOU rule 16.",
-      "vote_breakdown": {
-        "true_positive": 1,
-        "false_positive": 2,
-        "cannot_verify": 0
-      },
-      "refute_reasons": [
-        "implausible_trigger"
-      ],
-      "exclusion_rule": 16,
-      "first_links": [
-        "bee-harness/src/sandbox.rs:168",
-        "bee-harness/src/sandbox.rs:178"
-      ],
-      "duplicate_of": null,
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [],
+      "duplicate_of": "f026",
       "absorbed": [],
       "owner_hint": null,
       "missing_fields": [
@@ -978,33 +1431,303 @@
     {
       "id": "f019",
       "source": "VULN-FINDINGS.json#18",
-      "title": "Provider configuration can select any host environment secret and send it to an arbitrary endpoint",
-      "file": "bee-harness/src/config.rs",
-      "line": 79,
-      "category": "secret-exfiltration",
+      "title": "Scenario workdir setup performs host writes before sandbox creation",
+      "file": "src/episode.rs",
+      "line": 520,
+      "category": "path-traversal",
       "claimed_severity": "HIGH",
-      "verdict": "false_positive",
+      "verdict": "duplicate",
       "verify_verdict": null,
-      "confidence": 9.7,
+      "confidence": 0,
       "severity": null,
       "severity_label": null,
       "severity_alignment": null,
       "preconditions": [],
       "access_level": null,
       "threat_match": null,
-      "rationale": "The provider file is explicitly selected by the trusted operator, and its purpose is to pair a named environment key with the configured endpoint (bee-harness/src/bin/bee-episode.rs:188-211; bee-harness/src/provider/rig_model.rs:172-183). Exploitation requires malicious trusted provider configuration, excluded by rule 8.",
+      "rationale": "duplicate of f020",
+      "vote_breakdown": {
+        "true_positive": 0,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [],
+      "duplicate_of": "f020",
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f024",
+      "source": "VULN-FINDINGS.json#23",
+      "title": "Repository-controlled scenario IDs escape batch output containment",
+      "file": "src/app/run.rs",
+      "line": 408,
+      "category": "path-traversal",
+      "claimed_severity": "MEDIUM",
+      "verdict": "duplicate",
+      "verify_verdict": null,
+      "confidence": 0,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "duplicate of f023",
+      "vote_breakdown": {
+        "true_positive": 0,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [],
+      "duplicate_of": "f023",
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f027",
+      "source": "VULN-FINDINGS.json#26",
+      "title": "Unix-domain sockets bypass the network policy",
+      "file": "crates/ebpf/src/main.rs",
+      "line": 126,
+      "category": "sandbox-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "duplicate",
+      "verify_verdict": null,
+      "confidence": 0,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "duplicate of f034",
+      "vote_breakdown": {
+        "true_positive": 0,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [],
+      "duplicate_of": "f034",
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f032",
+      "source": "VULN-FINDINGS.json#31",
+      "title": "A child can disable the parent exfiltration controls",
+      "file": "crates/core/src/attenuation.rs",
+      "line": 57,
+      "category": "attenuation-bypass",
+      "claimed_severity": "MEDIUM",
+      "verdict": "duplicate",
+      "verify_verdict": null,
+      "confidence": 0,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "duplicate of f001",
+      "vote_breakdown": {
+        "true_positive": 0,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [],
+      "duplicate_of": "f001",
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f042",
+      "source": "VULN-FINDINGS.json#41",
+      "title": "Concurrent audit records share one synthetic scope ID",
+      "file": "src/concurrent.rs",
+      "line": 114,
+      "category": "audit-misattribution",
+      "claimed_severity": "LOW",
+      "verdict": "duplicate",
+      "verify_verdict": null,
+      "confidence": 0,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "duplicate of f052",
+      "vote_breakdown": {
+        "true_positive": 0,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [],
+      "duplicate_of": "f052",
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f044",
+      "source": "VULN-FINDINGS.json#43",
+      "title": "Scope teardown leaves cgroup-keyed authorization entries behind",
+      "file": "crates/userspace/src/lib.rs",
+      "line": 331,
+      "category": "stale-authorization",
+      "claimed_severity": "MEDIUM",
+      "verdict": "duplicate",
+      "verify_verdict": null,
+      "confidence": 0,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "duplicate of f045",
+      "vote_breakdown": {
+        "true_positive": 0,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [],
+      "duplicate_of": "f045",
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f047",
+      "source": "VULN-FINDINGS.json#46",
+      "title": "Unescaped project skill metadata can forge the capability prompt",
+      "file": "src/app/repl.rs",
+      "line": 380,
+      "category": "consent-spoofing",
+      "claimed_severity": "MEDIUM",
+      "verdict": "duplicate",
+      "verify_verdict": null,
+      "confidence": 0,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "duplicate of f046",
+      "vote_breakdown": {
+        "true_positive": 0,
+        "false_positive": 0,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [],
+      "exclusion_rule": null,
+      "first_links": [],
+      "duplicate_of": "f046",
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f008",
+      "source": "VULN-FINDINGS.json#7",
+      "title": "Zero-capability filesystem policy defaults to broad read/write access",
+      "file": "crates/ebpf/src/main.rs",
+      "line": 331,
+      "category": "filesystem-policy-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 10.0,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "The no-match behavior exactly implements the documented filesystem contract at specs/001-ebpf-agent-sandbox/contracts/policy.schema.md:45-54: unmatched reads are allowed and unmatched writes are denied only after a positive write grant activates managed-write mode. All three verifiers found this to be intended design under exclusion rule 3.",
       "vote_breakdown": {
         "true_positive": 0,
         "false_positive": 3,
         "cannot_verify": 0
       },
       "refute_reasons": [
-        "implausible_trigger",
         "intentional_behavior"
       ],
-      "exclusion_rule": 8,
+      "exclusion_rule": "3",
       "first_links": [
-        "bee-harness/src/bin/bee-episode.rs:195"
+        "crates/ebpf/src/main.rs:180"
+      ],
+      "duplicate_of": null,
+      "absorbed": [
+        "f013"
+      ],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f017",
+      "source": "VULN-FINDINGS.json#16",
+      "title": "Discovered skill directories are made readable after attenuation",
+      "file": "src/app/session.rs",
+      "line": 152,
+      "category": "attenuation-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 8.0,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "The post-check rule is an intentional read-only capability for bundled skill resources at src/app/session.rs:152-161. Discovery is limited to immediate project/user skill-root children, exact existing rules survive via or_insert, and kernel-resolved symlink targets do not match the inserted authored prefix; the majority found no independent confidentiality boundary crossing.",
+      "vote_breakdown": {
+        "true_positive": 1,
+        "false_positive": 2,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "intentional_behavior",
+        "not_actionable"
+      ],
+      "exclusion_rule": "3",
+      "first_links": [
+        "src/app/repl.rs:179"
       ],
       "duplicate_of": null,
       "absorbed": [],
@@ -1014,23 +1737,98 @@
       ]
     },
     {
-      "id": "f025",
-      "source": "VULN-FINDINGS.json#24",
-      "title": "Every concurrent episode's audit records carry the same false scope identifier",
-      "file": "bee-harness/src/concurrent.rs",
-      "line": 114,
-      "category": "audit-misattribution",
-      "claimed_severity": "LOW",
+      "id": "f021",
+      "source": "VULN-FINDINGS.json#20",
+      "title": "Tool grants bypass the attenuation ceiling and scenario tool allowlist",
+      "file": "src/skills/grant.rs",
+      "line": 161,
+      "category": "auth-bypass",
+      "claimed_severity": "HIGH",
       "verdict": "false_positive",
       "verify_verdict": null,
-      "confidence": 9.7,
+      "confidence": 9.0,
       "severity": null,
       "severity_label": null,
       "severity_alignment": null,
       "preconditions": [],
       "access_level": null,
       "threat_match": null,
-      "rationale": "Events do share the bee-concurrent label, but authoritative isolation and routing use kernel cgroup_id and each sandbox rechecks it (bee-userspace/src/audit_demux.rs:110-118; bee-harness/src/sandbox.rs:224-235). The transcript carries scenario identity separately, leaving only low-impact metadata inaccuracy.",
+      "rationale": "The majority found tool membership intentionally separate from filesystem/exec/network Policy. Interactive registration remains operator-consented, while a noninteractive scenario already selects its shipped tools and skill roots; actual effects remain bounded by compiled policy, so no stronger independent tool ceiling is crossed.",
+      "vote_breakdown": {
+        "true_positive": 1,
+        "false_positive": 2,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "intentional_behavior"
+      ],
+      "exclusion_rule": "3",
+      "first_links": [
+        "src/app/session.rs:142",
+        "src/episode.rs:599"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f029",
+      "source": "VULN-FINDINGS.json#28",
+      "title": "Headless episodes grant every discovered skill before invocation",
+      "file": "src/episode.rs",
+      "line": 599,
+      "category": "consent-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 10.0,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "Every request must pass ceiling.derive, and AllowWithinCeiling is the documented noninteractive ceiling-as-preauthorization design at src/skills/grant.rs:73-82,160-180. Without a distinct ceiling the base is reused, so the skill cannot widen authority; all verifiers classified the claim as intended behavior.",
+      "vote_breakdown": {
+        "true_positive": 0,
+        "false_positive": 3,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "intentional_behavior"
+      ],
+      "exclusion_rule": "3",
+      "first_links": [
+        "src/episode.rs:599"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f031",
+      "source": "VULN-FINDINGS.json#30",
+      "title": "Unselected repository skills inject instructions into every tool schema",
+      "file": "src/tools/skill.rs",
+      "line": 48,
+      "category": "prompt-injection",
+      "claimed_severity": "HIGH",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 10.0,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "Project skill descriptions do enter model-visible schemas, but the only claimed sink is LLM prompt/schema context. The text grants no capability and subsequent actions still pass registry, consent, attenuation, and sandbox controls, so exclusion rule 6 applies unanimously.",
       "vote_breakdown": {
         "true_positive": 0,
         "false_positive": 3,
@@ -1039,9 +1837,10 @@
       "refute_reasons": [
         "not_actionable"
       ],
-      "exclusion_rule": 12,
+      "exclusion_rule": "6",
       "first_links": [
-        "bee-harness/src/concurrent.rs:114"
+        "src/episode.rs:196",
+        "src/tools.rs:205"
       ],
       "duplicate_of": null,
       "absorbed": [],
@@ -1051,13 +1850,167 @@
       ]
     },
     {
-      "id": "f026",
-      "source": "VULN-FINDINGS.json#25",
-      "title": "Default non-enforcement builds execute model-requested tools directly on the host",
-      "file": "bee-harness/src/episode.rs",
-      "line": 523,
-      "category": "sandbox-bypass",
-      "claimed_severity": "HIGH",
+      "id": "f035",
+      "source": "VULN-FINDINGS.json#34",
+      "title": "Failed scope reload can retain kernel grants after userspace rollback",
+      "file": "crates/userspace/src/lib.rs",
+      "line": 200,
+      "category": "authorization-state-desynchronization",
+      "claimed_severity": "MEDIUM",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 7.9,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "Although reload_scope is nontransactional, compile/prepare rejects oversized state before mutation, existing single-scope key overwrites do not consume capacity, and concurrent sandboxes refuse reload. The majority found no in-scope untrusted source able to induce a later map failure after earlier widening.",
+      "vote_breakdown": {
+        "true_positive": 1,
+        "false_positive": 2,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "implausible_trigger",
+        "not_actionable"
+      ],
+      "exclusion_rule": "8",
+      "first_links": [
+        "src/grants/escalate.rs:108",
+        "src/sandbox.rs:96"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f038",
+      "source": "VULN-FINDINGS.json#37",
+      "title": "Hand-written URL parsing can authorize a different host than the transport",
+      "file": "src/mcp/policy.rs",
+      "line": 78,
+      "category": "destination-validation-bypass",
+      "claimed_severity": "MEDIUM",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 8.9,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "The custom parser can disagree with the HTTP parser, but production connect_remote obtains the URL only from operator-selected MCP configuration. Dynamic connect has no runtime path and model, tool, repository payload, or MCP response content cannot replace the configured URL under the stated boundary.",
+      "vote_breakdown": {
+        "true_positive": 1,
+        "false_positive": 2,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "implausible_trigger"
+      ],
+      "exclusion_rule": "8",
+      "first_links": [
+        "src/mcp/bridge.rs:332"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f045",
+      "source": "VULN-FINDINGS.json#44",
+      "title": "Cgroup ID reuse can combine new scopes with stale map state",
+      "file": "crates/userspace/src/lib.rs",
+      "line": 332,
+      "category": "stale-policy-state",
+      "claimed_severity": "MEDIUM",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 8.5,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "Stale map entries technically remain, but the majority found no CLI/batch/REPL lifecycle that creates a new scope on the same live Engine after teardown. Exploitation therefore requires a future library-only creation pattern plus cgroup-ID reuse and is theoretical under exclusion rule 16.",
+      "vote_breakdown": {
+        "true_positive": 1,
+        "false_positive": 2,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "implausible_trigger"
+      ],
+      "exclusion_rule": "16",
+      "first_links": [
+        "src/concurrent.rs:178",
+        "src/sandbox.rs:245"
+      ],
+      "duplicate_of": null,
+      "absorbed": [
+        "f044"
+      ],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f048",
+      "source": "VULN-FINDINGS.json#47",
+      "title": "Default progress logs expose tool arguments, results, and CTF flags",
+      "file": "src/episode.rs",
+      "line": 284,
+      "category": "sensitive-data-in-logs",
+      "claimed_severity": "MEDIUM",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 9.0,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "The progress sink is intentionally operator-facing stderr, can be disabled with --quiet, and only duplicates content already retained in the operator transcript. All verifiers found no new principal or confidentiality boundary, classifying it as nuisance/intended logging.",
+      "vote_breakdown": {
+        "true_positive": 0,
+        "false_positive": 3,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
+        "intentional_behavior",
+        "not_actionable"
+      ],
+      "exclusion_rule": "12",
+      "first_links": [
+        "src/app/run.rs:241"
+      ],
+      "duplicate_of": null,
+      "absorbed": [],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f052",
+      "source": "VULN-FINDINGS.json#51",
+      "title": "Concurrent audit events receive a shared synthetic scope identifier",
+      "file": "crates/userspace/src/async_events.rs",
+      "line": 77,
+      "category": "audit-integrity",
+      "claimed_severity": "LOW",
       "verdict": "false_positive",
       "verify_verdict": null,
       "confidence": 9.3,
@@ -1067,19 +2020,59 @@
       "preconditions": [],
       "access_level": null,
       "threat_match": null,
-      "rationale": "The non-enforce branch deliberately constructs Sandbox::Host and repository documentation explicitly describes it as host/testing mode (bee-harness/src/episode.rs:613-620; bee-harness/README.md:12-20). Selecting that build is an operator deployment choice, not a bypass of the enforce backend.",
+      "rationale": "The textual bee-concurrent label is inaccurate, but security routing and per-sandbox filtering use the kernel cgroup_id at crates/userspace/src/audit_demux.rs:110-119 and src/sandbox.rs:225-235. All verifiers found only redundant low-impact display metadata with no cross-scope exposure or enforcement effect.",
       "vote_breakdown": {
         "true_positive": 0,
         "false_positive": 3,
         "cannot_verify": 0
       },
       "refute_reasons": [
+        "not_actionable"
+      ],
+      "exclusion_rule": "12",
+      "first_links": [
+        "src/concurrent.rs:114"
+      ],
+      "duplicate_of": null,
+      "absorbed": [
+        "f042"
+      ],
+      "owner_hint": null,
+      "missing_fields": [
+        "preconditions"
+      ]
+    },
+    {
+      "id": "f053",
+      "source": "VULN-FINDINGS.json#52",
+      "title": "Stdio MCP servers run with host-user authority in non-enforce builds",
+      "file": "src/episode.rs",
+      "line": 620,
+      "category": "sandbox-bypass",
+      "claimed_severity": "HIGH",
+      "verdict": "false_positive",
+      "verify_verdict": null,
+      "confidence": 10.0,
+      "severity": null,
+      "severity_label": null,
+      "severity_alignment": null,
+      "preconditions": [],
+      "access_level": null,
+      "threat_match": null,
+      "rationale": "The majority found Sandbox::Host explicitly unconfined and operator-selected, with CLI/REPL gating and documentation for non-enforce MCP behavior. One verifier identified a possible batch-specific opt-in gap, but precision policy follows the 2-1 intended-behavior majority.",
+      "vote_breakdown": {
+        "true_positive": 1,
+        "false_positive": 2,
+        "cannot_verify": 0
+      },
+      "refute_reasons": [
         "intentional_behavior"
       ],
-      "exclusion_rule": 3,
+      "exclusion_rule": "3",
       "first_links": [
-        "bee-harness/src/bin/bee-episode.rs:226",
-        "bee-harness/src/episode.rs:577"
+        "src/app/repl.rs:209",
+        "src/mcp/bridge.rs:154",
+        "src/batch.rs:145"
       ],
       "duplicate_of": null,
       "absorbed": [],

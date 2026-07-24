@@ -1,18 +1,1 @@
-{
-  "id": "f017",
-  "verdict": "true_positive",
-  "vote_breakdown": {
-    "true_positive": 2,
-    "false_positive": 1,
-    "cannot_verify": 0
-  },
-  "confidence": 8.5,
-  "exclusion_rule": 12,
-  "refute_reasons": [
-    "not_actionable"
-  ],
-  "first_links": [
-    "bee-harness/src/episode.rs:337"
-  ],
-  "rationale": "After each call, run_loop drains all cgroup events and assigns them to the current ToolCall without a pre-call watermark or call identifier (bee-harness/src/episode.rs:323-338,444-448; bee-harness/src/sandbox.rs:210-235). A background child can therefore cause delayed events to be attributed to a later call and influence reactive escalation."
-}
+{"id":"f017","verdict":"false_positive","vote_breakdown":{"true_positive":1,"false_positive":2,"cannot_verify":0},"confidence":8.0,"exclusion_rule":"3","refute_reasons":["intentional_behavior","not_actionable"],"first_links":["src/app/repl.rs:179"],"rationale":"The post-check rule is an intentional read-only capability for bundled skill resources at src/app/session.rs:152-161. Discovery is limited to immediate project/user skill-root children, exact existing rules survive via or_insert, and kernel-resolved symlink targets do not match the inserted authored prefix; the majority found no independent confidentiality boundary crossing."}

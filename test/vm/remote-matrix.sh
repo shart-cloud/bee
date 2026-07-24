@@ -133,6 +133,90 @@ out=$(run_bee "$WORK/exec.toml" -- bash "$WORK/exectest.sh")
 echo "$out" | grep -q CAT_OK && emit exec-allow PASS "allowlisted exec ran" || emit exec-allow FAIL "allowed exec blocked"
 echo "$out" | grep -q 'NC_RC=126' && emit exec-deny PASS "unlisted exec denied" || emit exec-deny FAIL "nc not denied ($(echo "$out" | tr '\n' ' '))"
 
+# ---------------------------------------------------- search tool: library search runs IN-scope
+# The `search` tool execs `bee search-worker` (ripgrep as a library) through the sandbox, so its file
+# opens are mediated by the LSM. Prove it: a deny policy over one subtree must make a secret there
+# invisible to the search, while a sibling file outside the deny is found. If the library ran in the
+# harness instead of the scoped worker, the deny would not apply and the secret would leak.
+ST=/home/ubuntu/searchtest
+sudo rm -rf "$ST"; mkdir -p "$ST/open" "$ST/denied"
+echo "TOKEN-visible" | sudo tee "$ST/open/a.txt" >/dev/null
+echo "TOKEN-hidden"  | sudo tee "$ST/denied/secret.txt" >/dev/null
+cat >"$WORK/search.toml" <<EOF
+[policy]
+name = "search"
+mode = "enforce"
+[policy.filesystem]
+"$ST/denied" = "deny"
+EOF
+out=$(run_bee "$WORK/search.toml" -- /home/ubuntu/bee search-worker --path "$ST" -- TOKEN)
+if echo "$out" | grep -q "TOKEN-visible" && ! echo "$out" | grep -q "TOKEN-hidden"; then
+  emit search-in-scope PASS "matched allowed file, denied file invisible to the library search"
+else
+  emit search-in-scope FAIL "out=$(echo "$out" | tr '\n' '|')"
+fi
+sudo rm -rf "$ST"
+
+# ---------------------------------------------------- 012 f028/f026: tool child sheds escape caps
+# The tool child must come out of pre_exec with no_new_privs set and every escape-enabling capability
+# gone, even though the launcher ran as root with CAP_SYS_ADMIN. NO_NEW_PRIVS stops an `sh -c` from
+# reaching a setuid binary (f028); the emptied bounding set stops it wielding CAP_SYS_ADMIN/CAP_BPF to
+# detach bee's own LSM. The DAC pair (CAP_DAC_OVERRIDE|CAP_DAC_READ_SEARCH == 0x6) is intentionally
+# KEPT so file access still flows through the LSM hook rather than being pre-empted by DAC — see
+# `drop_privileges`. So the expected bounding set is exactly 0x6, and CAP_SYS_ADMIN (bit 21) is clear.
+out=$(run_bee "$WORK/exec.toml" -- cat /proc/self/status)
+nnp=$(echo "$out" | awk '/^NoNewPrivs:/{print $2}')
+capeff=$(echo "$out" | awk '/^CapEff:/{print $2}')
+capbnd=$(echo "$out" | awk '/^CapBnd:/{print $2}')
+# CAP_SYS_ADMIN is bit 21 → 0x200000. Both eff and bnd must have it clear and equal the DAC pair.
+sysadmin_clear=$(( (0x${capeff} & 0x200000) == 0 ))
+if [ "$nnp" = 1 ] && [ "$capbnd" = 0000000000000006 ] && [ "$capeff" = 0000000000000006 ] && [ "$sysadmin_clear" = 1 ]; then
+  emit priv-drop PASS "NoNewPrivs=1 CapBnd=0x6 (DAC only, CAP_SYS_ADMIN gone)"
+else
+  emit priv-drop FAIL "NoNewPrivs=$nnp CapEff=$capeff CapBnd=$capbnd"
+fi
+
+# ---------------------------------------------------- 012 f026: enforcement follows a cgroup move
+# The child's uid is still 0 and the scope cgroup is root-owned, so it can mkdir a sub-cgroup and
+# migrate into it — which changes bpf_get_current_cgroup_id(). An exact-match LSM lookup would then
+# miss and fail open. The ancestor walk must keep the denied read denied from the child cgroup.
+cat >"$WORK/migrate.sh" <<'EOF'
+set -u
+# cgroup v2: /proc/self/cgroup is a single `0::<path>` line.
+mine=$(sed -n 's/^0:::\?//p; s/^0:://p' /proc/self/cgroup | tail -1)
+base="/sys/fs/cgroup$mine"
+if mkdir -p "$base/sub" 2>/dev/null && echo $$ > "$base/sub/cgroup.procs" 2>/dev/null; then
+  echo "MOVED_TO=$(sed -n 's/^0:://p' /proc/self/cgroup)"
+else
+  echo "MIGRATE_BLOCKED"
+fi
+cat /home/ubuntu/.ssh/secret.txt 2>&1
+EOF
+out=$(run_bee "$WORK/fs.toml" -- bash "$WORK/migrate.sh")
+# Either the migration was blocked, or it succeeded and the read is STILL denied — both are safe.
+# The failure is: it migrated AND the secret leaked (enforcement left behind at the old cgroup id).
+if echo "$out" | grep -q TOP-SECRET; then
+  emit cgroup-migrate-enforced FAIL "secret leaked after move: $(echo "$out" | tr '\n' ' ')"
+elif echo "$out" | grep -q 'MOVED_TO='; then
+  emit cgroup-migrate-enforced PASS "migrated to child cgroup, read still denied"
+else
+  emit cgroup-migrate-enforced PASS "migration blocked, read denied"
+fi
+
+# ---------------------------------------------------- 012 f022: teardown kills the whole subtree
+# A backgrounded, redirected descendant outlives the direct child. bee must SIGKILL the scope
+# cgroup before dropping the engine (which detaches the LSM programs) — otherwise the survivor keeps
+# running unenforced. Verify no marker appears after bee exits and the scope cgroup is gone.
+marker="$WORK/survived"
+rm -f "$marker"
+run_bee "$WORK/exec.toml" -- bash -c "(sleep 4; touch $marker) >/dev/null 2>&1 & echo LAUNCHED" >/dev/null 2>&1
+sleep 6
+if [ -e "$marker" ]; then
+  emit teardown-kills-descendants FAIL "backgrounded descendant outlived the scope"
+else
+  emit teardown-kills-descendants PASS "descendant reaped at teardown"
+fi
+
 # ---------------------------------------------------------------- observe (dry-run) mode
 cat >"$WORK/obs.toml" <<'EOF'
 [policy]

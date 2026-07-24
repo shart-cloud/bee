@@ -1,17 +1,1 @@
-{
-  "id": "f022",
-  "verdict": "true_positive",
-  "vote_breakdown": {
-    "true_positive": 3,
-    "false_positive": 0,
-    "cannot_verify": 0
-  },
-  "confidence": 9.7,
-  "exclusion_rule": null,
-  "refute_reasons": [],
-  "first_links": [
-    "bee-harness/src/episode.rs:743",
-    "bee-harness/src/episode.rs:597"
-  ],
-  "rationale": "The ceiling derivation covers only filesystem Policy, while requested tools are appended after approval (bee-harness/src/skills/grant.rs:152-182,195-207). Episode setup uses AllowWithinCeiling and registers those tools before the loop, so a malicious tool-only skill can add bash or write_file outside the operator's tool set."
-}
+{"id":"f022","verdict":"true_positive","vote_breakdown":{"true_positive":3,"false_positive":0,"cannot_verify":0},"confidence":10.0,"exclusion_rule":null,"refute_reasons":[],"first_links":["src/tools/bash.rs:48"],"rationale":"run_child waits and kills only the direct shell at src/tools/exec.rs:30-55. A redirected background descendant keeps the cgroup populated; src/sandbox.rs:241-250 ignores remove_dir failure and dropping the sandbox detaches its Engine, leaving the descendant alive without enforcement."}

@@ -1,16 +1,1 @@
-{
-  "id": "f020",
-  "verdict": "true_positive",
-  "vote_breakdown": {
-    "true_positive": 3,
-    "false_positive": 0,
-    "cannot_verify": 0
-  },
-  "confidence": 10,
-  "exclusion_rule": null,
-  "refute_reasons": [],
-  "first_links": [
-    "bee-harness/src/mcp/bridge.rs:296"
-  ],
-  "rationale": "spawn_stdio creates an ordinary inherited-environment command (bee-harness/src/mcp/bridge.rs:291-301; bee-harness/src/mcp/transport.rs:40-48). The sandbox removes only a small list of provider and configured token names and never env_clear's, so a malicious MCP child receives unrelated cloud, Git, proxy, and agent credentials."
-}
+{"id":"f020","verdict":"true_positive","vote_breakdown":{"true_positive":3,"false_positive":0,"cannot_verify":0},"confidence":10.0,"exclusion_rule":null,"refute_reasons":[],"first_links":["src/app/run.rs:241"],"rationale":"Scenario validation does not constrain create_dirs, create_files, or flag paths at src/scenario.rs:144-200. src/episode.rs:579-621 materializes them with host create_dir_all and write before constructing the sandbox, allowing absolute, parent-traversal, and symlink-crossing overwrites."}

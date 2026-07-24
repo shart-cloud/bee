@@ -76,6 +76,12 @@ enum Cmd {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
+    /// Internal: run a ripgrep-library search and print `path:line:text`. The `search` tool execs
+    /// this subcommand through the sandbox so the search runs *inside the scope* — every file it
+    /// opens is mediated by the LSM. Hidden: it is not an operator-facing command, only the seam the
+    /// tool uses to keep the library search under enforcement.
+    #[command(hide = true)]
+    SearchWorker(bee::search::SearchArgs),
 }
 
 fn main() -> ExitCode {
@@ -98,6 +104,21 @@ fn main() -> ExitCode {
             &parent_cgroup,
             &command,
         ),
+        Cmd::SearchWorker(args) => cmd_search_worker(&args),
+    }
+}
+
+/// Run the `search` tool's library search, streaming results to stdout. Reached only via the tool,
+/// which execs `bee search-worker …` inside the scope (see [`bee::search`]). A search/IO error exits
+/// non-zero so the tool reports an error result; a file the LSM denied simply yields no matches.
+fn cmd_search_worker(args: &bee::search::SearchArgs) -> ExitCode {
+    let mut stdout = std::io::stdout().lock();
+    match bee::search::run(args, &mut stdout) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("bee search-worker: {e}");
+            ExitCode::from(1)
+        }
     }
 }
 

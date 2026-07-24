@@ -144,6 +144,10 @@ async fn run_episode_populates_score_for_ctf() {
             path: flag_path.clone(),
             value: FLAG.into(),
         }),
+        // The flag is planted at an absolute path, so the operator's containment root has to be the
+        // directory it lives in — the runner would otherwise refuse a write outside the default
+        // per-episode temp root (f020).
+        root: Some(dir.clone()),
         ..WorkdirSetup::default()
     };
 

@@ -17,11 +17,31 @@ use bee_userspace::{hardened_command, SpawnError};
 
 /// Credential env vars stripped from **every** tool child regardless of config (FR-018). The
 /// configured `api_key_env` is appended to this set at construction.
+///
+/// These names are now redundant with [`INHERITED_ENV_VARS`] — nothing outside that allowlist
+/// reaches a child either way — but they are kept as an explicit subtraction so that adding a name
+/// to the allowlist can never silently re-expose a provider key.
 pub const DEFAULT_KEY_VARS: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
     "GROQ_API_KEY",
+];
+
+/// The only environment variables a tool child inherits. Everything else is cleared.
+///
+/// This is an allowlist rather than a denylist on purpose. The denylist it replaces named four
+/// provider keys, which meant a model-driven `bash` call could read `AWS_SECRET_ACCESS_KEY`,
+/// `GITHUB_TOKEN`, `KUBECONFIG`, `SSH_AUTH_SOCK` — anything ambient in the operator's shell — and
+/// return it to the model in a tool result. A tool child needs enough environment to run a program
+/// and write to a temp dir; it does not need the operator's credentials, and there is no list of
+/// credential names that stays complete.
+///
+/// `LC_*` is allowed by prefix alongside these. An MCP stdio server that needs more sets it
+/// explicitly through its `env` config, which is applied after this clear (see
+/// [`crate::mcp::transport`]).
+pub const INHERITED_ENV_VARS: &[&str] = &[
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD", "TMPDIR", "TERM", "TZ", "LANG",
 ];
 
 /// A hardened host process with no kernel scope.
@@ -167,7 +187,7 @@ impl Sandbox {
             Sandbox::Host(h) => {
                 // No cgroup join; hardening + env strip only.
                 let mut cmd = hardened_command::<fn() -> io::Result<()>>(program, args, None)?;
-                strip(&mut cmd, &h.strip_env);
+                restrict_env(&mut cmd, &h.strip_env);
                 Ok(cmd)
             }
             #[cfg(feature = "enforce")]
@@ -177,7 +197,7 @@ impl Sandbox {
                     .join_closure()
                     .map_err(|err| SpawnError::Io(io::Error::other(err.to_string())))?;
                 let mut cmd = hardened_command(program, args, Some(join))?;
-                strip(&mut cmd, &e.strip_env);
+                restrict_env(&mut cmd, &e.strip_env);
                 Ok(cmd)
             }
             #[cfg(feature = "concurrent")]
@@ -187,7 +207,7 @@ impl Sandbox {
                     .join_closure()
                     .map_err(|err| SpawnError::Io(io::Error::other(err.to_string())))?;
                 let mut cmd = hardened_command(program, args, Some(join))?;
-                strip(&mut cmd, &c.strip_env);
+                restrict_env(&mut cmd, &c.strip_env);
                 Ok(cmd)
             }
         }
@@ -238,22 +258,45 @@ impl Sandbox {
         }
     }
 
-    /// Tear down the scope cgroup (no-op for `Host`).
-    pub fn teardown(&self) {
+    /// Kill everything left in the scope and tear down its cgroup (no-op for `Host`).
+    ///
+    /// A failure here is reported, never swallowed. Teardown is followed by the engine being
+    /// dropped, which detaches the LSM programs — so a scope that could not be emptied means a
+    /// surviving process just lost its enforcement, and that has to be visible to the operator
+    /// rather than inferred later from an `EBUSY` nobody saw.
+    pub fn teardown(&self) -> Result<(), String> {
         #[cfg(feature = "enforce")]
         if let Sandbox::Enforced(e) = self {
-            let _ = e.scope.teardown();
+            return e
+                .scope
+                .teardown()
+                .map_err(|err| format!("scope teardown failed: {err}"));
         }
         #[cfg(feature = "concurrent")]
         if let Sandbox::Concurrent(c) = self {
-            let _ = c.scope.teardown();
+            return c
+                .scope
+                .teardown()
+                .map_err(|err| format!("scope teardown failed: {err}"));
         }
+        Ok(())
     }
 }
 
-/// Remove `keys` from a child command's environment (fork-safe: done in the parent before spawn).
-fn strip(cmd: &mut Command, keys: &[String]) {
-    for k in keys {
-        cmd.env_remove(k);
+/// Reduce a child command's environment to [`INHERITED_ENV_VARS`] (plus `LC_*`) minus `keys`.
+///
+/// Done in the parent before spawn, so it is fork-safe: reading the environment takes locks and
+/// allocates, which is not safe between `fork` and `exec`.
+fn restrict_env(cmd: &mut Command, keys: &[String]) {
+    let inherited: Vec<(String, std::ffi::OsString)> = std::env::vars_os()
+        .filter_map(|(k, v)| {
+            let name = k.into_string().ok()?;
+            let allowed = INHERITED_ENV_VARS.contains(&name.as_str()) || name.starts_with("LC_");
+            (allowed && !keys.contains(&name)).then_some((name, v))
+        })
+        .collect();
+    cmd.env_clear();
+    for (k, v) in inherited {
+        cmd.env(k, v);
     }
 }

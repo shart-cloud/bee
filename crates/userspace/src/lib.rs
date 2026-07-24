@@ -328,8 +328,15 @@ impl Scope {
         Ok(move || cgroup::raw_join_self(&procs))
     }
 
-    /// Remove the scope's cgroup (best-effort).
+    /// Kill everything still running in the scope, then remove its cgroup.
+    ///
+    /// The kill is not optional and not best-effort: the caller is about to drop the [`Engine`],
+    /// which detaches the LSM programs, so any process left alive here keeps running *without
+    /// enforcement*. Removing the directory of a cgroup that still holds processes fails with
+    /// `EBUSY` anyway — the error was previously discarded, which turned this escape into a silent
+    /// one.
     pub fn teardown(&self) -> std::io::Result<()> {
+        cgroup::kill_scope_cgroup(&self.path)?;
         cgroup::teardown_scope_cgroup(&self.path)
     }
 }

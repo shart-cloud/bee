@@ -54,6 +54,10 @@ pub struct BatchConfig {
     pub scenarios: Vec<PathBuf>,
     /// Paths to provider TOMLs.
     pub providers: Vec<PathBuf>,
+    /// Operator-declared containment root for host-side workdir materialization, applied to every
+    /// scenario in the batch. `None` means a per-episode temp directory. See
+    /// [`crate::scenario::WorkdirSetup::root`].
+    pub workdir_root: Option<PathBuf>,
 }
 
 /// The product of a batch: one transcript per runnable pair, plus per-pair setup errors (a TOML that
@@ -87,7 +91,16 @@ pub async fn run_batch(config: &BatchConfig, progress: Option<ProgressSink>) -> 
     let scenarios: Vec<(PathBuf, Result<Scenario, String>)> = config
         .scenarios
         .iter()
-        .map(|p| (p.clone(), Scenario::from_path(p).map_err(|e| e.to_string())))
+        .map(|p| {
+            let loaded = Scenario::from_path(p)
+                .map_err(|e| e.to_string())
+                .map(|mut s| {
+                    // Operator-declared, never scenario-declared (see `WorkdirSetup::root`).
+                    s.workdir.root = config.workdir_root.clone();
+                    s
+                });
+            (p.clone(), loaded)
+        })
         .collect();
     let providers: Vec<(PathBuf, Result<ProviderConfig, String>)> = config
         .providers
@@ -132,6 +145,19 @@ pub async fn run_batch(config: &BatchConfig, progress: Option<ProgressSink>) -> 
             } else {
                 std::env::var(&cfg.api_key_env).unwrap_or_default()
             };
+
+            // Say out loud which secret is about to be sent where. `--providers <dir>` globs a
+            // directory rather than an audited list, so this is the operator's chance to notice a
+            // provider file they did not write pointing their key at an endpoint they do not know.
+            if let (Some(sink), Some(url)) = (shared.as_ref(), cfg.base_url.as_deref()) {
+                if !api_key.is_empty() {
+                    sink(&format!(
+                        "provider {}: sending ${} to {url}",
+                        ppath.display(),
+                        cfg.api_key_env,
+                    ));
+                }
+            }
 
             match model_from_config(cfg, &api_key) {
                 Ok(model) => {

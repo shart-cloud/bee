@@ -1,17 +1,1 @@
-{
-  "id": "f014",
-  "verdict": "true_positive",
-  "vote_breakdown": {
-    "true_positive": 3,
-    "false_positive": 0,
-    "cannot_verify": 0
-  },
-  "confidence": 9.7,
-  "exclusion_rule": null,
-  "refute_reasons": [],
-  "first_links": [
-    "bee-harness/src/sandbox.rs:178",
-    "bee-harness/src/sandbox.rs:168"
-  ],
-  "rationale": "Model-controlled tool execution reaches hardened_command in the enforced sandbox (bee-harness/src/tools/bash.rs:43-52; bee-harness/src/sandbox.rs:164-190). Its pre-exec hardening disables dumps but never drops UID/GID/capabilities or sets no_new_privs (bee-userspace/src/spawn.rs:92-97; bee-hardening/src/lib.rs:29-32), so a privileged loader spawns privileged tools."
-}
+{"id":"f014","verdict":"true_positive","vote_breakdown":{"true_positive":3,"false_positive":0,"cannot_verify":0},"confidence":10.0,"exclusion_rule":null,"refute_reasons":[],"first_links":["src/app/config/mod.rs:361","src/main.rs:194","src/main.rs:221"],"rationale":"Executable attenuation validates only child-listed entries at crates/core/src/attenuation.rs:159-174, so an empty list passes. Planning installs no EXEC_ALLOW and crates/ebpf/src/main.rs:193-204 interprets the absent exact-child entry as unrestricted execution."}

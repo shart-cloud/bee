@@ -130,6 +130,15 @@ async-trait = { workspace = true }
 async-stream = "0.3"
 futures-util = "0.3"
 clap = { workspace = true }
+
+# ripgrep as a pure-Rust library (wraps ripgrep's own `grep`/`ignore` core crates — no external `rg`
+# binary). Used ONLY by the hidden `bee search-worker` subcommand, which the model-facing `search`
+# tool execs through the sandbox: running the library in that worker — rather than in the harness —
+# is what keeps every file it opens under the eBPF scope's `file_open` policy. `bstr` reads the
+# `Match::text` (arbitrary bytes) the worker prints. NOT optional: `search` is a default tool, so the
+# worker must exist in every build.
+ripgrep-api = "0.2"
+bstr = "1"
 # Pinned to 17: rustyline 18 added a `unicode-width =0.2.2` dependency that conflicted with ratatui
 # 0.29's `unicode-width =0.2.0` pin. ratatui-core 0.1 relaxed that to `>=0.2.0`, so the conflict is
 # gone and 18 would now resolve — but unpinning is deliberately out of scope for 009 (research R1).
