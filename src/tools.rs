@@ -16,6 +16,7 @@ pub mod ctf;
 pub mod exec;
 pub mod files;
 pub mod render;
+pub mod search;
 pub mod skill;
 
 use crate::render_spec::{PanelOp, RenderSpec, RenderTarget};
@@ -23,7 +24,13 @@ use crate::render_spec::{PanelOp, RenderSpec, RenderTarget};
 /// The default tool set advertised to the model (contracts/scenario-schema.md). The CTF terminal
 /// tools (`submit_flag`, `give_up`) are **not** here — a scenario opts into them via its `tools`
 /// list when `mode = "ctf"`.
-pub const DEFAULT_TOOLS: &[&str] = &["bash", "read_file", "write_file", "list_directory"];
+pub const DEFAULT_TOOLS: &[&str] = &[
+    "bash",
+    "read_file",
+    "write_file",
+    "list_directory",
+    "search",
+];
 
 /// The CTF terminal tools (US3), enabled only when a scenario lists them.
 pub const CTF_TOOLS: &[&str] = &["submit_flag", "give_up"];
@@ -249,6 +256,7 @@ pub fn register_named(r: &mut ToolRegistry, name: &str, flag: Option<&str>) {
         }
         "give_up" => r.insert(Box::new(ctf::GiveUp)),
         "render" => r.insert(Box::new(render::RenderTool::new())),
+        "search" => r.insert(Box::new(search::Search)),
         // `skill` needs a discovered SkillRegistry, so the caller inserts it separately (see
         // `skill::SkillTool`). Recognized as known so it isn't an unknown name.
         "skill" => {}

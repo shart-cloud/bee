@@ -133,6 +133,30 @@ out=$(run_bee "$WORK/exec.toml" -- bash "$WORK/exectest.sh")
 echo "$out" | grep -q CAT_OK && emit exec-allow PASS "allowlisted exec ran" || emit exec-allow FAIL "allowed exec blocked"
 echo "$out" | grep -q 'NC_RC=126' && emit exec-deny PASS "unlisted exec denied" || emit exec-deny FAIL "nc not denied ($(echo "$out" | tr '\n' ' '))"
 
+# ---------------------------------------------------- search tool: library search runs IN-scope
+# The `search` tool execs `bee search-worker` (ripgrep as a library) through the sandbox, so its file
+# opens are mediated by the LSM. Prove it: a deny policy over one subtree must make a secret there
+# invisible to the search, while a sibling file outside the deny is found. If the library ran in the
+# harness instead of the scoped worker, the deny would not apply and the secret would leak.
+ST=/home/ubuntu/searchtest
+sudo rm -rf "$ST"; mkdir -p "$ST/open" "$ST/denied"
+echo "TOKEN-visible" | sudo tee "$ST/open/a.txt" >/dev/null
+echo "TOKEN-hidden"  | sudo tee "$ST/denied/secret.txt" >/dev/null
+cat >"$WORK/search.toml" <<EOF
+[policy]
+name = "search"
+mode = "enforce"
+[policy.filesystem]
+"$ST/denied" = "deny"
+EOF
+out=$(run_bee "$WORK/search.toml" -- /home/ubuntu/bee search-worker --path "$ST" -- TOKEN)
+if echo "$out" | grep -q "TOKEN-visible" && ! echo "$out" | grep -q "TOKEN-hidden"; then
+  emit search-in-scope PASS "matched allowed file, denied file invisible to the library search"
+else
+  emit search-in-scope FAIL "out=$(echo "$out" | tr '\n' '|')"
+fi
+sudo rm -rf "$ST"
+
 # ---------------------------------------------------- 012 f028/f026: tool child sheds escape caps
 # The tool child must come out of pre_exec with no_new_privs set and every escape-enabling capability
 # gone, even though the launcher ran as root with CAP_SYS_ADMIN. NO_NEW_PRIVS stops an `sh -c` from
