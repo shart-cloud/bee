@@ -4,6 +4,16 @@
 
 Context: interactive; environment = CLI/batch tool and interactive REPL, with operator inputs trusted and repository/model/tool/skill/MCP content untrusted; scoring = derived HIGH/MEDIUM/LOW; 3-vote verification; precision tie-breaking.
 
+## Remediated
+
+This report is a snapshot of the triage run; the findings below have since been fixed. The entries
+are left in place unedited for provenance.
+
+| Findings | Fix |
+|----------|-----|
+| f018, f020, f022, f026, f028, f030 (all six HIGHs) | `8e2cdbb` + `3225d44` — closed and VM-verified (31/31 matrix) |
+| f001, f002, f012, f014, f025 (+ absorbed f006, f032) | branch `013-attenuation-inheritance` — one root cause: attenuation validated only what a child *stated*, so omission widened authority. `Policy::derive` now returns the *effective* child policy (silence inherits, it does not reset) and refuses child grants reaching into FR-008 protected regions. See research R15; regression tests in `crates/core/tests/attenuation.rs`. |
+
 ## Act on these
 ### [HIGH] Provider TOML can send an arbitrary environment secret to an attacker endpoint  (f018)
 `src/batch.rs:133` | credential-exposure | claimed HIGH (alignment +4) | confidence 10.0/10

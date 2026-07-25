@@ -335,6 +335,44 @@ remains misleading and failures occur after kernel setup begins; (c) silently dr
 
 ---
 
+## R15. Attenuation: silence inherits, it does not reset (FR-005, SC-002)
+
+**Context**: `derive` validated only the rules a child *stated*, and returned the request verbatim.
+Every downstream layer, though, reads absence as "nothing to enforce": an empty `[policy.network]`
+leaves `FLAG_NET_ENFORCED` clear (egress unrestricted), an empty `[policy.exec]` installs no
+`EXEC_ALLOW` entries, a policy with no `write` grant never sets `FLAG_FS_WRITE_DEFAULT_DENY`, and a
+dropped `!` inode pin degrades to path matching. Intentional for a root policy the operator authored;
+fatal for a derived one, where a child could widen its authority purely by omission. Separately, the
+FR-008 protected defaults (`.git`, `.bee`, `~/.ssh`, `~/.aws`) are injected during *compilation* —
+after attenuation — and a more-specific rule out-ranks them at load, so a child under a broad parent
+grant could name `~/.ssh` precisely and out-rank the protection.
+
+**Decision**: A dimension the child does not mention is **inherited** from the parent, and a
+restriction the parent placed inside a region the child re-grants is **re-added** if the child dropped
+it. `derive` therefore returns the *effective* child policy, not the request:
+
+- empty child `filesystem` / `exec.allow` / `network.allow` → the parent's map/list is copied in;
+- a non-empty child filesystem map re-absorbs every parent `deny`;
+- a child exec entry whose parent counterpart is inode-pinned (`!cargo`) is re-pinned.
+
+Attenuation additionally refuses any child grant landing inside an FR-008 protected region unless the
+parent named a region containing that path explicitly, so compile-time injection stays trustworthy for
+derived policies.
+
+**Rationale**: Inheritance is trivially ⊆ the parent — every inherited rule *is* a parent rule — so the
+subset property is preserved by construction, and the fix lives entirely in the core validator where
+the property tests already run. It also keeps a child usable: a subagent that only wants to narrow the
+filesystem does not silently lose its toolchain.
+
+**Alternatives**: (a) treat an empty child list as deny-all — rejected: the backend cannot express
+"enforced but zero destinations" today (`plan.rs` derives the enforcement flags from rule presence), so
+it would require a backend change to mean anything, and it makes exec unusable for a partial child;
+(b) reject a child that omits a dimension the parent constrains — rejected as hostile to the common
+case of narrowing one dimension; (c) fix it downstream in `plan.rs` — rejected because the subset
+property belongs to attenuation, and every future backend would have to re-implement it.
+
+---
+
 ## Resolved Technical Context values
 
 | Field | Value |

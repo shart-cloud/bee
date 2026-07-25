@@ -1,6 +1,6 @@
 //! Attenuation validator unit tests (T040) — targeted soundness/usability cases.
 
-use bee_core::Policy;
+use bee_core::{Access, Policy};
 
 fn p(toml: &str) -> Policy {
     Policy::from_toml(toml).expect("valid policy")
@@ -131,4 +131,132 @@ fn novel_glob_grant_rejected() {
         parent.derive(child).is_err(),
         "glob not provably contained in a prefix grant"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Widening by omission (f001, f002, f012, f014, f025). `derive` returns the
+// *effective* child: silence inherits the parent's restrictions, never resets them.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parent_deny_outside_any_child_grant_is_inherited() {
+    // f001: the child never mentions /secrets, so no replication check fires — but dropping the
+    // denial would hand it back the default-allowed read the parent took away.
+    let parent = p(r#"
+[policy]
+name = "p"
+[policy.filesystem]
+"/proj" = "write"
+"/secrets" = "deny"
+"#);
+    let child = p("[policy]\nname=\"c\"\n[policy.filesystem]\n\"/proj/src\" = \"read\"\n");
+    let derived = parent
+        .derive(child)
+        .expect("narrowing child is within the parent");
+    assert_eq!(
+        derived.filesystem.get("/secrets"),
+        Some(&Access::Deny),
+        "the parent's denial must survive into the derived policy"
+    );
+}
+
+#[test]
+fn silent_filesystem_child_inherits_the_parent_map() {
+    // An empty rule set installs no rules at all, which reads downstream as "no filesystem
+    // enforcement" — writes included. Inherit instead.
+    let parent = p(r#"
+[policy]
+name = "p"
+[policy.filesystem]
+"/proj" = "write"
+"/secrets" = "deny"
+"#);
+    let derived = parent
+        .derive(p("[policy]\nname=\"c\"\n"))
+        .expect("a child that asks for nothing is trivially a subset");
+    assert_eq!(derived.filesystem, parent.filesystem);
+}
+
+#[test]
+fn empty_child_network_inherits_rather_than_disabling_egress() {
+    // f012: an empty list clears FLAG_NET_ENFORCED, which permits *every* destination.
+    let parent = p("[policy]\nname=\"p\"\n[policy.network]\nallow=[\"crates.io:443\"]\n");
+    let derived = parent.derive(p("[policy]\nname=\"c\"\n")).unwrap();
+    assert_eq!(derived.network.allow, vec!["crates.io:443".to_string()]);
+}
+
+#[test]
+fn empty_child_exec_inherits_rather_than_unrestricting() {
+    // f014: no EXEC_ALLOW entry is read by the kernel as unrestricted execution.
+    let parent = p("[policy]\nname=\"p\"\n[policy.exec]\nallow=[\"cargo\",\"rustc\"]\n");
+    let derived = parent.derive(p("[policy]\nname=\"c\"\n")).unwrap();
+    assert_eq!(
+        derived.exec.allow,
+        vec!["cargo".to_string(), "rustc".to_string()]
+    );
+
+    // A child that *does* name executables still narrows to its own selection.
+    let narrowed = parent
+        .derive(p(
+            "[policy]\nname=\"c\"\n[policy.exec]\nallow=[\"cargo\"]\n",
+        ))
+        .unwrap();
+    assert_eq!(narrowed.exec.allow, vec!["cargo".to_string()]);
+}
+
+#[test]
+fn child_inherits_the_parent_inode_pin() {
+    // f025: dropping the `!` widens — an unpinned rule matches whatever now sits at that path.
+    let parent = p("[policy]\nname=\"p\"\n[policy.exec]\nallow=[\"!cargo\"]\n");
+    let derived = parent
+        .derive(p(
+            "[policy]\nname=\"c\"\n[policy.exec]\nallow=[\"cargo\"]\n",
+        ))
+        .unwrap();
+    assert_eq!(derived.exec.allow, vec!["!cargo".to_string()]);
+}
+
+#[test]
+fn child_cannot_reach_into_a_protected_region_under_a_broad_grant() {
+    // f002: protected defaults are injected at compile time, after attenuation, and a more
+    // specific rule out-ranks them at load — so the refusal has to happen here.
+    let parent = p("[policy]\nname=\"p\"\n[policy.filesystem]\n\"~\" = \"write\"\n");
+    let err = parent
+        .derive(p(
+            "[policy]\nname=\"c\"\n[policy.filesystem]\n\"~/.ssh/id_rsa\" = \"read\"\n",
+        ))
+        .unwrap_err();
+    assert!(err.reason.contains("protected region"), "{}", err.reason);
+
+    // The operator may still override it explicitly; the child then inherits that override.
+    let permissive = p(r#"
+[policy]
+name = "p"
+[policy.filesystem]
+"~" = "write"
+"~/.ssh" = "read"
+"#);
+    assert!(permissive
+        .derive(p(
+            "[policy]\nname=\"c\"\n[policy.filesystem]\n\"~/.ssh/id_rsa\" = \"read\"\n"
+        ))
+        .is_ok());
+}
+
+#[test]
+fn protected_git_is_readable_but_not_writable_by_a_child() {
+    let parent = p("[policy]\nname=\"p\"\n[policy.filesystem]\n\":project_root\" = \"write\"\n");
+    assert!(
+        parent
+            .derive(p(
+                "[policy]\nname=\"c\"\n[policy.filesystem]\n\":project_root/.git\" = \"read\"\n"
+            ))
+            .is_ok(),
+        "the protected default for .git is read-only, not deny"
+    );
+    assert!(parent
+        .derive(p(
+            "[policy]\nname=\"c\"\n[policy.filesystem]\n\":project_root/.git/hooks\" = \"write\"\n"
+        ))
+        .is_err());
 }

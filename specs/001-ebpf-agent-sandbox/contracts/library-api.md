@@ -20,6 +20,9 @@ pub fn Policy::compile(&self, resolver: &dyn Resolver) -> Result<CompiledPolicy,
 // DNS resolver handle (for domain→IP), and clock — all injected (no ambient I/O in core logic).
 
 // Attenuation: derive a subset policy. Rejects any over-grant (FR-005, SC-002).
+// Returns the *effective* child policy, not the request: silence inherits rather than resets, so a
+// dimension the request omits is filled from the parent and parent `deny` rules / inode pins the
+// request dropped are re-added (research R15).
 pub fn Policy::derive(&self, request: Policy) -> Result<Policy, AttenuationError>;
 
 // Audit event (serde Serialize/Deserialize → JSON, FR-007).

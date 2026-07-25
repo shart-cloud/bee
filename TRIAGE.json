@@ -350,7 +350,12 @@
       "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
       "missing_fields": [
         "preconditions"
-      ]
+      ],
+      "remediation": {
+        "status": "fixed",
+        "where": "013-attenuation-inheritance",
+        "note": "Policy::derive now returns the effective child policy \u2014 an omitted filesystem/exec/network dimension is inherited from the parent, parent deny rules and inode pins are re-added, and a child grant reaching into an FR-008 protected region is refused (research R15)."
+      }
     },
     {
       "id": "f002",
@@ -392,7 +397,12 @@
       "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
       "missing_fields": [
         "preconditions"
-      ]
+      ],
+      "remediation": {
+        "status": "fixed",
+        "where": "013-attenuation-inheritance",
+        "note": "Policy::derive now returns the effective child policy \u2014 an omitted filesystem/exec/network dimension is inherited from the parent, parent deny rules and inode pins are re-added, and a child grant reaching into an FR-008 protected region is refused (research R15)."
+      }
     },
     {
       "id": "f012",
@@ -434,7 +444,12 @@
       "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
       "missing_fields": [
         "preconditions"
-      ]
+      ],
+      "remediation": {
+        "status": "fixed",
+        "where": "013-attenuation-inheritance",
+        "note": "Policy::derive now returns the effective child policy \u2014 an omitted filesystem/exec/network dimension is inherited from the parent, parent deny rules and inode pins are re-added, and a child grant reaching into an FR-008 protected region is refused (research R15)."
+      }
     },
     {
       "id": "f014",
@@ -478,7 +493,12 @@
       "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
       "missing_fields": [
         "preconditions"
-      ]
+      ],
+      "remediation": {
+        "status": "fixed",
+        "where": "013-attenuation-inheritance",
+        "note": "Policy::derive now returns the effective child policy \u2014 an omitted filesystem/exec/network dimension is inherited from the parent, parent deny rules and inode pins are re-added, and a child grant reaching into an FR-008 protected region is refused (research R15)."
+      }
     },
     {
       "id": "f009",
@@ -637,7 +657,12 @@
       "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
       "missing_fields": [
         "preconditions"
-      ]
+      ],
+      "remediation": {
+        "status": "fixed",
+        "where": "013-attenuation-inheritance",
+        "note": "Policy::derive now returns the effective child policy \u2014 an omitted filesystem/exec/network dimension is inherited from the parent, parent deny rules and inode pins are re-added, and a child grant reaching into an FR-008 protected region is refused (research R15)."
+      }
     },
     {
       "id": "f010",
@@ -2080,6 +2105,33 @@
       "missing_fields": [
         "preconditions"
       ]
+    }
+  ],
+  "remediation_log": [
+    {
+      "findings": [
+        "f018",
+        "f020",
+        "f022",
+        "f026",
+        "f028",
+        "f030"
+      ],
+      "status": "fixed",
+      "where": "8e2cdbb, 3225d44",
+      "note": "Six HIGH-severity findings closed and VM-verified (31/31 matrix)."
+    },
+    {
+      "findings": [
+        "f001",
+        "f002",
+        "f012",
+        "f014",
+        "f025"
+      ],
+      "status": "fixed",
+      "where": "013-attenuation-inheritance",
+      "note": "Policy::derive now returns the effective child policy \u2014 an omitted filesystem/exec/network dimension is inherited from the parent, parent deny rules and inode pins are re-added, and a child grant reaching into an FR-008 protected region is refused (research R15)."
     }
   ]
 }
