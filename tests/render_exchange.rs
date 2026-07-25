@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use bee::provider::mock_model::MockModel;
-use bee::render_spec::RenderSpec;
+use bee::render_spec::{EffectSpec, RenderSpec};
 use bee::repl::{run_exchange, ReplOutput, SteeringQueue};
 use bee::sandbox::{self, Sandbox};
 use bee::tools::registry_for;
@@ -25,7 +25,7 @@ impl ReplOutput for WidgetCapture {
     fn tool_result(&self, _result: &bee::ToolResult, _audit: &[bee_core::AuditEvent]) {}
     fn error(&self, _msg: &str) {}
     fn info(&self, _msg: &str) {}
-    fn render_widget(&self, spec: &RenderSpec) {
+    fn render_widget(&self, spec: &RenderSpec, _effect: Option<&EffectSpec>) {
         self.widgets.lock().unwrap().push(spec.clone());
     }
 }

@@ -42,6 +42,8 @@ into the dependency graph to run three commands would be worse than asking for t
 | `cargo xtask viz-serve` | `trunk serve` + open a browser. Every scene plays in turn, in real time, captioned. For eyeballing. |
 | `cargo xtask viz-snapshot` | `trunk build --release`, serve `dist/` on an ephemeral port, screenshot all 15 scenes (46 frames), diff against `baselines/`. Exit 0 on match, 1 on drift. |
 | `cargo xtask viz-update` | The same, but writes the screenshots to `baselines/` instead of comparing. |
+| `cargo xtask viz-gallery` | Render every `RenderSpec` widget headlessly — ANSI to the terminal and/or SVGs to `xtask/gallery/` — through bee's own `buffer_render`, so what it shows is exactly what the TUI draws. |
+| `cargo xtask viz-screens` | Render the **full TUI** (header · chat · panels · input · footer) at representative states and sizes to SVGs in `xtask/screens/`, through the real `view()` on a headless backend. `--theme <name>` picks a built-in theme (default `catppuccin-mocha`). |
 
 Run these **from the repository root**. Cargo resolves an alias's `--manifest-path` against the
 current directory and has no way to make it repo-relative, so `cargo xtask` from a subdirectory

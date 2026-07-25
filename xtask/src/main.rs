@@ -10,6 +10,8 @@
 //! `cargo build`, `cargo test` and `cargo clippy --workspace --all-targets` are unchanged by its
 //! existence. See `xtask/README.md`.
 
+mod gallery;
+mod screens;
 mod serve;
 
 use std::path::{Path, PathBuf};
@@ -57,6 +59,24 @@ enum Cmd {
         #[arg(long)]
         no_build: bool,
     },
+    /// Render every widget type to the terminal and/or SVG files.
+    VizGallery {
+        /// Output format: ansi, svg, or all.
+        #[arg(long, default_value = "all")]
+        format: String,
+        /// Directory for SVG output (default: xtask/gallery).
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+    },
+    /// Render the full TUI (header · chat · panels · input · footer) at representative states to SVG.
+    VizScreens {
+        /// Built-in theme to render under (one per process).
+        #[arg(long, default_value = "catppuccin-mocha")]
+        theme: String,
+        /// Directory for SVG output (default: xtask/screens).
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -74,6 +94,14 @@ fn run() -> Result<ExitCode> {
         Cmd::VizServe { port, no_open } => viz_serve(port, no_open),
         Cmd::VizSnapshot { scenes, no_build } => snapshot("compare", &scenes, no_build),
         Cmd::VizUpdate { scenes, no_build } => snapshot("update", &scenes, no_build),
+        Cmd::VizGallery { format, out_dir } => {
+            gallery::run(&format, out_dir.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::VizScreens { theme, out_dir } => {
+            screens::run(&theme, out_dir.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
@@ -151,7 +179,10 @@ fn snapshot(mode: &str, scenes: &[String], no_build: bool) -> Result<ExitCode> {
     cmd.arg("snapshot.mjs")
         .args(["--mode", mode])
         .args(["--base-url", &server.base_url()])
-        .args(["--baseline-dir", &xtask_dir().join("baselines").to_string_lossy()])
+        .args([
+            "--baseline-dir",
+            &xtask_dir().join("baselines").to_string_lossy(),
+        ])
         .args(["--out-dir", &xtask_dir().join("shots").to_string_lossy()])
         .current_dir(puppeteer_dir())
         .stdout(Stdio::piped())

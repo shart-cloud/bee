@@ -19,7 +19,7 @@ pub mod render;
 pub mod search;
 pub mod skill;
 
-use crate::render_spec::{PanelOp, RenderSpec, RenderTarget};
+use crate::render_spec::{EffectSpec, PanelOp, RenderSpec, RenderTarget};
 
 /// The default tool set advertised to the model (contracts/scenario-schema.md). The CTF terminal
 /// tools (`submit_flag`, `give_up`) are **not** here — a scenario opts into them via its `tools`
@@ -89,6 +89,9 @@ pub struct ToolResult {
     /// never sees these, only the text summary in `content`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub panel_ops: Vec<PanelOp>,
+    /// The effect the agent attached to the inline widget via `.effect()` (009 FR-022).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_effect: Option<EffectSpec>,
 }
 
 impl ToolResult {
@@ -104,6 +107,7 @@ impl ToolResult {
             render_spec: None,
             render_target: RenderTarget::Inline,
             panel_ops: Vec::new(),
+            inline_effect: None,
         }
     }
 
@@ -119,6 +123,7 @@ impl ToolResult {
             render_spec: None,
             render_target: RenderTarget::Inline,
             panel_ops: Vec::new(),
+            inline_effect: None,
         }
     }
 
@@ -144,10 +149,12 @@ impl ToolResult {
         summary: impl Into<String>,
         inline: Option<RenderSpec>,
         panel_ops: Vec<PanelOp>,
+        inline_effect: Option<EffectSpec>,
     ) -> Self {
         ToolResult {
             render_spec: inline,
             panel_ops,
+            inline_effect,
             ..ToolResult::ok(summary)
         }
     }

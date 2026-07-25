@@ -35,7 +35,7 @@ use time::OffsetDateTime;
 use crate::provider::{
     Conversation, Message, Model, ModelError, StreamEvent, ToolSchema, Turn, Usage,
 };
-use crate::render_spec::RenderSpec;
+use crate::render_spec::{EffectSpec, RenderSpec};
 use crate::sandbox::Sandbox;
 use crate::tools::{ToolRegistry, ToolResult};
 use crate::transcript::{EpisodeStatus, EpisodeTranscript, RecordedCall, Timing, TranscriptTurn};
@@ -148,7 +148,7 @@ pub trait ReplOutput: Send + Sync {
     /// Render a visualization produced by the `render` tool (003-visual-render, FR-024). The default
     /// emits a plain-text ASCII fallback through [`ReplOutput::info`] — a text table, never a blank
     /// (US6 AS-5). `TerminalOutput` overrides this to draw the widget as ANSI art.
-    fn render_widget(&self, spec: &RenderSpec) {
+    fn render_widget(&self, spec: &RenderSpec, _effect: Option<&EffectSpec>) {
         for line in spec.to_ascii().lines() {
             self.info(line);
         }
@@ -156,15 +156,15 @@ pub trait ReplOutput: Send + Sync {
     /// A full-screen takeover (009-tachyonfx-effects, FR-013a). Defaults to drawing inline: the
     /// inline REPL scrolls and has no surface to take over, so a takeover there is just a widget in
     /// the flow (009 spec, Edge Cases). The full-screen TUI's `SessionSink` overrides this.
-    fn overlay(&self, spec: &RenderSpec, _ttl_ms: Option<u32>) {
-        self.render_widget(spec);
+    fn overlay(&self, spec: &RenderSpec, _ttl_ms: Option<u32>, effect: Option<&EffectSpec>) {
+        self.render_widget(spec, effect);
     }
     /// A render addressed to a named, persistent panel (008-grid-tui, FR-008). Defaults to drawing
     /// inline via [`ReplOutput::render_widget`] — the inline REPL has no panel column, so targeted
     /// renders still appear in the chat flow (back-compat, FR-008 scenario 3). The full-screen TUI's
     /// `SessionSink` overrides this to upsert the panel beside chat.
     fn panel_update(&self, _id: &str, spec: &RenderSpec) {
-        self.render_widget(spec);
+        self.render_widget(spec, None);
     }
     /// One panel-lifecycle effect (008-grid-tui, US2): create/replace (optionally with a TTL),
     /// remove, or clear. The default routes upserts to [`ReplOutput::panel_update`] and ignores
@@ -576,6 +576,7 @@ pub async fn run_exchange(
             // target: inline into chat, or upserted into a named panel (008-grid-tui, FR-008). The
             // model still receives only `result.content` (the text summary), never the art (FR-023).
             if let Some(spec) = &result.render_spec {
+                let fx = result.inline_effect.as_ref();
                 match &result.render_target {
                     // Legacy results routed panels via `render_target`; honor them for back-compat.
                     crate::render_spec::RenderTarget::Panel { id } => output.panel_update(id, spec),
@@ -583,9 +584,9 @@ pub async fn run_exchange(
                     // inline, which is the inline REPL's honest degrade — it scrolls, so it has no
                     // surface to take over. The full-screen front-end overrides it.
                     crate::render_spec::RenderTarget::Overlay { ttl_ms } => {
-                        output.overlay(spec, *ttl_ms)
+                        output.overlay(spec, *ttl_ms, fx)
                     }
-                    crate::render_spec::RenderTarget::Inline => output.render_widget(spec),
+                    crate::render_spec::RenderTarget::Inline => output.render_widget(spec, fx),
                 }
             }
             // Then each panel-lifecycle effect, in order (008-grid-tui, US2).
@@ -955,9 +956,12 @@ pub async fn run_repl(
     // upcoming full-screen TUI, where a tick-driven redraw needs no cursor-reclaim hack — see
     // docs/grid-tui-plan.md §5.)
     if config.mascot {
-        output.render_widget(&RenderSpec::Sprite {
-            spec: crate::viz::bee::sprite(),
-        });
+        output.render_widget(
+            &RenderSpec::Sprite {
+                spec: crate::viz::bee::sprite(),
+            },
+            None,
+        );
     }
 
     output.info(&format!(
@@ -1233,7 +1237,7 @@ mod tests {
         fn info(&self, msg: &str) {
             self.lines.lock().unwrap().push(format!("INFO {msg}"));
         }
-        fn render_widget(&self, spec: &RenderSpec) {
+        fn render_widget(&self, spec: &RenderSpec, _effect: Option<&EffectSpec>) {
             self.widgets.lock().unwrap().push(spec.clone());
         }
     }

@@ -16,10 +16,11 @@
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use tui_markdown::{Options, StyleSheet};
+use tui_markdown::{BuiltinCodeTheme, Options, StyleSheet};
 
 use super::theme_bridge::{dim_style, role_style};
-use crate::viz::theme::Role;
+use crate::viz::palette;
+use crate::viz::theme::{self, Role};
 
 /// bee's markdown look, expressed in semantic roles (design-system §1).
 ///
@@ -60,14 +61,59 @@ impl StyleSheet for BeeStyleSheet {
     }
 }
 
+/// The bundled syntax-highlighting theme tonally nearest the active bee theme, so a highlighted
+/// code block sits inside the conversation instead of arriving from some other product. This is
+/// what answers 005's "theme-blind highlighter" objection: the pairing follows the theme, and
+/// `NO_COLOR` strips the highlighter's colors entirely (see [`render`]).
+fn code_theme() -> BuiltinCodeTheme {
+    match theme::active_theme().name.as_str() {
+        // The one light flavor gets a light code theme — dark-on-dark syntax colors on a light
+        // terminal would be the exact clash 005 was guarding against.
+        "catppuccin-latte" => BuiltinCodeTheme::InspiredGitHub,
+        "catppuccin-mocha" | "catppuccin-frappe" | "catppuccin-macchiato" => {
+            BuiltinCodeTheme::Base16MochaDark
+        }
+        // The two warm-toned themes get the warm base16; the cool ones fall through to Ocean.
+        "dracula" | "gruvbox" => BuiltinCodeTheme::Base16EightiesDark,
+        _ => BuiltinCodeTheme::Base16OceanDark,
+    }
+}
+
 /// Render `md` as chat rows, each exactly one row tall at `width` columns.
 pub fn render(md: &str, width: u16) -> Vec<Line<'static>> {
-    let text = tui_markdown::from_str_with_options(md, &Options::new(BeeStyleSheet));
+    let options = Options::new(BeeStyleSheet).code_theme(code_theme());
+    let text = tui_markdown::from_str_with_options(md, &options);
     let width = width.max(1);
-    text.lines
+    let lines = text
+        .lines
         .into_iter()
-        .flat_map(|line| wrap_line(line, width))
-        .collect()
+        .flat_map(|line| wrap_line(line, width));
+    if palette::is_color_enabled() {
+        lines.collect()
+    } else {
+        // Highlighter colors come from syntect, not the theme bridge, so `NO_COLOR` has to be
+        // enforced here: color is dropped, weight and italics survive — they are not color.
+        lines.map(strip_colors).collect()
+    }
+}
+
+/// A line with every foreground/background color removed, modifiers kept.
+fn strip_colors(line: Line<'static>) -> Line<'static> {
+    let style = Style {
+        fg: None,
+        bg: None,
+        ..line.style
+    };
+    let spans: Vec<Span<'static>> = line
+        .spans
+        .into_iter()
+        .map(|mut s| {
+            s.style.fg = None;
+            s.style.bg = None;
+            s
+        })
+        .collect();
+    Line::from(spans).style(style)
 }
 
 /// Break one styled line into rows of at most `width` columns, preserving each span's style.
@@ -142,6 +188,52 @@ mod tests {
     /// The plain text of a rendered line, styles discarded.
     fn text_of(line: &Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn a_recognized_fence_is_highlighted_and_no_color_strips_it() {
+        // NO_COLOR is process-global, so both states live in one serial test (mirrors the
+        // theme_bridge and palette tests in this binary).
+        let md = "```rust\nfn main() { let answer = 42; }\n```\n";
+        let distinct_fgs = |lines: &[Line<'_>]| {
+            lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .filter_map(|s| s.style.fg.map(|c| format!("{c:?}")))
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+        };
+
+        // Color on: a recognized language gets real per-token colors — more than one foreground.
+        std::env::remove_var("NO_COLOR");
+        let lit = render(md, 60);
+        assert!(
+            distinct_fgs(&lit) > 1,
+            "expected >1 syntax colors, got {}:\n{lit:?}",
+            distinct_fgs(&lit)
+        );
+        let joined: String = lit.iter().map(text_of).collect::<Vec<_>>().join("\n");
+        assert!(
+            joined.contains("fn main()"),
+            "code text survives:\n{joined}"
+        );
+
+        // NO_COLOR: the highlighter's colors are stripped here in `render`, because they come from
+        // syntect rather than the theme bridge — the fence must degrade to monochrome like
+        // everything else (FR-014).
+        std::env::set_var("NO_COLOR", "1");
+        let plain = render(md, 60);
+        assert_eq!(
+            distinct_fgs(&plain),
+            0,
+            "no colors under NO_COLOR:\n{plain:?}"
+        );
+        let joined: String = plain.iter().map(text_of).collect::<Vec<_>>().join("\n");
+        assert!(
+            joined.contains("fn main()"),
+            "…but never the text:\n{joined}"
+        );
+        std::env::remove_var("NO_COLOR");
     }
 
     #[test]

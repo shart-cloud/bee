@@ -326,6 +326,7 @@ pub fn tool_result_from_output(
         render_spec: None,
         render_target: crate::render_spec::RenderTarget::Inline,
         panel_ops: Vec::new(),
+        inline_effect: None,
     }
 }
 

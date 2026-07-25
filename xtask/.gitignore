@@ -2,6 +2,10 @@
 viz-web/dist/
 # Screenshots taken by `viz-snapshot`. Only xtask/baselines/ is tracked.
 shots/
+# SVG exports from `viz-gallery` / `viz-screens` — regenerated on demand, reviewed, not tracked.
+gallery/
+screens/
+screens-*/
 # Puppeteer's dependencies + its downloaded Chromium.
 puppeteer/node_modules/
 

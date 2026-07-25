@@ -17,7 +17,7 @@ pub use event::SessionEvent;
 
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-use crate::render_spec::RenderSpec;
+use crate::render_spec::{EffectSpec, RenderSpec};
 use crate::repl::ReplOutput;
 use crate::tools::ToolResult;
 
@@ -86,14 +86,18 @@ impl ReplOutput for SessionSink {
     fn busy_stop(&self) {
         self.emit(SessionEvent::TurnDone);
     }
-    fn overlay(&self, spec: &RenderSpec, ttl_ms: Option<u32>) {
+    fn overlay(&self, spec: &RenderSpec, ttl_ms: Option<u32>, effect: Option<&EffectSpec>) {
         self.emit(SessionEvent::Overlay {
             spec: spec.clone(),
             ttl_ms,
         });
+        let _ = effect; // overlay effects are handled by the overlay subsystem
     }
-    fn render_widget(&self, spec: &RenderSpec) {
-        self.emit(SessionEvent::RenderWidget { spec: spec.clone() });
+    fn render_widget(&self, spec: &RenderSpec, effect: Option<&EffectSpec>) {
+        self.emit(SessionEvent::RenderWidget {
+            spec: spec.clone(),
+            effect: effect.cloned(),
+        });
     }
     fn panel_update(&self, id: &str, spec: &RenderSpec) {
         self.emit(SessionEvent::PanelUpdate {

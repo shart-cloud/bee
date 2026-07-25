@@ -84,7 +84,7 @@ pub struct RunArgs {
     #[arg(long)]
     pub quiet: bool,
     /// Color theme (built-in name or a custom one from config). Overrides `BEE_THEME` and the
-    /// config file.
+    /// config file. `auto` picks a flavor from the terminal's detected light/dark background.
     #[arg(long)]
     pub theme: Option<String>,
     /// How much screen the agent may claim: `none`, `panels`, `panels-wide`, or `takeover`.

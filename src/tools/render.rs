@@ -22,45 +22,79 @@ const MAX_OPERATIONS: u64 = 10_000;
 /// The Rhai primer + function list embedded in the tool's schema so the model has the API surface in
 /// its tool definition (spec Assumption).
 const SCHEMA_DESC: &str = "\
-Render a visualization by writing a short Rhai script that ends with render(widget). Rhai is \
-JavaScript-adjacent: `let x = 5;`, `for i in 0..n {}`, `[1,2,3]` arrays, method calls like \
-`chart.bar(\"label\", 42)`. Integers are i64, floats f64. No I/O, filesystem, or network is \
-available — only these drawing functions:\n\
-  bar_chart(title) -> chart;  chart.bar(label, value);  chart.color(name);  chart.x_label(s); chart.y_label(s)\n\
-  line_chart(title) -> chart;  let s = chart.series(label);  s.point(x, y)\n\
-  sparkline(title, [ints]) -> chart\n\
-  table(title) -> t;  t.header([cols]);  t.row([cells]);  t.row_colored([cells], color)\n\
-  gauge(title, value_0_to_1) -> g;  g.label(s);  g.color(name)\n\
+Render a visualization by writing a short Rhai script that ends with render(widget).\n\
+\n\
+LANGUAGE: Rhai (JavaScript-like). `let x = 5;`, `for i in 0..n {}`, `[1,2,3]` arrays. \
+Integers are i64, floats f64. No I/O or network.\n\
+\n\
+== CHARTS ==\n\
+  bar_chart(title) -> c;  c.bar(label, value);  c.color(name);  c.x_label(s);  c.y_label(s)\n\
+  line_chart(title) -> c;  let s = c.series(label);  s.point(x, y)\n\
+  scatter(title) -> c;     let s = c.series(label);  s.point(x, y)\n\
+  area_chart(title) -> c;  let s = c.series(label);  s.point(x, y);  c.color(name)\n\
+  heatmap(title) -> h;     h.row(label, [floats]);  h.color(name)\n\
+  sparkline(title, [ints])\n\
+\n\
+== DATA ==\n\
+  table(title) -> t;  t.header([col1, col2, ...]);  t.row([val1, val2, ...])\n\
+  gauge(title, 0.0..1.0) -> g;  g.label(s);  g.color(name)\n\
   dots(title) -> d;  d.pass(label);  d.fail(label);  d.skip(label)\n\
-  text(content) -> t;  t.style(name);  t.bold();  t.dim()\n\
-  markdown(source) -> m   // headings, lists, emphasis, links, code — styled by the operator's theme\n\
-  ascii_art([lines]);  separator()\n\
-  vsplit() / hsplit() -> layout;  layout.add(widget)   (max nesting depth 3)\n\
+  log_tail(title) -> l;  l.line(text);  l.line(text, level);  l.max_rows(n)   // newest lines win; level: error|warn|info|debug\n\
+\n\
+== TEXT & LAYOUT ==\n\
+  text(content) -> t;  t.color(name);  t.bold();  t.dim()\n\
+  markdown(source)\n\
+  ascii_art([line1, line2, ...]);  separator()\n\
+  vsplit() / hsplit() -> layout;  layout.add(widget)   (max nesting 3)\n\
+\n\
+== PIXEL ART ==\n\
   palette() -> p;  p.set(\"K\", \"#1A1A1A\");  p.set(\".\", \"transparent\")\n\
-  sprite(w, h, p) -> s;  s.paint([\"..KK..\", ...]);  s.set(x, y, color);  s.fill(color)   (max 32x32)\n\
+  sprite(w, h, palette) -> s;  s.paint([\"..KK..\", ...]);  s.set(x, y, color);  s.fill(color)   (max 32x32)\n\
   animation(ms) -> a;  a.add(sprite);  a.bounce(true);  a.cycles(n)   (max 16 frames, 50-1000ms)\n\
-  bee_sprite();  bee_animation()   // the project mascot\n\
-  render(widget)               // draw inline in the chat flow\n\
-  render_to(panel_id, widget)  // draw to a named, persistent side panel (id: 1-32 of [a-z0-9_-]);\n\
-                               // re-rendering the same id replaces that panel in place\n\
-  render_to_ttl(panel_id, widget, ttl_ms)  // same, but the panel auto-expires after ttl_ms\n\
-  remove_panel(panel_id)       // close one panel and reclaim its space\n\
-  clear_panels()               // close every panel\n\
-  render_fullscreen(widget)                // take over the whole chat area briefly\n\
-  render_fullscreen_ttl(widget, ttl_ms)    // same, with your own lifetime (capped by the operator)\n\
-Panel hygiene: panels persist until removed and share one column, so each extra panel shrinks the \
-rest. Reuse one id for updates, give short-lived output a TTL, and remove_panel/clear_panels when \
-done. You may address several panels in a single script.\n\
-Transitions (optional): widget.effect(e) sets how the widget arrives. Without one you still get a \
-sensible default — reach for these only when the motion means something.\n\
+  bee_sprite();  bee_animation()\n\
+\n\
+== RENDERING ==\n\
+  render(widget)                           // inline in chat\n\
+  render_to(panel_id, widget)              // persistent side panel (id: 1-32 chars [a-z0-9_-])\n\
+  render_to_ttl(panel_id, widget, ttl_ms)  // side panel that auto-expires\n\
+  remove_panel(panel_id);  clear_panels()\n\
+  render_fullscreen(widget);  render_fullscreen_ttl(widget, ttl_ms)\n\
+\n\
+== TRANSITIONS (optional) ==\n\
+  widget.effect(fade_in(ms))  // attach before render()\n\
   fade_in(ms) / fade_out(ms);  dissolve_in(ms) / dissolve_out(ms);  evolve_in(ms) / evolve_out(ms)\n\
-  slide_in(dir, ms) / slide_out(dir, ms);  sweep_in(dir, ms) / sweep_out(dir, ms)   (dir: left/right/top/bottom)\n\
-  pulse(color, ms)   // one flash, for a status change;  glow(ms)  // gentle breathing\n\
-Durations clamp to 100-2000ms and unknown directions become \"left\" — none of that is an error. \
-The operator may have disabled animation or restricted how much screen you get; your render still \
-succeeds and the result tells you if it was downgraded.\n\
-Colors: honey, pollen, sting, smoke, royal (or basic ANSI names). Caps: <=500 total elements. \
-The model receives a text summary of what was drawn, not the pixels.";
+  slide_in(dir, ms) / slide_out(dir, ms);  sweep_in(dir, ms) / sweep_out(dir, ms)\n\
+  pulse(color, ms);  glow(ms)          // dir: left/right/top/bottom; ms: 100-2000\n\
+\n\
+== EXAMPLES ==\n\
+Bar chart:\n\
+  let c = bar_chart(\"Sales\"); c.bar(\"Q1\", 100); c.bar(\"Q2\", 150); c.bar(\"Q3\", 80); render(c);\n\
+\n\
+Line chart with effect:\n\
+  let c = line_chart(\"CPU\"); let s = c.series(\"load\");\n\
+  s.point(0, 10); s.point(1, 45); s.point(2, 30); s.point(3, 70);\n\
+  c.effect(fade_in(300)); render(c);\n\
+\n\
+Table:\n\
+  let t = table(\"Results\"); t.header([\"Name\", \"Score\", \"Status\"]);\n\
+  t.row([\"Alice\", \"95\", \"pass\"]); t.row([\"Bob\", \"72\", \"pass\"]); render(t);\n\
+\n\
+Heatmap:\n\
+  let h = heatmap(\"Activity\"); h.row(\"Mon\", [0.1, 0.5, 0.9, 0.3]);\n\
+  h.row(\"Tue\", [0.8, 0.2, 0.4, 0.7]); render(h);\n\
+\n\
+Scatter plot:\n\
+  let c = scatter(\"Clusters\"); let s = c.series(\"A\");\n\
+  s.point(1, 2); s.point(3, 4); s.point(2, 5); render(c);\n\
+\n\
+Gauge:\n\
+  let g = gauge(\"Disk\", 0.73); g.label(\"73%\"); g.color(\"accent\"); render(g);\n\
+\n\
+Side panel (reuse id to update in place):\n\
+  let g = gauge(\"Progress\", 0.5); render_to(\"status\", g);\n\
+\n\
+Colors: accent, success, error, info, honey, pollen, sting, smoke, royal (or ANSI names). \
+Caps: <=500 total elements. You receive a text summary of what was drawn, not the pixels.";
 
 /// The text summary the model gets back: what was drawn and where it went. Never pixels (FR-023).
 fn summarize(outcome: &crate::render_api::RenderOutcome) -> String {
@@ -276,17 +310,21 @@ impl Tool for RenderTool {
                 // `render_spec`/`render_target` pair when a script commits both — it is the more
                 // specific request. Panel ops ride alongside either way.
                 match outcome.overlay {
-                    Some((spec, ttl_ms, _)) => ToolResult {
+                    Some((spec, ttl_ms, effect)) => ToolResult {
                         panel_ops: outcome.panel_ops,
+                        inline_effect: effect,
                         ..ToolResult::rendered_to(
                             summary,
                             spec,
                             crate::render_spec::RenderTarget::Overlay { ttl_ms },
                         )
                     },
-                    None => {
-                        ToolResult::rendered_with_ops(summary, outcome.inline, outcome.panel_ops)
-                    }
+                    None => ToolResult::rendered_with_ops(
+                        summary,
+                        outcome.inline,
+                        outcome.panel_ops,
+                        outcome.inline_effect,
+                    ),
                 }
             }
             Err(e) => {

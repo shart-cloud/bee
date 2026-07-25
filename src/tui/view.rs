@@ -10,7 +10,8 @@ use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Wrap,
 };
 use ratatui::Frame;
 
@@ -18,8 +19,8 @@ use super::app::{App, Focus, LayoutMode, TurnState};
 use super::chat::{Body, Role};
 use super::effects::{self, Chrome};
 use super::panels::{self, PanelArea};
-use super::theme_bridge::{dim_style, role_style, role_style_bold};
-use crate::render_spec::RenderSpec;
+use super::theme_bridge::{badge_style, dim_style, role_style, role_style_bold};
+use crate::render_spec::{EffectSpec, RenderSpec};
 use crate::viz::theme::Role as ThemeRole;
 
 /// Draw the whole UI for the current model state.
@@ -151,17 +152,30 @@ fn render_takeover(app: &mut App, frame: &mut Frame<'_>, area: Rect) {
 /// narrow terminal can still see model-owned output. Toggled with `p`, closed with `p`/`Esc`.
 fn render_panel_overlay(app: &mut App, frame: &mut Frame<'_>, area: Rect) {
     let w = area.width.saturating_sub(4).clamp(20, 72);
-    let h = area.height.saturating_sub(4).max(5);
+    // Sized to the panels it holds (label row + content each, plus the popup border), not to the
+    // screen: a popup showing one gauge over a 40-row terminal was a window of empty space.
+    let content: u16 = app
+        .panels
+        .iter()
+        .map(|(_, spec)| {
+            crate::viz::buffer_render::spec_height(spec, w.saturating_sub(3)).saturating_add(1)
+        })
+        .sum();
+    let h = content
+        .saturating_add(2)
+        .clamp(5, area.height.saturating_sub(4).max(5));
     let popup = center(area, w, h);
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(role_style(ThemeRole::Info))
         .title(Span::styled(
-            format!(" panels ({}) — p/Esc to close ", app.panels.len()),
-            role_style(ThemeRole::Info),
-        ));
+            format!(" panels ({}) ", app.panels.len()),
+            role_style_bold(ThemeRole::Info),
+        ))
+        .title_bottom(Span::styled(" p/Esc close ", dim_style()));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     if inner.width > 0 && inner.height > 0 {
@@ -169,14 +183,42 @@ fn render_panel_overlay(app: &mut App, frame: &mut Frame<'_>, area: Rect) {
     }
 }
 
+/// The working indicator's frames: a three-cell comb filling with honey and draining again — bee's
+/// own spinner, not the stock braille one. Its phase comes from [`App::activity`], not a clock: it
+/// advances when session events arrive and freezes when the stream stalls, so the comb *is* a
+/// report of data flowing rather than an animation asserting liveness the session may not have.
+const WORKING_FRAMES: [&str; 6] = ["⬡⬡⬡", "⬢⬡⬡", "⬢⬢⬡", "⬢⬢⬢", "⬡⬢⬢", "⬡⬡⬢"];
+
 fn render_header(app: &App, frame: &mut Frame<'_>, area: Rect) {
-    let mut spans = vec![
-        Span::styled("bee", role_style_bold(ThemeRole::Info)),
-        Span::styled("  full-screen", dim_style()),
-    ];
-    if app.turn == TurnState::Streaming {
-        spans.push(Span::styled("  ● working…", role_style(ThemeRole::Accent)));
+    let mut left = vec![Span::styled(" bee ", badge_style(ThemeRole::Info))];
+    if !app.model_id.is_empty() {
+        left.push(Span::styled(format!("  {}", app.model_id), dim_style()));
     }
+    let mut right: Vec<Span<'_>> = Vec::new();
+    if app.turn == TurnState::Streaming {
+        // A motionless session gets a full, still comb: state shown, nothing moving (FR-006c's
+        // spirit — the operator turned motion off, and a phase that ticks per event is motion).
+        let cells = if app.visual.animations {
+            WORKING_FRAMES[app.activity as usize % WORKING_FRAMES.len()]
+        } else {
+            "⬢⬢⬢"
+        };
+        right.push(Span::styled(
+            format!("{cells} working "),
+            role_style(ThemeRole::Info),
+        ));
+    }
+    // Left context, right status, gap in between — one line, no border, position is the hierarchy.
+    let used: usize = left
+        .iter()
+        .chain(right.iter())
+        .map(|s| s.content.chars().count())
+        .sum();
+    let mut spans = left;
+    spans.push(Span::raw(
+        " ".repeat((area.width as usize).saturating_sub(used)),
+    ));
+    spans.extend(right);
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -184,26 +226,57 @@ fn render_footer(app: &App, frame: &mut Frame<'_>, area: Rect) {
     // The most useful keys (contracts/keybindings.md), trimmed to what actually fits so a narrow
     // terminal never truncates mid-hint. `p` is advertised only where the overlay is the *only* way
     // to see panels — exactly the case where it matters most.
-    let show_p = !app.panels.is_empty() && app.layout_mode == LayoutMode::SinglePane;
-    let mut parts: Vec<&str> = vec!["Enter send", "↑↓/PgUp·Dn scroll", "Tab focus"];
-    if show_p {
-        parts.push("p panels");
-    }
-    parts.extend(["y yank", "? help", "q quit"]);
+    // Hints follow the focus: the panel column has its own verbs, and advertising Enter-to-send
+    // while j/k/Space/x are what the keys actually do would be the footer lying.
+    let mut parts: Vec<(&str, &str)> = if app.focus == Focus::Panels {
+        vec![
+            ("j/k", "select"),
+            ("Space", "collapse"),
+            ("x", "close"),
+            ("Tab", "focus"),
+            ("?", "help"),
+            ("q", "quit"),
+        ]
+    } else {
+        let show_p = !app.panels.is_empty() && app.layout_mode == LayoutMode::SinglePane;
+        let mut parts: Vec<(&str, &str)> = vec![
+            ("Enter", "send"),
+            ("↑↓/PgUp·Dn", "scroll"),
+            ("Tab", "focus"),
+        ];
+        if show_p {
+            parts.push(("p", "panels"));
+        }
+        parts.extend([("y", "yank"), ("?", "help"), ("q", "quit")]);
+        parts
+    };
 
-    // Shed the least essential hints first; Enter/help/quit (and `p` when shown) always survive.
+    // Shed the least essential hints first; help/quit (and the destructive `x`) always survive.
+    // Width accounting mirrors the span layout below: " " lead, "key label", "   " between hints.
     let width = area.width as usize;
-    let rendered = |parts: &[&str]| format!(" {} ", parts.join("   "));
-    for droppable in ["y yank", "↑↓/PgUp·Dn scroll", "Tab focus"] {
-        if rendered(&parts).chars().count() <= width {
+    let hint_len = |parts: &[(&str, &str)]| {
+        2 + parts
+            .iter()
+            .map(|(k, l)| k.chars().count() + 1 + l.chars().count())
+            .sum::<usize>()
+            + parts.len().saturating_sub(1) * 3
+    };
+    for droppable in ["yank", "scroll", "select", "collapse", "focus"] {
+        if hint_len(&parts) <= width {
             break;
         }
-        parts.retain(|p| *p != droppable);
+        parts.retain(|(_, l)| *l != droppable);
     }
-    frame.render_widget(
-        Paragraph::new(Line::styled(rendered(&parts), dim_style())),
-        area,
-    );
+    // Key in the accent, action dimmed: scannable as chords, quiet as a whole line.
+    let mut spans = vec![Span::raw(" ")];
+    for (i, (key, label)) in parts.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("   "));
+        }
+        spans.push(Span::styled(*key, role_style(ThemeRole::Accent)));
+        spans.push(Span::styled(format!(" {label}"), dim_style()));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_input(app: &App, frame: &mut Frame<'_>, area: Rect) {
@@ -213,17 +286,30 @@ fn render_input(app: &App, frame: &mut Frame<'_>, area: Rect) {
     } else {
         dim_style()
     };
+    // Rounded, untitled: the prompt glyph says what the box is, so a " input " label was chrome
+    // spent restating the obvious. Focus is carried by border color *and* the prompt's weight.
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(border)
-        .title(Span::styled(" input ", dim_style()));
+        .border_type(BorderType::Rounded)
+        .border_style(border);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    // Prompt column first, text beside it — separate rects so the wrap and cursor arithmetic on the
+    // text are untouched by the marker.
+    let [prompt_col, text_area] =
+        Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
+    let prompt = if focused {
+        role_style_bold(ThemeRole::Accent)
+    } else {
+        dim_style()
+    };
+    frame.render_widget(Paragraph::new(Line::styled("❯", prompt)), prompt_col);
 
     let text = app.input.text();
     frame.render_widget(
         Paragraph::new(text.as_str()).wrap(Wrap { trim: false }),
-        inner,
+        text_area,
     );
 
     // The cursor follows its real position in the buffer (010) — ↑/↓ can now move between the soft
@@ -231,8 +317,8 @@ fn render_input(app: &App, frame: &mut Frame<'_>, area: Rect) {
     // Soft *wrapping* of one long line is still not tracked; only hard newlines are.
     if focused {
         let (row, col) = app.input.line_col();
-        let x = inner.x + (col as u16).min(inner.width.saturating_sub(1));
-        let y = inner.y + (row as u16).min(inner.height.saturating_sub(1));
+        let x = text_area.x + (col as u16).min(text_area.width.saturating_sub(1));
+        let y = text_area.y + (row as u16).min(text_area.height.saturating_sub(1));
         frame.set_cursor_position(Position::new(x, y));
     }
 }
@@ -246,15 +332,15 @@ enum Item<'a> {
     Line(Line<'static>),
     /// A row already rendered and cached on the message (010) — borrowed, not re-parsed.
     Cached(&'a Line<'static>),
-    /// An inline widget and the number of rows it occupies.
-    Widget(&'a RenderSpec, u16),
+    /// An inline widget, the number of rows it occupies, and its optional effect.
+    Widget(&'a RenderSpec, u16, Option<&'a EffectSpec>),
 }
 
 impl Item<'_> {
     fn height(&self) -> u16 {
         match self {
             Item::Line(_) | Item::Cached(_) => 1,
-            Item::Widget(_, h) => *h,
+            Item::Widget(_, h, _) => *h,
         }
     }
 }
@@ -301,6 +387,7 @@ fn render_chat(app: &mut App, frame: &mut Frame<'_>, area: Rect) {
     let bottom = top.saturating_add(height);
 
     let mut y = 0u16; // absolute row index within the whole flow
+    let mut pending_effects: Vec<(EffectSpec, Rect)> = Vec::new();
     for item in &items {
         let h = item.height();
         let end = y.saturating_add(h);
@@ -326,12 +413,28 @@ fn render_chat(app: &mut App, frame: &mut Frame<'_>, area: Rect) {
                         );
                     }
                 }
-                Item::Widget(spec, wh) => {
+                Item::Widget(spec, wh, effect) => {
+                    let widget_rect = Rect::new(area.x, draw_y, width.min(area.width), avail);
                     blit_widget(frame, spec, *wh, width, area, draw_y, skip, avail);
+                    if let Some(fx) = effect {
+                        pending_effects.push(((*fx).clone(), widget_rect));
+                    }
                 }
             }
         }
         y = end;
+    }
+
+    // One-shot effect drain: take() each widget's EffectSpec so it fires exactly once,
+    // not every frame. The rects were captured during the render pass above.
+    for msg in app.chat.iter_mut() {
+        if let Body::Widget(_, ref mut effect @ Some(_)) = msg.body {
+            effect.take();
+        }
+    }
+    for (spec, rect) in pending_effects {
+        let ctx = super::effects::ResolveCtx::agent(app.visual, rect);
+        super::effects::apply(&mut app.effects, None, &spec, &ctx);
     }
 
     // Where the reader is in the flow. Drawn only when the conversation is taller than the pane —
@@ -428,20 +531,34 @@ fn chat_items(app: &App, width: u16) -> Vec<Item<'_>> {
             }
             Body::Text(t) => {
                 let style = line_style(msg.role);
-                let prefix = role_prefix(msg.role);
-                for (i, wl) in textwrap::wrap(t, wrap_w).into_iter().enumerate() {
-                    let content = if i == 0 && !prefix.is_empty() {
-                        format!("{prefix}{wl}")
-                    } else {
-                        wl.into_owned()
+                // The operator's own words get a gutter marker instead of a text prefix: `❯` in the
+                // accent on the first row, a matching indent on wrapped rows so the message reads as
+                // one block. Everything else is unmarked — tool lines already carry ▸/✓/✗ from the
+                // reducer, and marking every row marks nothing.
+                let user = msg.role == Role::User;
+                let body_w = if user {
+                    wrap_w.saturating_sub(2)
+                } else {
+                    wrap_w
+                };
+                for (i, wl) in textwrap::wrap(t, body_w.max(4)).into_iter().enumerate() {
+                    let line = match (user, i) {
+                        (true, 0) => Line::from(vec![
+                            Span::styled("❯ ", role_style(ThemeRole::Accent)),
+                            Span::styled(wl.into_owned(), style),
+                        ]),
+                        (true, _) => {
+                            Line::from(vec![Span::raw("  "), Span::styled(wl.into_owned(), style)])
+                        }
+                        _ => Line::styled(wl.into_owned(), style),
                     };
-                    out.push(Item::Line(Line::styled(content, style)));
+                    out.push(Item::Line(line));
                 }
             }
-            Body::Widget(spec) => {
+            Body::Widget(spec, effect) => {
                 let h = crate::viz::buffer_render::spec_height(spec, width)
                     .clamp(1, MAX_INLINE_WIDGET_ROWS);
-                out.push(Item::Widget(spec, h));
+                out.push(Item::Widget(spec, h, effect.as_ref()));
             }
         }
         out.push(Item::Line(Line::raw(""))); // blank between messages
@@ -453,7 +570,7 @@ fn chat_items(app: &App, width: u16) -> Vec<Item<'_>> {
 /// titled with its id, stacked in insertion order and given an equal share of the column height. The
 /// panel's widget is drawn richly (truecolor) into the block's inner rect via `buffer_render`, which
 /// clips any overflow to the region (FR-012).
-/// Smallest useful panel: top border + one content row + bottom border.
+/// Smallest useful panel: its gutter label plus two content rows.
 const MIN_PANEL_ROWS: u16 = 3;
 
 /// How wide the panel column may be: 008's own sizing, narrowed by the visual level's cap (FR-011).
@@ -522,42 +639,80 @@ fn render_panels(app: &mut App, frame: &mut Frame<'_>, area: Rect) {
     if app.panels.is_empty() || area.height == 0 || area.width == 0 {
         return;
     }
-    // Size each panel to its *content* (border + natural widget height) rather than splitting the
+    // Size each panel to its *content* (label + natural widget height) rather than splitting the
     // column evenly. An even split starved every panel once a few accumulated — 13 panels in 28 rows
     // left each with 3 rows showing a title and nothing else. Greedy top-down allocation keeps early
     // panels legible and reports the overflow honestly instead of silently squeezing everything.
-    let inner_w = area.width.saturating_sub(2).max(1);
+    //
+    // No box around the panel: nearly every widget draws its own titled border, so a panel border
+    // put two frames between the column edge and the data — the exact nesting the clutter audit
+    // caps at one. The panel's id becomes a one-row gutter label (`▍ id`) above the widget instead.
+    let inner_w = area.width.saturating_sub(1).max(1);
     let mut y = area.y;
     let mut shown = 0usize;
     // Where each panel landed, so the transition pass below can register against the real Rect
     // without re-deriving the greedy layout.
     let mut placed: Vec<(String, PanelArea)> = Vec::new();
 
-    for (id, spec) in app.panels.iter() {
+    let focused = app.focus == Focus::Panels;
+    let sel = app.panel_sel.min(app.panels.len().saturating_sub(1));
+    let entries: Vec<(String, bool)> = app
+        .panels
+        .iter_panels()
+        .map(|p| (p.id.clone(), p.collapsed))
+        .collect();
+
+    for (i, (id, collapsed)) in entries.iter().enumerate() {
+        let spec = app.panels.get(id).expect("panel exists this frame");
         let remaining = area.bottom().saturating_sub(y);
+        // A collapsed panel is exactly its label row; an expanded one needs label + content.
+        let need = if *collapsed { 1 } else { MIN_PANEL_ROWS };
         // Keep a row free for the "+N more" note if this isn't the last panel and space is tight.
-        let more_after = app.panels.len() - shown > 1;
-        let reserve = u16::from(more_after && remaining <= MIN_PANEL_ROWS + 1);
-        if remaining.saturating_sub(reserve) < MIN_PANEL_ROWS {
+        let more_after = entries.len() - shown > 1;
+        let reserve = u16::from(more_after && remaining <= need + 1);
+        if remaining.saturating_sub(reserve) < need {
             break;
         }
-        let desired = crate::viz::buffer_render::spec_height(spec, inner_w).saturating_add(2);
-        let h = desired.clamp(MIN_PANEL_ROWS, remaining - reserve);
+        let h = if *collapsed {
+            1
+        } else {
+            let desired = crate::viz::buffer_render::spec_height(spec, inner_w).saturating_add(1);
+            desired.clamp(MIN_PANEL_ROWS, remaining - reserve)
+        };
         let rect = Rect::new(area.x, y, area.width, h);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(dim_style())
-            .title(Span::styled(
-                format!(" {id} "),
-                role_style(ThemeRole::Accent),
-            ));
-        let inner = block.inner(rect);
-        frame.render_widget(block, rect);
-        if inner.width > 0 && inner.height > 0 {
-            crate::viz::buffer_render::render_into(spec, inner, frame.buffer_mut());
+        // The comb cell is bee's bullet: honey marker, accent id — the same two-tone the header
+        // badge establishes. Filled comb = expanded, hollow = collapsed; reverse video marks the
+        // selection while the column has focus (the one universally-supported selection signal).
+        let marker = if *collapsed { "⬡" } else { "⬢" };
+        let selected = focused && i == sel;
+        let rv = |s: Style| {
+            if selected {
+                s.add_modifier(ratatui::style::Modifier::REVERSED)
+            } else {
+                s
+            }
+        };
+        let mut label = vec![
+            Span::styled(marker, rv(role_style(ThemeRole::Info))),
+            Span::styled(format!(" {id}"), rv(role_style_bold(ThemeRole::Accent))),
+        ];
+        if *collapsed {
+            label.push(Span::styled(" ⋯", rv(dim_style())));
         }
-        placed.push((id.to_string(), PanelArea { outer: rect, inner }));
+        frame.render_widget(
+            Paragraph::new(Line::from(label)),
+            Rect::new(rect.x, rect.y, rect.width, 1),
+        );
+        if !collapsed {
+            let inner = Rect::new(rect.x + 1, rect.y + 1, inner_w, h - 1);
+            if inner.width > 0 && inner.height > 0 {
+                crate::viz::buffer_render::render_into(spec, inner, frame.buffer_mut());
+            }
+            // Collapsed panels register no transition and snapshot nothing — there is no content
+            // region for an effect to play over.
+            placed.push((id.to_string(), PanelArea { outer: rect, inner }));
+        }
         y += h;
         shown += 1;
     }
@@ -589,17 +744,12 @@ fn render_panels(app: &mut App, frame: &mut Frame<'_>, area: Rect) {
 
 fn line_style(role: Role) -> Style {
     match role {
-        Role::User => role_style_bold(ThemeRole::Accent),
+        // Weight distinguishes the operator's words; the accent lives in the `❯` gutter marker so
+        // a long user message doesn't become a wall of accent color.
+        Role::User => role_style_bold(ThemeRole::Text),
         Role::Assistant => role_style(ThemeRole::Text),
         Role::System => dim_style(),
         Role::Tool => dim_style(),
-    }
-}
-
-fn role_prefix(role: Role) -> &'static str {
-    match role {
-        Role::User => "you  ",
-        _ => "",
     }
 }
 
@@ -611,6 +761,7 @@ fn too_small(frame: &mut Frame<'_>, area: Rect) {
 }
 
 fn render_help(frame: &mut Frame<'_>, area: Rect) {
+    let key_col = 13usize;
     let keys = [
         ("Enter", "send message (Shift+Enter: newline)"),
         (
@@ -620,32 +771,40 @@ fn render_help(frame: &mut Frame<'_>, area: Rect) {
         ("Ctrl-P/N", "previous / next input history"),
         ("PgUp PgDn", "page the chat"),
         ("gg G", "top / bottom"),
-        ("Tab", "cycle focus (input · chat)"),
+        ("Tab", "cycle focus (input · chat · panels)"),
         ("p", "toggle panel overlay (narrow layouts)"),
+        ("j k  Space  x", "panels focus: select · collapse · close"),
         ("y", "yank newest message (OSC 52)"),
         ("? Esc", "close this help"),
         ("q  Ctrl-C", "quit"),
         ("Ctrl-Z", "suspend (fg to resume)"),
     ];
-    let mut lines = vec![Line::styled(
-        "keybindings",
-        role_style_bold(ThemeRole::Info),
-    )];
-    lines.push(Line::raw(""));
+    // No inner heading: the box's " help " title already names it, and two labels for one popup is
+    // exactly the duplicate-signal clutter the design doc tells us to cut.
+    let mut lines = Vec::new();
     for (k, desc) in keys {
         lines.push(Line::from(vec![
-            Span::styled(format!(" {k:<11}"), role_style(ThemeRole::Accent)),
+            Span::styled(format!(" {k:<key_col$}"), role_style(ThemeRole::Accent)),
             Span::styled(desc.to_string(), Style::default()),
         ]));
     }
-    let popup = center(area, 46, (lines.len() as u16) + 2);
+    // Wide enough for the longest binding line (plus borders and a right pad) — a fixed width
+    // clipped descriptions mid-word on the very screen that exists to explain things.
+    let w = keys
+        .iter()
+        .map(|(k, d)| 1 + key_col.max(k.chars().count()) + d.chars().count())
+        .max()
+        .unwrap_or(44) as u16
+        + 3;
+    let popup = center(area, w, (lines.len() as u16) + 2);
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(role_style(ThemeRole::Info))
-                .title(" help "),
+                .title(Span::styled(" help ", role_style_bold(ThemeRole::Info))),
         ),
         popup,
     );
@@ -717,9 +876,9 @@ mod tests {
             .push(ChatMessage::text(Role::Assistant, "hi there"));
         let out = render(&mut app, 80, 20);
         assert!(out.contains("bee"), "header missing:\n{out}");
-        assert!(out.contains("you  hello bee"), "user line missing:\n{out}");
+        assert!(out.contains("❯ hello bee"), "user line missing:\n{out}");
         assert!(out.contains("hi there"), "assistant line missing:\n{out}");
-        assert!(out.contains("input"), "input border title missing:\n{out}");
+        assert!(out.contains("╭"), "input border missing:\n{out}");
         assert!(out.contains("q quit"), "footer hint missing:\n{out}");
     }
 
@@ -735,7 +894,7 @@ mod tests {
         let mut app = App::new(80, 20);
         app.help_open = true;
         let out = render(&mut app, 80, 20);
-        assert!(out.contains("keybindings"), "help title missing:\n{out}");
+        assert!(out.contains("help"), "help title missing:\n{out}");
         assert!(out.contains("quit"), "help body missing:\n{out}");
     }
 
@@ -761,7 +920,7 @@ mod tests {
         assert!(out.contains("metrics"), "panel title missing:\n{out}");
         assert!(out.contains("Latency"), "panel content missing:\n{out}");
         assert!(
-            out.contains("you  show metrics"),
+            out.contains("❯ show metrics"),
             "chat still present beside the panel:\n{out}"
         );
     }
@@ -816,6 +975,31 @@ mod tests {
         assert!(
             out.contains("THE NEWEST LINE"),
             "newest message must be visible at the bottom:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_collapsed_panel_shows_its_label_and_none_of_its_content() {
+        let mut app = App::new(120, 24);
+        app.panels.upsert(
+            "metrics",
+            RenderSpec::Text {
+                content: "CPU 82%".into(),
+                style: None,
+                bold: false,
+                dim: false,
+            },
+        );
+        let open = render_settled(&mut app, 120, 24);
+        assert!(open.contains("⬢ metrics"), "expanded marker:\n{open}");
+        assert!(open.contains("CPU 82%"), "content shown:\n{open}");
+
+        app.panels.toggle_collapse_at(0);
+        let folded = render_settled(&mut app, 120, 24);
+        assert!(folded.contains("⬡ metrics"), "hollow marker:\n{folded}");
+        assert!(
+            !folded.contains("CPU 82%"),
+            "content hidden while folded:\n{folded}"
         );
     }
 
@@ -912,14 +1096,7 @@ mod tests {
             },
         );
         let out = render_settled(&mut app, 120, 24);
-        for expected in [
-            "bee",
-            "you  hello bee",
-            "metrics",
-            "CPU 82%",
-            "input",
-            "q quit",
-        ] {
+        for expected in ["bee", "❯ hello bee", "metrics", "CPU 82%", "╭", "q quit"] {
             assert!(out.contains(expected), "{expected:?} missing:\n{out}");
         }
     }
@@ -1186,7 +1363,7 @@ mod tests {
         app.input.insert_str("still typing");
         let out = render(&mut app, 100, 24);
         assert!(out.contains("TAKEOVER-BODY"), "overlay content:\n{out}");
-        assert!(out.contains("input"), "the input border survives:\n{out}");
+        assert!(out.contains("❯"), "the input prompt survives:\n{out}");
         assert!(out.contains("still typing"), "and so does the text:\n{out}");
         assert!(out.contains("bee"), "the header is never covered:\n{out}");
     }

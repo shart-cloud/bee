@@ -7,7 +7,7 @@
 
 use ratatui::text::Line;
 
-use crate::render_spec::RenderSpec;
+use crate::render_spec::{EffectSpec, RenderSpec};
 
 /// Who produced a chat message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +29,7 @@ pub enum Body {
     /// Markdown the *sender* declared as markdown — a skill's instructions, say. Distinct from
     /// `Text` because guessing is unsafe: a tool result containing `**` is data, not emphasis (010).
     Markdown(String),
-    Widget(Box<RenderSpec>),
+    Widget(Box<RenderSpec>, Option<EffectSpec>),
 }
 
 /// One entry in the transcript view.
@@ -77,7 +77,17 @@ impl ChatMessage {
     pub fn widget(spec: RenderSpec) -> Self {
         ChatMessage {
             role: Role::Tool,
-            body: Body::Widget(Box::new(spec)),
+            body: Body::Widget(Box::new(spec), None),
+            done: true,
+            cache: None,
+        }
+    }
+
+    /// An inline widget with an agent-requested effect (009 FR-022).
+    pub fn widget_with_effect(spec: RenderSpec, effect: Option<EffectSpec>) -> Self {
+        ChatMessage {
+            role: Role::Tool,
+            body: Body::Widget(Box::new(spec), effect),
             done: true,
             cache: None,
         }
@@ -133,7 +143,7 @@ impl ChatMessage {
             }
             // A widget has no prose to append to, and a markdown block arrives whole — appending to
             // one mid-render would re-parse a document that was never partial.
-            Body::Widget(_) | Body::Markdown(_) => false,
+            Body::Widget(..) | Body::Markdown(_) => false,
         }
     }
 

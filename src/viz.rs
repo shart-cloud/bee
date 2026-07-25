@@ -4,6 +4,7 @@
 //! `render` tool. `ratatui`/`rhai` live only under this crate (NFR-002/SC-019).
 
 pub mod animator;
+pub mod background;
 pub mod bee;
 pub mod buffer_render;
 pub mod glyph;

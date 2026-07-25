@@ -81,7 +81,7 @@ fn default_render_widget_emits_non_blank_ascii() {
         color: None,
     };
     let out = InfoCapture::default();
-    out.render_widget(&spec);
+    out.render_widget(&spec, None);
     let lines = out.lines.lock().unwrap();
     assert!(!lines.is_empty(), "fallback must emit lines, not a blank");
     let joined = lines.join("\n");

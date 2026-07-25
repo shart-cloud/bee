@@ -54,7 +54,8 @@ pub struct ReplArgs {
     pub no_bee: bool,
     /// Color theme (built-in name or a custom one from config). Overrides `BEE_THEME` and the
     /// config file. Built-ins: honeycomb (default), catppuccin-{mocha,latte,frappe,macchiato},
-    /// dracula, nord.
+    /// dracula, nord, gruvbox, tokyo-night, rose-pine — or `auto` to pick a flavor from the
+    /// terminal's detected light/dark background.
     #[arg(long)]
     pub theme: Option<String>,
     /// Standalone MCP config TOML (top-level `[mcp]` + `[[mcp.servers]]`). Requires building with

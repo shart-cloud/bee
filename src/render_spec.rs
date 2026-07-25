@@ -34,12 +34,28 @@ pub struct Point {
     pub y: f64,
 }
 
+/// One labelled row of a [`RenderSpec::Heatmap`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HeatRow {
+    pub label: String,
+    pub values: Vec<f64>,
+}
+
 /// One table row: its cells plus an optional row color (palette or basic-ANSI name).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Row {
     pub cells: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+}
+
+/// One line of a [`RenderSpec::LogTail`]: its text plus an optional severity level
+/// (`error`/`warn`/`info`/`debug`/`trace`) that drives the gutter marker and color.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LogLine {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
 }
 
 /// One labelled dot of a [`RenderSpec::DotGrid`].
@@ -260,9 +276,35 @@ pub enum RenderSpec {
         title: String,
         series: Vec<Series>,
     },
+    ScatterPlot {
+        title: String,
+        series: Vec<Series>,
+    },
+    AreaChart {
+        title: String,
+        series: Vec<Series>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+    },
+    Heatmap {
+        title: String,
+        rows: Vec<HeatRow>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+    },
     Sparkline {
         title: String,
         data: Vec<u64>,
+    },
+    /// A bottom-anchored stream tail: the newest lines that fit, oldest scrolling off the top —
+    /// built for feeds like sandbox denials landing while an episode runs. Levels are marked with a
+    /// letter as well as a color, so the stream still reads in monochrome.
+    LogTail {
+        title: String,
+        lines: Vec<LogLine>,
+        /// Content rows shown (default 8): the tail keeps the newest `max_rows` lines.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_rows: Option<u16>,
     },
     Table {
         title: String,
@@ -335,8 +377,12 @@ impl RenderSpec {
     pub fn element_count(&self) -> usize {
         match self {
             RenderSpec::BarChart { bars, .. } => bars.len(),
-            RenderSpec::LineChart { series, .. } => series.iter().map(|s| s.points.len()).sum(),
+            RenderSpec::LineChart { series, .. }
+            | RenderSpec::ScatterPlot { series, .. }
+            | RenderSpec::AreaChart { series, .. } => series.iter().map(|s| s.points.len()).sum(),
+            RenderSpec::Heatmap { rows, .. } => rows.iter().map(|r| r.values.len()).sum(),
             RenderSpec::Sparkline { data, .. } => data.len(),
+            RenderSpec::LogTail { lines, .. } => lines.len(),
             RenderSpec::Table { rows, .. } => rows.len(),
             RenderSpec::DotGrid { dots, .. } => dots.len(),
             RenderSpec::Layout { children, .. } => children.iter().map(|c| c.element_count()).sum(),
@@ -387,15 +433,34 @@ impl RenderSpec {
                 }
                 s
             }
-            RenderSpec::LineChart { title, series } => {
+            RenderSpec::LineChart { title, series }
+            | RenderSpec::ScatterPlot { title, series, .. }
+            | RenderSpec::AreaChart { title, series, .. } => {
                 let mut s = format!("{title}\n");
                 for ser in series {
                     s.push_str(&format!("  {} ({} points)\n", ser.label, ser.points.len()));
                 }
                 s
             }
+            RenderSpec::Heatmap { title, rows, .. } => {
+                let mut s = format!("{title}\n");
+                for r in rows {
+                    s.push_str(&format!("  {}: {:?}\n", r.label, r.values));
+                }
+                s
+            }
             RenderSpec::Sparkline { title, data } => {
                 format!("{title}\n  {data:?}\n")
+            }
+            RenderSpec::LogTail { title, lines, .. } => {
+                let mut s = format!("{title}\n");
+                for l in lines {
+                    match &l.level {
+                        Some(lv) => s.push_str(&format!("  [{lv}] {}\n", l.text)),
+                        None => s.push_str(&format!("  {}\n", l.text)),
+                    }
+                }
+                s
             }
             RenderSpec::Table {
                 title,
@@ -468,8 +533,21 @@ impl RenderSpec {
             RenderSpec::LineChart { title, series } => {
                 format!("a line chart {title:?} with {} series", series.len())
             }
+            RenderSpec::ScatterPlot { title, series, .. } => {
+                format!("a scatter plot {title:?} with {} series", series.len())
+            }
+            RenderSpec::AreaChart { title, series, .. } => {
+                format!("an area chart {title:?} with {} series", series.len())
+            }
+            RenderSpec::Heatmap { title, rows, .. } => {
+                let cols = rows.first().map_or(0, |r| r.values.len());
+                format!("a heatmap {title:?} ({}×{})", rows.len(), cols)
+            }
             RenderSpec::Sparkline { title, data } => {
                 format!("a sparkline {title:?} with {} points", data.len())
+            }
+            RenderSpec::LogTail { title, lines, .. } => {
+                format!("a log tail {title:?} with {} lines", lines.len())
             }
             RenderSpec::Table {
                 title,

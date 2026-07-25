@@ -66,6 +66,10 @@ pub struct Panel {
     /// The transition owed at the next render, cleared once registered.
     pub pending: Option<Transition>,
     pub fx: EffectSlot,
+    /// Folded down to its label row by the operator (Space in panels focus). **Operator state**:
+    /// upserts replace the spec but never unfold a panel — the agent doesn't get to override what
+    /// the operator chose not to look at.
+    pub collapsed: bool,
 }
 
 /// The ordered set of live panels. `Default` is empty (US1 has none).
@@ -148,6 +152,7 @@ impl PanelRegistry {
                     started: Some(now),
                     ..EffectSlot::default()
                 },
+                collapsed: false,
             }),
         }
     }
@@ -166,6 +171,25 @@ impl PanelRegistry {
     /// Remove panel `id`; a no-op when it isn't present.
     pub fn remove(&mut self, id: &str) {
         self.panels.retain(|p| p.id != id);
+    }
+
+    /// Toggle panel `idx`'s collapsed state (insertion order); a no-op out of range.
+    pub fn toggle_collapse_at(&mut self, idx: usize) {
+        if let Some(p) = self.panels.get_mut(idx) {
+            p.collapsed = !p.collapsed;
+        }
+    }
+
+    /// Remove the panel at `idx` (insertion order); a no-op out of range.
+    pub fn remove_at(&mut self, idx: usize) {
+        if idx < self.panels.len() {
+            self.panels.remove(idx);
+        }
+    }
+
+    /// Panels in insertion order, with their full state — what the renderer walks.
+    pub fn iter_panels(&self) -> impl Iterator<Item = &Panel> {
+        self.panels.iter()
     }
 
     /// Remove every panel.
@@ -237,6 +261,15 @@ pub fn register_transition(
         return false;
     };
     panel.fx.started = None;
+    // A log tail appends every few moments; dissolving the whole panel per append would be constant
+    // churn saying nothing. The new line arriving at the bottom *is* the report, so updates play no
+    // transition — the entrance (and any effect the agent explicitly requested) still does.
+    if pending == Transition::Update
+        && panel.fx.requested.is_none()
+        && matches!(panel.spec, RenderSpec::LogTail { .. })
+    {
+        return false;
+    }
     // An agent-requested transition replaces the default for both create and replace, and plays over
     // the whole panel — the agent asked for *this* motion, not for a variation on the default.
     if let Some(spec) = panel.fx.requested.take() {

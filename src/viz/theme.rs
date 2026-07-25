@@ -237,6 +237,12 @@ pub fn resolve(
     let name_from_config_only = cli.is_none() && env.is_none();
 
     let mut theme = match base_name {
+        // "auto" is a selector, not a theme: pick a flavor by what the terminal is actually
+        // painting. Undetectable (no tty, silent emulator) falls back to honeycomb, whose basic
+        // ANSI adapts to the terminal's own palette on either background.
+        Some(n) if n.trim().eq_ignore_ascii_case("auto") => {
+            theme_for_background(crate::viz::background::detect())
+        }
         Some(n) => match themes::builtin(&n) {
             Some(t) => t,
             None if name_from_config_only && has_roles => {
@@ -266,6 +272,17 @@ pub fn resolve(
         apply_overrides(&mut theme, c, &mut warning);
     }
     (theme, warning)
+}
+
+/// The theme `auto` resolves to for a detected background: the light catppuccin flavor on a light
+/// terminal, the dark one on a dark terminal, honeycomb when detection came up empty. Pure — the
+/// impure `detect()` call stays at the single `resolve` site so this mapping is testable.
+fn theme_for_background(bg: Option<crate::viz::background::Background>) -> Theme {
+    match bg {
+        Some(crate::viz::background::Background::Light) => themes::catppuccin_latte(),
+        Some(crate::viz::background::Background::Dark) => themes::catppuccin_mocha(),
+        None => themes::honeycomb(),
+    }
 }
 
 /// Layer a config's per-role overrides and extended entries onto `theme` (FR-047/FR-048). A color
@@ -468,6 +485,21 @@ mod tests {
                 b: 0xa8
             }
         );
+    }
+
+    #[test]
+    fn auto_maps_backgrounds_to_flavors_and_unknown_to_honeycomb() {
+        use crate::viz::background::Background;
+        assert_eq!(
+            theme_for_background(Some(Background::Light)).name,
+            "catppuccin-latte"
+        );
+        assert_eq!(
+            theme_for_background(Some(Background::Dark)).name,
+            "catppuccin-mocha"
+        );
+        // Undetectable: honeycomb's basic ANSI is the choice that is safe on either background.
+        assert_eq!(theme_for_background(None).name, "honeycomb");
     }
 
     #[test]

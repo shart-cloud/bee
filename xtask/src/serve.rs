@@ -86,7 +86,13 @@ fn handle(mut stream: TcpStream, root: &Path) -> Result<()> {
             let mime = mime_for(&path);
             respond(&mut stream, 200, mime, &body, method == "HEAD")
         }
-        None => respond(&mut stream, 404, "text/plain", b"not found", method == "HEAD"),
+        None => respond(
+            &mut stream,
+            404,
+            "text/plain",
+            b"not found",
+            method == "HEAD",
+        ),
     }
 }
 
