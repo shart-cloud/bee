@@ -64,3 +64,8 @@ sensitive_paths = ["~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gcloud"]
   Engine initialization or cgroup creation.
 - **Attenuation**: a derived policy is valid only if every grant is provably ⊆ its parent (FR-005);
   glob-derived grants that cannot be proven contained are rejected (conservative fail-closed).
+  Omission does not widen: a child that declares no `[policy.filesystem]`, `[policy.exec]`, or
+  `[policy.network]` inherits the parent's, a child filesystem map re-absorbs every parent `deny`, and
+  a parent's `!`-pinned executable stays pinned in the child. A child grant reaching into an FR-008
+  protected region is refused unless the parent named a containing region explicitly. `derive` returns
+  the effective child policy that results (research R15).

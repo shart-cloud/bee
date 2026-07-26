@@ -85,11 +85,14 @@ impl Policy {
 
         // Inject FR-008 protected defaults first, then explicit rules; explicit rules that name the
         // same resolved path override (a later duplicate prefix with the same length wins at load).
-        for (path, access) in protected_defaults(r) {
+        // That override is the *author's* prerogative: for a derived policy, attenuation has already
+        // refused any child grant reaching into a protected region that the parent did not name
+        // explicitly, so nothing untrusted gets here (see [`crate::attenuation`]).
+        for (raw, access) in PROTECTED_DEFAULTS {
             fs.push(FsPrimitive::Prefix {
-                path: path.into_bytes(),
+                path: resolve_tokens(raw, r).into_bytes(),
                 subtree: true,
-                mode: access,
+                mode: *access,
             });
         }
 
@@ -138,16 +141,16 @@ impl Policy {
 }
 
 /// FR-008: within any writable root, protect VCS/config/credential dirs unless explicitly overridden.
-fn protected_defaults(r: &dyn Resolver) -> Vec<(String, AccessMode)> {
-    let root = r.project_root();
-    let home = r.home();
-    vec![
-        (format!("{root}/.git"), AccessMode::READ),
-        (format!("{root}/.bee"), AccessMode::DENY),
-        (format!("{home}/.ssh"), AccessMode::DENY),
-        (format!("{home}/.aws"), AccessMode::DENY),
-    ]
-}
+///
+/// Held in **authoring tokens**, not resolved paths, because two callers need it at two different
+/// stages: [`Policy::compile`] resolves and injects it, while [`crate::attenuation`] reasons over it
+/// at the authoring level (where it, too, compares raw patterns). One table, one truth.
+pub const PROTECTED_DEFAULTS: &[(&str, AccessMode)] = &[
+    (":project_root/.git", AccessMode::READ),
+    (":project_root/.bee", AccessMode::DENY),
+    ("~/.ssh", AccessMode::DENY),
+    ("~/.aws", AccessMode::DENY),
+];
 
 /// Resolve `:project_root` and a leading `~` to absolute paths. Other characters pass through.
 pub fn resolve_tokens(raw: &str, r: &dyn Resolver) -> String {

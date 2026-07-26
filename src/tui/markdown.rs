@@ -6,7 +6,7 @@
 //! Two rules shape this module.
 //!
 //! **Color is semantic** (design-system §1): every style here resolves through a [`Role`] and the
-//! active theme, never a literal color. That is what [`BeeStyleSheet`] is for — `tui-markdown` 0.3.8
+//! active theme, never a literal color. That is what [`BeeStyleSheet`] is for — `tui-markdown` 0.3.9
 //! exposes a `StyleSheet` seam precisely so a host can supply its own look, so bee supplies its own
 //! rather than accepting the crate's hard-coded cyan-and-black. `NO_COLOR` therefore degrades this
 //! path exactly like every other one, for free.
