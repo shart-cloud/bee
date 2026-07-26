@@ -577,7 +577,12 @@
       "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
       "missing_fields": [
         "preconditions"
-      ]
+      ],
+      "remediation": {
+        "status": "fixed",
+        "where": "014-terminal-safety",
+        "note": "Untrusted text is escaped where it enters a front-end (`safe_text::safe_block`/`safe_line`, applied in repl::terminal's ReplOutput impl and tui::app::handle_session) and only then styled; the interactive consent prompt escapes every field it prints; and skill frontmatter carrying control or bidi characters is refused at load."
+      }
     },
     {
       "id": "f041",
@@ -1122,7 +1127,12 @@
       "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
       "missing_fields": [
         "preconditions"
-      ]
+      ],
+      "remediation": {
+        "status": "fixed",
+        "where": "014-terminal-safety",
+        "note": "Untrusted text is escaped where it enters a front-end (`safe_text::safe_block`/`safe_line`, applied in repl::terminal's ReplOutput impl and tui::app::handle_session) and only then styled; the interactive consent prompt escapes every field it prints; and skill frontmatter carrying control or bidi characters is refused at load."
+      }
     },
     {
       "id": "f051",
@@ -2132,6 +2142,16 @@
       "status": "fixed",
       "where": "013-attenuation-inheritance",
       "note": "Policy::derive now returns the effective child policy \u2014 an omitted filesystem/exec/network dimension is inherited from the parent, parent deny rules and inode pins are re-added, and a child grant reaching into an FR-008 protected region is refused (research R15)."
+    },
+    {
+      "findings": [
+        "f040",
+        "f046",
+        "f047"
+      ],
+      "status": "fixed",
+      "where": "014-terminal-safety",
+      "note": "Untrusted text is escaped where it enters a front-end (`safe_text::safe_block`/`safe_line`, applied in repl::terminal's ReplOutput impl and tui::app::handle_session) and only then styled; the interactive consent prompt escapes every field it prints; and skill frontmatter carrying control or bidi characters is refused at load."
     }
   ]
 }

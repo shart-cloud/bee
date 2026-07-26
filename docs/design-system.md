@@ -29,6 +29,13 @@ These are non-negotiable and already hold across the codebase — keep them hold
    basic-ANSI output; Catppuccin ×4, Dracula, and Nord ship alongside it.
 5. **Spatial stability.** Banners, status lines, and dot grids keep fixed positions and fixed column
    order. Chrome doesn't rearrange itself between frames.
+6. **The terminal is ours; untrusted text is data.** Model prose, tool output, audit targets, and
+   skill metadata are attacker-reachable, and a terminal reads text as a command language — an ESC
+   can clear the screen, a `\r` can rewrite the line above, a bidi override can reorder what was
+   already drawn. Every such string passes through `safe_text::safe_block`/`safe_line` at the point
+   it enters a front-end (`repl::terminal`'s `ReplOutput` impl; `tui::app::handle_session`), and
+   only *then* gets styled. Sanitize the payload, then paint it — never the reverse, or the escaping
+   would eat bee's own color.
 
 ## Identity
 
@@ -212,3 +219,4 @@ not get to pick bee's.
 - [ ] Motion is decoration: with `BEE_NO_ANIMATION` set, the same content is on screen immediately.
 - [ ] Any new effect goes through `tui::effects::resolve` — never registered at a call site directly.
 - [ ] New chrome effects register **unkeyed**, so the agent cannot address them.
+- [ ] Untrusted text is sanitized where it enters the front-end, before any styling is applied.

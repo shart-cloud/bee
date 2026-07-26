@@ -518,11 +518,20 @@ fn handle_chat_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// The TUI's trust boundary for text, mirroring the inline REPL's (`repl::terminal`).
+///
+/// ratatui stores each grapheme as a cell symbol and flushes it to the terminal, so an ESC that
+/// reaches the chat model reaches the terminal's parser too — the alternate screen is no shield.
+/// Sanitizing here, where session events become chat messages, is the one choke point every
+/// untrusted string passes through; styling and markdown rendering happen downstream, on clean text.
 fn handle_session(app: &mut App, ev: SessionEvent) {
+    use crate::safe_text::{safe_block, safe_line};
+
     // Every session event is data arriving; the header's working indicator phases off this count.
     app.activity = app.activity.wrapping_add(1);
     match ev {
         SessionEvent::AssistantDelta(s) => {
+            let s = safe_block(&s).into_owned();
             // FR-019: the model's reply to a message the operator sent *since* the overlay appeared
             // dismisses it — the conversation has moved past what the overlay was showing. Prose
             // from the same turn that created it does not: an overlay is usually rendered by a tool
@@ -555,11 +564,18 @@ fn handle_session(app: &mut App, ev: SessionEvent) {
             }
         }
         SessionEvent::ToolCall { name, arguments } => {
-            app.push_line(Role::Tool, format!("▸ {name}{}", compact_args(&arguments)));
+            app.push_line(
+                Role::Tool,
+                format!(
+                    "▸ {}{}",
+                    safe_line(&name),
+                    safe_line(&compact_args(&arguments))
+                ),
+            );
         }
         SessionEvent::ToolResult { result, .. } => {
             let mark = if result.is_error { "✗" } else { "✓" };
-            let line = result.content.lines().next().unwrap_or_default();
+            let line = safe_line(result.content.lines().next().unwrap_or_default());
             app.push_line(Role::Tool, format!("{mark} {line}"));
             // Flash the chat so the eye finds the result that belongs to the call above it — accent
             // for the ordinary case, the verdict colors when a run actually ended (FR-026).
@@ -588,12 +604,15 @@ fn handle_session(app: &mut App, ev: SessionEvent) {
         // Declared markdown (a skill's instructions): rendered styled, and never confused with the
         // Info lines around it, which are plain by nature.
         SessionEvent::Markdown(md) => {
-            app.chat.push(ChatMessage::markdown(Role::System, md));
+            app.chat.push(ChatMessage::markdown(
+                Role::System,
+                safe_block(&md).into_owned(),
+            ));
             app.autoscroll();
         }
-        SessionEvent::Error(s) => app.push_line(Role::System, format!("error: {s}")),
+        SessionEvent::Error(s) => app.push_line(Role::System, format!("error: {}", safe_block(&s))),
         SessionEvent::Info(s) | SessionEvent::Footer(s) | SessionEvent::Steering(s) => {
-            app.push_line(Role::System, s)
+            app.push_line(Role::System, safe_block(&s).into_owned())
         }
         // `/clear` dropped the model's message log; the pane holds the only other copy, so it goes
         // too (010). Panels are agent-owned view state rather than conversation, so they stay — the
@@ -663,6 +682,43 @@ mod tests {
         type_str(&mut a, "b");
         assert_eq!(a.input.text(), "a\nb");
         assert!(a.outbox.is_none());
+    }
+
+    /// f040, TUI side: ratatui writes a cell's symbol straight to the terminal, so an ESC in the
+    /// chat model is an ESC on the wire. Nothing untrusted may carry one into a message body.
+    #[test]
+    fn untrusted_session_text_reaches_the_chat_model_defanged() {
+        use crate::tui::chat::Body;
+        const ATTACK: &str = "ok\x1b[2J\x1b]0;pwned\x07\rDENIED nothing";
+
+        let events = vec![
+            SessionEvent::AssistantDelta(ATTACK.into()),
+            SessionEvent::Markdown(ATTACK.into()),
+            SessionEvent::Info(ATTACK.into()),
+            SessionEvent::Error(ATTACK.into()),
+            SessionEvent::ToolCall {
+                name: ATTACK.into(),
+                arguments: serde_json::json!({ "a": ATTACK }),
+            },
+            SessionEvent::ToolResult {
+                result: crate::tools::ToolResult::ok(ATTACK),
+                audit: Vec::new(),
+            },
+        ];
+        let mut a = app();
+        for ev in events {
+            update(&mut a, Message::session(ev));
+        }
+        for msg in &a.chat {
+            let (Body::Text(t) | Body::Markdown(t)) = &msg.body else {
+                continue;
+            };
+            assert!(
+                !t.chars().any(|c| c.is_control() && c != '\n'),
+                "control character reached the chat model: {t:?}"
+            );
+            assert!(t.contains("\\x1b"), "text was dropped instead: {t:?}");
+        }
     }
 
     #[test]
