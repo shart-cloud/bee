@@ -13,6 +13,14 @@
 //!   deny-by-default writes for scopes that declare a writable surface. The requested access is the
 //!   `FMODE_WRITE` bit of `file->f_mode`, read by a direct load at a constant offset.
 //!
+//! **A hook that cannot evaluate an operation refuses it** ([`deny_unevaluated`]). Null arguments,
+//! an unavailable scratch buffer, a `bpf_d_path` failure, and an address family the hook does not
+//! decode all return the denial errno rather than `0`, and all emit an audit record. The trigger is
+//! reachable by an attacker — a directory chain longer than the 4KB path buffer, a pathless memfd
+//! image, an AF_UNIX destination the `host:port` policy language cannot describe — so allowing on
+//! failure handed out exactly the operation the scope exists to mediate. This only applies once the
+//! scope has been shown to enforce that dimension; an unenforced scope still returns `0` early.
+//!
 //! `bpf_d_path` needs a `*mut path`; we get it as `&file->f_path`. The `file`/`path`/`linux_binprm`
 //! structs in `aya-ebpf-bindings` are opaque, so we read fields at compile-time-constant offsets (the
 //! BPF verifier requires *constant* offsets into a BTF pointer, so these cannot be made
@@ -127,6 +135,28 @@ static PATHBUF: PerCpuArray<[u8; PATH_MAX]> = PerCpuArray::with_max_entries(1, 0
 #[map]
 static AUDIT_RB: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
 
+/// Refuse an operation the hook enforces but could not evaluate — a null argument, an unreadable
+/// struct field, an unresolvable path, an address family with no allowlist to check against.
+///
+/// Constitution I is unconditional: "cannot tell" is "no". Every one of these branches used to
+/// `return 0`, which meant an attacker who could *provoke* the failure — a directory chain longer
+/// than `bpf_d_path`'s buffer, a socket family the hook does not decode — got an unenforced
+/// operation out of an enforcing scope. Reaching one of these is either an attack or a bug in bee,
+/// and both deserve the audit record this emits.
+///
+/// Only ever called after the scope has been shown to enforce the dimension in question (a network
+/// flag, a deny list, an exec allowlist), so an unenforced scope is unaffected. `errno` is negative,
+/// as returned; observe mode records without blocking, exactly as a policy denial does.
+fn deny_unevaluated(cgid: u64, meta: ScopeMeta, op: Op, errno: i32) -> i32 {
+    let observe = meta.mode == ScopeMode::Observe as u8;
+    emit_audit(cgid, op, observe, errno, None);
+    if observe {
+        0
+    } else {
+        errno
+    }
+}
+
 #[lsm(hook = "socket_connect")]
 pub fn socket_connect(ctx: LsmContext) -> i32 {
     let (cgid, meta) = match resolve_scope() {
@@ -140,7 +170,7 @@ pub fn socket_connect(ctx: LsmContext) -> i32 {
     // arg1 of socket_connect is `struct sockaddr *address` (UAPI-stable layout).
     let addr: *const u8 = ctx.arg(1);
     if addr.is_null() {
-        return 0;
+        return deny_unevaluated(cgid, meta, Op::Connect, -EPERM);
     }
     let family = unsafe { bpf_probe_read_kernel(addr as *const u16).unwrap_or(0) };
 
@@ -160,7 +190,12 @@ pub fn socket_connect(ctx: LsmContext) -> i32 {
             key.port = u16::from_be(port_be);
             key.addr = a;
         }
-        _ => return 0, // non-IP (unix, netlink, …) — not enforced here
+        // A non-IP family (unix, netlink, …). The policy language describes destinations as
+        // `host:port`, so there is no rule that could ever allow one — and "no rule matches" in an
+        // enforcing scope means deny, not allow. An AF_UNIX connect to a local agent socket is
+        // egress just as surely as a TCP one; letting it through because the allowlist cannot spell
+        // it is the enforcement gap, not the policy's silence.
+        _ => return deny_unevaluated(cgid, meta, Op::Connect, -EPERM),
     }
 
     if unsafe { NET_ALLOW.get(&key) }.is_some() {
@@ -190,12 +225,12 @@ pub fn file_open(ctx: LsmContext) -> i32 {
     // Resolve the path into the per-CPU buffer.
     let buf_ptr = match PATHBUF.get_ptr_mut(0) {
         Some(p) => p,
-        None => return 0,
+        None => return deny_unevaluated(cgid, meta, Op::FileOpen, -EACCES),
     };
     // arg0 of file_open is `struct file *`.
     let file: *const c_void = ctx.arg(0);
     if file.is_null() {
-        return 0;
+        return deny_unevaluated(cgid, meta, Op::FileOpen, -EACCES);
     }
     // Requested access: direct load of `file->f_mode` (a scalar field on a trusted LSM BTF pointer,
     // so the verifier maps offset 20 to the u32 field — same mechanism as `bprm->file` below).
@@ -206,7 +241,10 @@ pub fn file_open(ctx: LsmContext) -> i32 {
     // SAFETY: bpf_d_path writes up to PATH_MAX bytes into buf_ptr and returns the length (incl. NUL).
     let ret = unsafe { bpf_d_path(path_ptr, buf_ptr as *mut i8, PATH_MAX as u32) };
     if ret <= 0 {
-        return 0; // could not resolve — do not block
+        // Unresolvable (most often a resolved path longer than the 4KB buffer). A rule list cannot
+        // be applied to a path we do not have, and a scope with deny rules does not get to skip them
+        // because an attacker nested the target deeply enough.
+        return deny_unevaluated(cgid, meta, Op::FileOpen, -EACCES);
     }
     let plen = resolved_len(ret);
 
@@ -241,23 +279,26 @@ pub fn bprm_check_security(ctx: LsmContext) -> i32 {
     // arg0 of bprm_check_security is `struct linux_binprm *`; read bprm->file (a `struct file*`).
     let bprm: *const u8 = ctx.arg(0);
     if bprm.is_null() {
-        return 0;
+        return deny_unevaluated(cgid, meta, Op::Exec, -EACCES);
     }
     // Direct load of bprm->file. Because `bprm` is a trusted LSM BTF pointer, the verifier maps
     // offset 64 to the `file*` field and keeps the loaded value a trusted pointer (which
     // `bpf_d_path` requires) — unlike `bpf_probe_read`, which would yield an untyped scalar.
     let file_val = unsafe { *((bprm as usize + BINPRM_FILE_OFF) as *const usize) };
     if file_val == 0 {
-        return 0;
+        return deny_unevaluated(cgid, meta, Op::Exec, -EACCES);
     }
     let buf_ptr = match PATHBUF.get_ptr_mut(0) {
         Some(p) => p,
-        None => return 0,
+        None => return deny_unevaluated(cgid, meta, Op::Exec, -EACCES),
     };
     let path_ptr = (file_val + FILE_F_PATH_OFF) as *mut path;
     let ret = unsafe { bpf_d_path(path_ptr, buf_ptr as *mut i8, PATH_MAX as u32) };
     if ret <= 0 {
-        return 0; // cannot resolve — do not block
+        // An allowlist names paths; an image whose path will not resolve cannot be on it. This is
+        // the sharpest of the four — a >4KB directory chain, or a memfd image with no path at all,
+        // was the way to exec anything at all out of an exec-enforced scope.
+        return deny_unevaluated(cgid, meta, Op::Exec, -EACCES);
     }
     let plen = resolved_len(ret);
     let buf = unsafe { &*buf_ptr };

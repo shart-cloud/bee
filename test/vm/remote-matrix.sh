@@ -44,6 +44,36 @@ if connected "$out"; then emit net-allow PASS "http=$out"; else emit net-allow F
 out=$(run_bee "$WORK/net.toml" -- bash -c 'curl -sS --max-time 8 -o /dev/null -w %{http_code} https://8.8.8.8')
 if [ "$out" = 000 ]; then emit net-deny PASS "connection blocked"; else emit net-deny FAIL "http=$out (expected block)"; fi
 
+# A non-IP destination is still egress. The policy language spells destinations `host:port`, so no
+# rule can ever allow an AF_UNIX socket — and "no rule matches" in an enforcing scope means deny.
+# The hook used to return allow for every family it did not decode, so a local agent socket was
+# reachable from a network-enforced scope (f034).
+SOCK=/tmp/bee-af-unix.sock
+rm -f "$SOCK"
+python3 - "$SOCK" <<'EOF' &
+import socket, sys, os
+p = sys.argv[1]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(p); s.listen(1); os.chmod(p, 0o777)
+try: s.accept()
+except Exception: pass
+EOF
+listener=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$SOCK" ] && break; sleep 0.3; done
+out=$(run_bee "$WORK/net.toml" -- python3 -c "
+import socket,sys
+s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+try:
+    s.connect('$SOCK'); print('CONNECTED')
+except OSError as e:
+    print('REFUSED', e.errno)
+" 2>&1)
+case "$out" in
+  *REFUSED*) emit net-unix-denied PASS "AF_UNIX connect refused ($out)" ;;
+  *) emit net-unix-denied FAIL "AF_UNIX reachable from an enforced scope ($out)" ;;
+esac
+kill "$listener" 2>/dev/null; wait "$listener" 2>/dev/null; rm -f "$SOCK"
+
 # ---------------------------------------------------------------- file deny / allow
 cat >"$WORK/fs.toml" <<'EOF'
 [policy]
@@ -132,6 +162,55 @@ EOF
 out=$(run_bee "$WORK/exec.toml" -- bash "$WORK/exectest.sh")
 echo "$out" | grep -q CAT_OK && emit exec-allow PASS "allowlisted exec ran" || emit exec-allow FAIL "allowed exec blocked"
 echo "$out" | grep -q 'NC_RC=126' && emit exec-deny PASS "unlisted exec denied" || emit exec-deny FAIL "nc not denied ($(echo "$out" | tr '\n' ' '))"
+
+# ------------------------------------------- unresolvable paths fail closed (f007)
+# `bpf_d_path` fails (-ENAMETOOLONG) once the resolved path exceeds its 4KB buffer. Both hooks used
+# to return allow in that case, so a deep-enough directory chain was a general escape: `execve` of a
+# short *relative* name never has to pass a >PATH_MAX argument, but the kernel still resolves it to
+# one. Build such a chain outside the scope, then try to use it from inside.
+DEEP=/home/ubuntu/deeptest
+SEG=$(printf 'd%.0s' $(seq 1 60))
+sudo rm -rf "$DEEP"; mkdir -p "$DEEP"
+( cd "$DEEP" && for _ in $(seq 1 80); do mkdir -p "$SEG" && cd "$SEG" || exit 1; done \
+    && cp /bin/echo ./x && echo DEEPDATA > ./deep.txt )
+# 80 × 61 chars of chain, well past PATH_MAX — confirm before trusting either result.
+depth_ok=$(cd "$DEEP" && for _ in $(seq 1 80); do cd "$SEG"; done && pwd | wc -c)
+# Builtins only for the descent: this script runs under the exec allowlist, and a `seq` that gets
+# denied would leave us in the shallow directory and turn the case into a false PASS.
+cat >"$WORK/deep.sh" <<EOF
+cd "$DEEP" || exit 1
+i=0
+while [ \$i -lt 80 ]; do cd "$SEG" || exit 1; i=\$((i + 1)); done
+[ -x ./x ] || { echo DESCENT_FAILED; exit 1; }
+./x DEEP_EXEC_OK 2>/dev/null; echo "EXEC_RC=\$?"
+cat ./deep.txt 2>/dev/null; echo "READ_RC=\$?"
+EOF
+
+if [ "$depth_ok" -le 4096 ]; then
+  emit exec-unresolvable-denied FAIL "chain only $depth_ok bytes — test cannot provoke d_path failure"
+  emit file-unresolvable-denied FAIL "chain only $depth_ok bytes — test cannot provoke d_path failure"
+else
+  # `seq`/`cat` are on the allowlist, `./x` (a copy of echo) is not — but the point is that it is
+  # unresolvable, so it must be refused whatever its name would have been.
+  out=$(run_bee "$WORK/exec.toml" -- bash "$WORK/deep.sh" 2>&1)
+  if echo "$out" | grep -q DESCENT_FAILED; then
+    emit exec-unresolvable-denied FAIL "descent broke — case proves nothing ($(echo "$out" | tr '\n' ' '))"
+  elif echo "$out" | grep -q DEEP_EXEC_OK; then
+    emit exec-unresolvable-denied FAIL "exec of an unresolvable image ran ($(echo "$out" | tr '\n' ' '))"
+  else
+    emit exec-unresolvable-denied PASS "unresolvable exec refused"
+  fi
+  # Same provocation against the file hook: a deny-list scope must not open what it cannot resolve.
+  out=$(run_bee "$WORK/fs.toml" -- bash "$WORK/deep.sh" 2>&1)
+  if echo "$out" | grep -q DESCENT_FAILED; then
+    emit file-unresolvable-denied FAIL "descent broke — case proves nothing ($(echo "$out" | tr '\n' ' '))"
+  elif echo "$out" | grep -q DEEPDATA; then
+    emit file-unresolvable-denied FAIL "read of an unresolvable path succeeded"
+  else
+    emit file-unresolvable-denied PASS "unresolvable open refused"
+  fi
+fi
+sudo rm -rf "$DEEP"
 
 # ---------------------------------------------------- search tool: library search runs IN-scope
 # The `search` tool execs `bee search-worker` (ripgrep as a library) through the sandbox, so its file

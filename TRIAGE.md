@@ -13,6 +13,9 @@ are left in place unedited for provenance.
 |----------|-----|
 | f018, f020, f022, f026, f028, f030 (all six HIGHs) | `8e2cdbb` + `3225d44` — closed and VM-verified (31/31 matrix) |
 | f001, f002, f012, f014, f025 (+ absorbed f006, f032) | branch `013-attenuation-inheritance` — one root cause: attenuation validated only what a child *stated*, so omission widened authority. `Policy::derive` now returns the *effective* child policy (silence inherits, it does not reset) and refuses child grants reaching into FR-008 protected regions. See research R15; regression tests in `crates/core/tests/attenuation.rs`. |
+| f040, f046 (+ absorbed f047) | branch `014-terminal-safety` — untrusted text is escaped where it enters a front-end (`safe_text`, applied in `repl::terminal` and `tui::app::handle_session`) and only then styled; the consent prompt escapes every field it prints; skill frontmatter carrying control or bidi characters is refused at load. |
+| f007, f034 | branch `015-hooks-fail-closed` — LSM hooks refuse what they cannot evaluate: a `bpf_d_path` failure, a null struct argument, an unavailable scratch slot, and any non-IP address family are denied and audited instead of allowed. Research R16; VM cases `exec-unresolvable-denied`, `file-unresolvable-denied`, `net-unix-denied` (35/35). |
+| f010 | **Not a defect — stale report.** `hardening.rs::drop_privileges` already sets `PR_SET_NO_NEW_PRIVS` and empties the capability bounding set except the DAC pair; VM case `priv-drop` asserts `NoNewPrivs=1 CapBnd=0x6`. Closed by `8e2cdbb`/`3225d44`, which the report predates. |
 
 ## Act on these
 ### [HIGH] Provider TOML can send an arbitrary environment secret to an attacker endpoint  (f018)

@@ -380,12 +380,21 @@ fn terminal_rows() -> Option<u16> {
 /// session's whole contribution to the otherwise-shared grant path.
 fn prompt_consent(request: &bee::skills::GrantRequest<'_>) -> bool {
     use std::io::Write;
-    eprintln!("\nskill '{}' requests extra capabilities:", request.skill);
+    // Every field here is skill-authored. Skill loading already refuses control characters in
+    // frontmatter, but this prompt is the consent boundary itself and takes a `GrantRequest` from
+    // any source, so it escapes what it prints rather than trusting an upstream check: a forged
+    // prompt is a granted capability. One line per field, so nothing can smuggle in a second line.
+    let safe = bee::safe_text::safe_line;
+    eprintln!(
+        "\nskill '{}' requests extra capabilities:",
+        safe(request.skill)
+    );
     if !request.tools.is_empty() {
-        eprintln!("  tools: {}", request.tools.join(", "));
+        let tools: Vec<_> = request.tools.iter().map(|t| safe(t)).collect();
+        eprintln!("  tools: {}", tools.join(", "));
     }
     for (path, access) in request.filesystem {
-        eprintln!("  filesystem: {path} = {access}");
+        eprintln!("  filesystem: {} = {}", safe(path), safe(access));
     }
     eprint!("grant these (within the ceiling)? [y/N] ");
     let _ = std::io::stderr().flush();
