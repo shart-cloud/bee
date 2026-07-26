@@ -707,7 +707,12 @@
       "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
       "missing_fields": [
         "preconditions"
-      ]
+      ],
+      "remediation": {
+        "status": "not_applicable",
+        "where": "8e2cdbb, 3225d44",
+        "note": "Stale: crates/userspace/src/hardening.rs::drop_privileges sets PR_SET_NO_NEW_PRIVS and empties the capability bounding set except the DAC pair; VM case `priv-drop` asserts NoNewPrivs=1 and CapBnd=0x6. The report predates that work."
+      }
     },
     {
       "id": "f003",
@@ -960,7 +965,12 @@
       "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
       "missing_fields": [
         "preconditions"
-      ]
+      ],
+      "remediation": {
+        "status": "fixed",
+        "where": "015-hooks-fail-closed",
+        "note": "LSM hooks refuse what they cannot evaluate (`deny_unevaluated`): a bpf_d_path failure, a null struct argument, an unavailable scratch slot, and any non-IP address family now return the denial errno with an audit record instead of allowing. Research R16; VM cases exec-unresolvable-denied / file-unresolvable-denied / net-unix-denied."
+      }
     },
     {
       "id": "f039",
@@ -1255,7 +1265,12 @@
       "owner_hint": "top committer: jg (1/1 recent commits); no CODEOWNERS entry",
       "missing_fields": [
         "preconditions"
-      ]
+      ],
+      "remediation": {
+        "status": "fixed",
+        "where": "015-hooks-fail-closed",
+        "note": "LSM hooks refuse what they cannot evaluate (`deny_unevaluated`): a bpf_d_path failure, a null struct argument, an unavailable scratch slot, and any non-IP address family now return the denial errno with an audit record instead of allowing. Research R16; VM cases exec-unresolvable-denied / file-unresolvable-denied / net-unix-denied."
+      }
     },
     {
       "id": "f049",
@@ -2152,6 +2167,23 @@
       "status": "fixed",
       "where": "014-terminal-safety",
       "note": "Untrusted text is escaped where it enters a front-end (`safe_text::safe_block`/`safe_line`, applied in repl::terminal's ReplOutput impl and tui::app::handle_session) and only then styled; the interactive consent prompt escapes every field it prints; and skill frontmatter carrying control or bidi characters is refused at load."
+    },
+    {
+      "findings": [
+        "f007",
+        "f034"
+      ],
+      "status": "fixed",
+      "where": "015-hooks-fail-closed",
+      "note": "LSM hooks refuse what they cannot evaluate (`deny_unevaluated`): a bpf_d_path failure, a null struct argument, an unavailable scratch slot, and any non-IP address family now return the denial errno with an audit record instead of allowing. Research R16; VM cases exec-unresolvable-denied / file-unresolvable-denied / net-unix-denied."
+    },
+    {
+      "findings": [
+        "f010"
+      ],
+      "status": "not_applicable",
+      "where": "8e2cdbb, 3225d44",
+      "note": "Report predates the tool-child privilege drop; no_new_privs and the bounding-set drop are in place and VM-verified (`priv-drop`)."
     }
   ]
 }
