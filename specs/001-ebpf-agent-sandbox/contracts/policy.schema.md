@@ -54,6 +54,11 @@ sensitive_paths = ["~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gcloud"]
     AS-2), independent of whether the policy has other writable roots.
   - Segment (`**/name`) and single-`*` glob **filesystem** rules are not enforceable in-kernel and are
     refused (fail-closed) for every mode — see compile/scope errors below.
+- **Unevaluable operations are denied**: inside a scope that enforces a dimension, an operation the
+  kernel hook cannot evaluate is refused and audited — a path `bpf_d_path` cannot resolve (over ~4KB
+  resolved length, or a pathless image), or a socket family the `host:port` language cannot describe.
+  In practice: a network-enforced scope refuses AF_UNIX/AF_NETLINK connects outright, and no enforced
+  scope can open or execute a path longer than the kernel's path buffer (research R16).
 - **Protected defaults (FR-008)**: within any writable root, VCS metadata (`.git`), bee's own config
   (`.bee`), `~/.ssh`, and `~/.aws` are read-only/denied unless a rule explicitly grants otherwise.
 - **Path tokens**: `:project_root` and `~` resolve to absolute paths at compile time.

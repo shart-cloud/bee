@@ -373,6 +373,48 @@ property belongs to attenuation, and every future backend would have to re-imple
 
 ---
 
+## R16. Hooks fail closed on what they cannot evaluate (FR-009, Constitution I)
+
+**Context**: Four branches in the LSM programs returned `0` (allow) when the hook could not reach a
+decision: `bpf_d_path` failure in `file_open` and `bprm_check_security`, a null `bprm`/`file`/sockaddr
+argument, an unavailable `PATHBUF` slot, and — in `socket_connect` — any address family other than
+AF_INET/AF_INET6. Three of the four are attacker-provokable from inside a scope. `bpf_d_path` fails
+with `-ENAMETOOLONG` once the resolved path exceeds its 4KB buffer, and `execve` never has to pass a
+path that long: `chdir` down a deep chain and exec a short *relative* name, and the kernel resolves it
+to something the hook cannot render. That was a general escape from an exec-enforced scope (triage
+f007). The family default was the same shape in the network hook: an AF_UNIX connect to a local agent
+socket left an egress-enforced scope unmediated (f034).
+
+**Decision**: A hook that enforces a dimension refuses what it cannot evaluate — `deny_unevaluated`
+returns the denial errno and emits an audit record, in every one of those branches. The guard runs
+only *after* the scope has been shown to enforce that dimension (network flag set, deny list present,
+exec allowlist present), so an unenforced scope is untouched and observe mode still records without
+blocking.
+
+For non-IP families this is a policy statement as much as a code change: the authoring language spells
+destinations as `host:port`, so no rule can ever name an AF_UNIX or AF_NETLINK peer — and "no rule
+matches" in an enforcing scope means deny. The cost is real and accepted: inside a network-enforced
+scope, local socket IPC is refused outright, and inside any enforced scope a path longer than 4KB
+cannot be opened or executed.
+
+**Rationale**: The alternative readings of a resolution failure — "probably benign", "not our
+business" — are exactly the readings an attacker wants, and neither is available under Constitution I.
+Auditing the refusal keeps a genuine bee bug (a wrong struct offset, an exhausted per-CPU slot)
+diagnosable rather than silent.
+
+**Alternatives**: (a) fall back to an inode identity check for exec — the TOCTOU-hard answer, and the
+right long-term one, but it requires the inode-pinning backend that `EnforcementPlan` currently refuses
+(`UnsupportedInodePin`); deny-on-unresolvable is correct in the meantime and stays correct after;
+(b) allow non-IP families and add an `AF_UNIX` allowlist to the policy language — more expressive, but
+it widens the authoring surface and the attenuation rules for a case no bee policy has yet asked for;
+(c) raise the path buffer — moves the threshold without closing anything, and PATH_MAX is the kernel's
+own ceiling.
+
+**Verification**: VM matrix cases `exec-unresolvable-denied`, `file-unresolvable-denied`, and
+`net-unix-denied`; all three fail against the pre-fix binary. 35/35 on the BPF-LSM VM.
+
+---
+
 ## Resolved Technical Context values
 
 | Field | Value |

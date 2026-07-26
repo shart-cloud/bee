@@ -44,11 +44,13 @@ Override target via env: `NS`, `VM`, `KEY`.
 | `rw-read-source` / `rw-write-source-denied` | read/write modes: a `read`-marked source tree is readable but write-opens are blocked (`EACCES`) — US2 AS-2 |
 | `rw-write-scratch` / `rw-write-default-deny` | a `write`-granted scratch dir is writable; an unlisted path is denied by default (scope declares a writable surface) |
 | `exec-allow` / `exec-deny` | exec allowlist: allowlisted binary runs, un-listed `execve` denied |
+| `exec-unresolvable-denied` / `file-unresolvable-denied` | fail-closed on what a hook cannot evaluate: a directory chain past `bpf_d_path`'s 4KB buffer makes the resolved path unrenderable, and the exec/open is refused rather than allowed (research R16) |
+| `net-unix-denied` | a network-enforced scope refuses an AF_UNIX connect — the `host:port` language cannot name one, and no rule matching means deny |
 | `observe-mode` | dry-run: operation allowed but emits a `decision:"observed"` audit event |
 | `atten-reject` | subagent attenuation: an over-broad child (`--parent`) is refused before running |
 | `atten-subset-allow` / `atten-subset-deny` | a valid subset child runs and enforces its *narrower* policy (a dest the parent allows but the child dropped is blocked) |
 | `scope-isolation` | a process outside any bee scope is unaffected |
 | `episode-file-deny` / `episode-allow` | LLM agent harness (002): a scripted episode's tool call that reads a policy-denied path returns kernel `EACCES` in the transcript with a `file_open` denial and status `completed` (US1 AS-1); a permissive in-scope write succeeds with no denials (US1 AS-2) |
 
-All 23 pass on the reference VM. See the repo root `README.md` for the enforcement design and the
+All 35 pass on the reference VM. See the repo root `README.md` for the enforcement design and the
 `bpf_d_path` / offset caveats.
