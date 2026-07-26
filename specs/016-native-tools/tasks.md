@@ -29,11 +29,11 @@ host-testable (SC-011). **US5 and US6 are deferred** — specified and planned, 
 
 **Purpose**: Manifest changes and module scaffolding. No behaviour yet.
 
-- [ ] T001 Override the application package MSRV — replace `rust-version.workspace = true` with `rust-version = "1.88"` in the `[package]` section of `Cargo.toml` (line 76), leaving `[workspace.package] rust-version = "1.85"` untouched so the embeddable core crates keep their floor (research R3).
-- [ ] T002 [P] Add optional dependencies to `Cargo.toml`: `ast-grep-core = { version = "0.45", optional = true }`, `ast-grep-language = { version = "0.45", default-features = false, optional = true }`, `gix = { version = "0.86", default-features = false, features = ["blame", "revision"], optional = true }`, `cvss = { version = "2.2", optional = true }`. Pin `gix` exactly — its API churns across minor versions (research R11).
-- [ ] T003 [P] Add the feature table to `Cargo.toml` per plan.md §Feature flags: `findings`, `astgrep`, `astgrep-<lang>` (one per grammar, forwarding to `ast-grep-language/tree-sitter-<lang>`), `gitlog`, `cvss`, `scanners` (implies `findings`), and the `sec` umbrella. Leave `default` unchanged.
-- [ ] T004 Create module scaffolding (stubs, `#[cfg(feature = …)]`-gated): `src/findings.rs`, `src/astgrep.rs`, `src/sarif.rs`, `src/scanners/mod.rs`, `src/scanners/opengrep.rs`, `src/tools/astgrep.rs`, `src/tools/cvss.rs`, `src/tools/finding.rs`, `src/tools/scanner.rs`; register each in `src/lib.rs` and `src/tools.rs`. *(depends: T002, T003)*
-- [ ] T005 [P] Extend the `FORBIDDEN` list in `tests/core_deps_guard.rs` with `ast-grep-core`, `ast-grep-language`, `tree-sitter`, `gix`, and `cvss` so none can reach `bee-core`/`bee-common` (Constitution V gate).
+- [X] T001 Override the application package MSRV — replace `rust-version.workspace = true` with `rust-version = "1.88"` in the `[package]` section of `Cargo.toml` (line 76), leaving `[workspace.package] rust-version = "1.85"` untouched so the embeddable core crates keep their floor (research R3).
+- [X] T002 [P] Add optional dependencies to `Cargo.toml`: `ast-grep-core = { version = "0.45", optional = true }`, `ast-grep-language = { version = "0.45", default-features = false, optional = true }`, `gix = { version = "0.86", default-features = false, features = ["blame", "revision"], optional = true }`, `cvss = { version = "2.2", optional = true }`. Pin `gix` exactly — its API churns across minor versions (research R11).
+- [X] T003 [P] Add the feature table to `Cargo.toml` per plan.md §Feature flags: `findings`, `astgrep`, `astgrep-<lang>` (one per grammar, forwarding to `ast-grep-language/tree-sitter-<lang>`), `gitlog`, `cvss`, `scanners` (implies `findings`), and the `sec` umbrella. Leave `default` unchanged.
+- [X] T004 Create module scaffolding (stubs, `#[cfg(feature = …)]`-gated): `src/findings.rs`, `src/astgrep.rs`, `src/sarif.rs`, `src/scanners/mod.rs`, `src/scanners/opengrep.rs`, `src/tools/astgrep.rs`, `src/tools/cvss.rs`, `src/tools/finding.rs`, `src/tools/scanner.rs`; register each in `src/lib.rs` and `src/tools.rs`. *(depends: T002, T003)*
+- [X] T005 [P] Extend the `FORBIDDEN` list in `tests/core_deps_guard.rs` with `ast-grep-core`, `ast-grep-language`, `tree-sitter`, `gix`, and `cvss` so none can reach `bee-core`/`bee-common` (Constitution V gate).
 
 **Checkpoint**: `cargo build` (default) unchanged; `cargo build --features sec` compiles stubs.
 
@@ -46,20 +46,20 @@ host-testable (SC-011). **US5 and US6 are deferred** — specified and planned, 
 
 ### The outcome type (contract `tool-outcome.md`)
 
-- [ ] T006 Define `ToolOutcome<T>` (`Completed { value, truncated }` / `Unavailable { reason }` / `Failed { reason }`) and `UnavailableReason` with all seven variants in a new `src/tools/outcome.rs`, re-exported from `src/tools.rs`.
-- [ ] T007 Implement `ToolOutcome<T> → ToolResult` rendering in `src/tools/outcome.rs` per the mapping table in `contracts/tool-outcome.md`. A clean scan renders `scanned N files, no findings`; `Unavailable` renders `did not run: <reason>`; `Failed` renders `failed: <reason>`. When `ToolOutcome::truncated`, the truncation notice is the **first** line, before results (FR-013). *(depends: T006)*
-- [ ] T008 Emit a structured audit event on every `Unavailable` and `Failed` before returning, carrying tool name and reason variant; include the path for `PinMismatch` and the scanner name for `NotGranted`, since those are the security-relevant refusals rather than mere absence (FR-014). *(depends: T006)*
+- [X] T006 Define `ToolOutcome<T>` (`Completed { value, truncated }` / `Unavailable { reason }` / `Failed { reason }`) and `UnavailableReason` with all seven variants in a new `src/tools/outcome.rs`, re-exported from `src/tools.rs`.
+- [X] T007 Implement `ToolOutcome<T> → ToolResult` rendering in `src/tools/outcome.rs` per the mapping table in `contracts/tool-outcome.md`. A clean scan renders `scanned N files, no findings`; `Unavailable` renders `did not run: <reason>`; `Failed` renders `failed: <reason>`. When `ToolOutcome::truncated`, the truncation notice is the **first** line, before results (FR-013). *(depends: T006)*
+- [X] T008 Emit a structured audit event on every `Unavailable` and `Failed` before returning, carrying tool name and reason variant; include the path for `PinMismatch` and the scanner name for `NotGranted`, since those are the security-relevant refusals rather than mere absence (FR-014). *(depends: T006)*
 
 ### The fail-closed gate (Constitution I — write these failing first)
 
-- [ ] T009 [P] Write failing tests in `tests/fail_closed_tools.rs` asserting that every `UnavailableReason` variant renders distinguishably from a clean scan, and that no rendering of `Unavailable`/`Failed` contains the clean-scan phrase (SC-002, FR-012).
-- [ ] T010 [P] Write a failing test in `tests/fail_closed_tools.rs` asserting `ToolOutcome::Completed` is never constructed from an error path — assert structurally by confirming each error branch in the scanner and worker paths yields `Unavailable` or `Failed` (Constitution I gate).
+- [X] T009 [P] Write failing tests in `tests/fail_closed_tools.rs` asserting that every `UnavailableReason` variant renders distinguishably from a clean scan, and that no rendering of `Unavailable`/`Failed` contains the clean-scan phrase (SC-002, FR-012).
+- [X] T010 [P] Write a failing test in `tests/fail_closed_tools.rs` asserting `ToolOutcome::Completed` is never constructed from an error path — assert structurally by confirming each error branch in the scanner and worker paths yields `Unavailable` or `Failed` (Constitution I gate).
 
 ### Registration and feature gating
 
-- [ ] T011 Add `SEC_TOOLS` (`ast_grep`, `git_log`, `cvss`, `record_finding`, `list_findings`) and `SCANNER_TOOLS` (`scan`) constants to `src/tools.rs`, following the `RENDER_TOOLS`/`SKILL_TOOLS` precedent, and accept both in `is_known_tool` so scenario validation passes. *(depends: T006)*
-- [ ] T012 Register a stub for every tool whose feature is compiled out, returning `Unavailable { NotCompiledIn { family } }` — a compiled-out tool stays *known* so a scenario referencing it fails loudly at the call, never silently at validation (spec Edge Case "the build was slimmed down"). *(depends: T011)*
-- [ ] T013 [P] Write a test in `tests/fail_closed_tools.rs` asserting a compiled-out family returns `NotCompiledIn` and is distinguishable from an empty result. *(depends: T012)*
+- [X] T011 Add `SEC_TOOLS` (`ast_grep`, `git_log`, `cvss`, `record_finding`, `list_findings`) and `SCANNER_TOOLS` (`scan`) constants to `src/tools.rs`, following the `RENDER_TOOLS`/`SKILL_TOOLS` precedent, and accept both in `is_known_tool` so scenario validation passes. *(depends: T006)*
+- [X] T012 Register a stub for every tool whose feature is compiled out, returning `Unavailable { NotCompiledIn { family } }` — a compiled-out tool stays *known* so a scenario referencing it fails loudly at the call, never silently at validation (spec Edge Case "the build was slimmed down"). *(depends: T011)*
+- [X] T013 [P] Write a test in `tests/fail_closed_tools.rs` asserting a compiled-out family returns `NotCompiledIn` and is distinguishable from an empty result. *(depends: T012)*
 
 **Checkpoint**: Foundation ready — US1–US4 can now proceed; US1, US2, US4 in parallel.
 
@@ -76,18 +76,18 @@ returns. A denied subdirectory contributes nothing.
 
 ### Tests first
 
-- [ ] T014 [P] [US1] Create the decoy fixture (`tests/fixtures/astgrep/decoy.rs`) with `v.unwrap()` in live code, in a comment, and inside a string literal — per `quickstart.md` §US1.
-- [ ] T015 [P] [US1] Write a failing test in `tests/astgrep_tool.rs`: searching `$X.unwrap()` over the fixture returns exactly one match at the live-code line; the comment and string-literal occurrences are absent (SC-007, US1 scenario 1).
-- [ ] T016 [P] [US1] Write a failing test in `tests/astgrep_tool.rs`: an unsupported language returns `Unavailable { LanguageUnsupported { lang, compiled_in } }` naming what *is* compiled in — never an empty result (US1 scenario 4, FR-012).
-- [ ] T017 [P] [US1] Write a failing test in `tests/astgrep_tool.rs`: a syntactically invalid pattern returns `Failed` with a diagnostic and the episode continues (US1 scenario 3).
+- [X] T014 [P] [US1] Create the decoy fixture (`tests/fixtures/astgrep/decoy.rs`) with `v.unwrap()` in live code, in a comment, and inside a string literal — per `quickstart.md` §US1.
+- [X] T015 [P] [US1] Write a failing test in `tests/astgrep_tool.rs`: searching `$X.unwrap()` over the fixture returns exactly one match at the live-code line; the comment and string-literal occurrences are absent (SC-007, US1 scenario 1).
+- [X] T016 [P] [US1] Write a failing test in `tests/astgrep_tool.rs`: an unsupported language returns `Unavailable { LanguageUnsupported { lang, compiled_in } }` naming what *is* compiled in — never an empty result (US1 scenario 4, FR-012).
+- [X] T017 [P] [US1] Write a failing test in `tests/astgrep_tool.rs`: a syntactically invalid pattern returns `Failed` with a diagnostic and the episode continues (US1 scenario 3).
 
 ### Implementation
 
-- [ ] T018 [US1] Define `AstGrepArgs` (`--lang`, `--path`, `--limit` default 200, positional `pattern` with `allow_hyphen_values`) and `worker_argv()` in `src/astgrep.rs`, mirroring `SearchArgs`/`worker_argv` in `src/search.rs` (contract `native-tools.md`). *(depends: T004)*
-- [ ] T019 [US1] Implement the compiled-in language registry in `src/astgrep.rs` — map `--lang` to an `ast-grep-language` grammar behind its `astgrep-<lang>` feature, and expose the compiled-in list for the `LanguageUnsupported` message. *(depends: T018)*
-- [ ] T020 [US1] Implement the worker in `src/astgrep.rs`: parse with `ast-grep-core`, match the pattern, bound results at `--limit`, emit structured matches (path, start/end line, matched text) on stdout. Expose **no** replace path — this feature is read-only (spec Assumptions). *(depends: T019)*
-- [ ] T021 [US1] Add the `astgrep-worker` subcommand to `src/main.rs`, wired exactly like `search-worker` (`src/main.rs:112`). *(depends: T020)*
-- [ ] T022 [US1] Implement the `Tool` impl in `src/tools/astgrep.rs` — schema, typed arg parsing, `run_child` exec of `bee astgrep-worker`, returning `ToolOutcome<Vec<Match>>`. *(depends: T021, T007)*
+- [X] T018 [US1] Define `AstGrepArgs` (`--lang`, `--path`, `--limit` default 200, positional `pattern` with `allow_hyphen_values`) and `worker_argv()` in `src/astgrep.rs`, mirroring `SearchArgs`/`worker_argv` in `src/search.rs` (contract `native-tools.md`). *(depends: T004)*
+- [X] T019 [US1] Implement the compiled-in language registry in `src/astgrep.rs` — map `--lang` to an `ast-grep-language` grammar behind its `astgrep-<lang>` feature, and expose the compiled-in list for the `LanguageUnsupported` message. *(depends: T018)*
+- [X] T020 [US1] Implement the worker in `src/astgrep.rs`: parse with `ast-grep-core`, match the pattern, bound results at `--limit`, emit structured matches (path, start/end line, matched text) on stdout. Expose **no** replace path — this feature is read-only (spec Assumptions). *(depends: T019)*
+- [X] T021 [US1] Add the `astgrep-worker` subcommand to `src/main.rs`, wired exactly like `search-worker` (`src/main.rs:112`). *(depends: T020)*
+- [X] T022 [US1] Implement the `Tool` impl in `src/tools/astgrep.rs` — schema, typed arg parsing, `run_child` exec of `bee astgrep-worker`, returning `ToolOutcome<Vec<Match>>`. *(depends: T021, T007)*
 
 **Checkpoint**: US1 delivers standalone value — bee searches code better than regex. Ship-able alone.
 
@@ -167,13 +167,13 @@ malformed vector is rejected; a caller-supplied score is rejected rather than re
 
 ### Tests first
 
-- [ ] T049 [P] [US4] Write a failing test in `tests/cvss_tool.rs` over a reference set of v3.1 and v4.0 vectors with independently known scores — including `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H` → `9.8 (critical)` (SC-008).
-- [ ] T050 [P] [US4] Write a failing test in `tests/cvss_tool.rs`: a malformed vector returns `Failed` with the parse diagnostic — not a zero score and not a guess (US4 scenario 2).
-- [ ] T051 [P] [US4] Write a failing test in `tests/cvss_tool.rs`: submitting a `Severity` with a caller-supplied `score` is rejected, not silently recomputed (FR-005, US4 scenario 3).
+- [X] T049 [P] [US4] Write a failing test in `tests/cvss_tool.rs` over a reference set of v3.1 and v4.0 vectors with independently known scores — including `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H` → `9.8 (critical)` (SC-008).
+- [X] T050 [P] [US4] Write a failing test in `tests/cvss_tool.rs`: a malformed vector returns `Failed` with the parse diagnostic — not a zero score and not a guess (US4 scenario 2).
+- [X] T051 [P] [US4] Write a failing test in `tests/cvss_tool.rs`: submitting a `Severity` with a caller-supplied `score` is rejected, not silently recomputed (FR-005, US4 scenario 3).
 
 ### Implementation
 
-- [ ] T052 [US4] Implement the `cvss` tool in `src/tools/cvss.rs` — parse the vector via `cvss::v3::Base` / `cvss::v4::Vector`, return `ToolOutcome<Severity>` with the computed score and band. **No worker and no child**: it opens no files, so the sandboxed-child seam has nothing to protect (contract `native-tools.md`). *(depends: T004, T007)*
+- [X] T052 [US4] Implement the `cvss` tool in `src/tools/cvss.rs` — parse the vector via `cvss::v3::Base` / `cvss::v4::Vector`, return `ToolOutcome<Severity>` with the computed score and band. **No worker and no child**: it opens no files, so the sandboxed-child seam has nothing to protect (contract `native-tools.md`). *(depends: T004, T007)*
 - [ ] T053 [US4] Wire the optional `finding` argument to emit a `LedgerEvent::Scored`, the only path that may write `Severity.score` (FR-005). *(depends: T052, T029)*
 
 **Checkpoint**: First slice complete — US1–US4 all shippable and host-testable.

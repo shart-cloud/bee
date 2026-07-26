@@ -316,6 +316,70 @@ surface into the exec allowlist for a read-only query).
 
 ---
 
+## R12 — `SupportLang` panics for an uncompiled grammar, so bee needs its own registry
+
+**Decision**: `src/astgrep.rs` keeps a `LANGS` table gated by the same `astgrep-<lang>` features that
+gate the grammars, and every caller consults `is_compiled_in()` **before** constructing a
+`SupportLang`.
+
+**Evidence** (found during implementation, `ast-grep-language` 0.45 `src/parsers.rs`):
+
+```rust
+macro_rules! conditional_lang {
+  ($lang: ident, $flag: literal, $field: ident) => {{
+    #[cfg(feature=$flag)]      { $lang::$field.into() }
+    #[cfg(not(feature=$flag))] { unimplemented!("tree-sitter parser is not implemented when feature flag is off.") }
+  }};
+}
+```
+
+`SupportLang` retains **every** variant regardless of which grammar features are enabled — only the
+parser lookup is conditional, and its off-branch is `unimplemented!()`, which panics.
+
+**Rationale**: without an independent registry, asking for a language this build lacks would abort
+the worker instead of refusing it. That breaks Constitution I (a refusal that crashes is not a
+refusal), FR-016 (`Tool::call` MUST NOT panic on bad arguments), and FR-012 (the caller gets a
+crashed child, not an `Unavailable` naming what *is* available). The registry also feeds the tool
+schema's `lang` enum, so the model only ever sees grammars that exist.
+
+**Alternatives considered**: catching the panic with `catch_unwind` (rejected — converts a
+foreseeable condition into unwinding across an FFI-adjacent boundary, and still cannot enumerate what
+is available); parsing `SupportLang::all_langs()` (rejected — it lists every variant, including the
+ones that panic, so it answers the wrong question).
+
+---
+
+## R13 — a malformed pattern parses, so `Pattern::has_error()` is the gate
+
+**Decision**: after `Pattern::try_new` succeeds, reject the pattern when `Pattern::has_error()` is
+true.
+
+**Measured** — `Pattern::try_new` alone rejects only degenerate input:
+
+| Pattern | `try_new` | With `has_error()` |
+|---|---|---|
+| `""` / `"   "` | rejected (`NoContent`) | rejected |
+| `$$$` | rejected (`RootMultiMetaVar`) | rejected |
+| `fn $(((` | **accepted** | rejected |
+| `}{` | **accepted** | rejected |
+| `$X.unwrap()` | accepted | accepted |
+| `fn $NAME($$$) { $$$ }` | accepted | accepted |
+
+**Rationale**: tree-sitter recovers from broken input, so a typo'd pattern builds successfully and
+then matches nothing — exiting 0 with no output, which reads exactly like "parsed the tree, found
+nothing". That is the FR-012 confusion arriving through the one input the model authors freely, and
+it is the most likely way this tool would quietly mislead. `has_error()` is ast-grep's own notion of
+a pattern whose parse contains error nodes, so the check borrows the library's judgement rather than
+inventing one.
+
+**Alternatives considered**: parsing the pattern text as a standalone source file and looking for
+`is_error()`/`is_missing()` nodes (tried, then rejected — `$X.unwrap()` is not a valid standalone
+Rust *item*, so this rejects perfectly good patterns); accepting the permissiveness and documenting
+it (rejected — it converts a user error into a silent clean scan, which is the exact failure this
+feature exists to prevent).
+
+---
+
 ## Open questions carried to `/speckit-tasks`
 
 1. **FR-022 concurrency coverage.** The checklist flagged that the user stories are written

@@ -20,6 +20,10 @@
 
 #![warn(rust_2018_idioms)]
 
+// Structural code search (016-native-tools US1). Gated: the grammars are compiled C, so a build that
+// wants none of them compiles none of them.
+#[cfg(feature = "astgrep")]
+pub mod astgrep;
 pub mod batch;
 #[cfg(feature = "concurrent")]
 pub mod concurrent;

@@ -36,6 +36,16 @@ const FORBIDDEN: &[&str] = &[
     "ratatui-markdown",
     // MCP client
     "rmcp",
+    // Security analysis tooling (016-native-tools, SC-009). These are the application's business:
+    // the core compiles and enforces policy, it does not analyse source. `tree-sitter` is listed
+    // alongside the ast-grep crates because it is the transitive C parser they carry — reaching it
+    // from the core would drag a compiled grammar into a crate that must stay auditable and
+    // toolchain-light.
+    "ast-grep-core",
+    "ast-grep-language",
+    "tree-sitter",
+    "gix",
+    "cvss",
 ];
 
 fn workspace_root() -> PathBuf {

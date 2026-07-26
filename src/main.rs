@@ -82,6 +82,12 @@ enum Cmd {
     /// tool uses to keep the library search under enforcement.
     #[command(hide = true)]
     SearchWorker(bee::search::SearchArgs),
+    /// Internal: run a structural (tree-sitter) search and print `path:line:text`. Same seam as
+    /// `search-worker` and for the same reason — the `ast_grep` tool execs this through the sandbox
+    /// so the parse runs *inside the scope*, with every file it opens mediated by the LSM.
+    #[cfg(feature = "astgrep")]
+    #[command(hide = true)]
+    AstgrepWorker(bee::astgrep::AstGrepArgs),
 }
 
 fn main() -> ExitCode {
@@ -105,6 +111,25 @@ fn main() -> ExitCode {
             &command,
         ),
         Cmd::SearchWorker(args) => cmd_search_worker(&args),
+        #[cfg(feature = "astgrep")]
+        Cmd::AstgrepWorker(args) => cmd_astgrep_worker(&args),
+    }
+}
+
+/// Run the `ast_grep` tool's structural search, printing `path:line:text`. Reached only via the
+/// tool, which execs `bee astgrep-worker …` inside the scope (see [`bee::astgrep`]).
+///
+/// The exit code carries the fail-closed distinction the whole feature rests on: **0 with no output
+/// means parsed and found nothing**, while an unsupported language or an unparseable pattern exits
+/// non-zero with a diagnostic. A refusal must never be readable as a clean scan (Constitution I).
+#[cfg(feature = "astgrep")]
+fn cmd_astgrep_worker(args: &bee::astgrep::AstGrepArgs) -> ExitCode {
+    match bee::astgrep::run_worker(args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("bee astgrep-worker: {e}");
+            ExitCode::from(1)
+        }
     }
 }
 
