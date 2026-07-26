@@ -7,6 +7,13 @@
 //! <https://no-color.org>). Assistant prose streams in, word-wrapped a line at a time as it
 //! arrives; tool calls and results are indented and tagged; audit denials are called out in bold
 //! red; a dim footer summarizes each exchange.
+//!
+//! **Every text method of the [`ReplOutput`] impl below sanitizes its input** through
+//! [`crate::safe_text`] before doing anything else. This is the trust boundary: what arrives here is
+//! model prose, tool output, and audit targets — attacker-reachable text that a terminal would
+//! otherwise read as a command language and use to erase, rewrite, or forge what the operator sees.
+//! Escaping happens first and painting second, so bee's own SGR sequences are always added to
+//! already-clean text and nothing the harness draws is ever escaped.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,6 +25,7 @@ use tokio::task::JoinHandle;
 
 use super::ReplOutput;
 use crate::render_spec::{AnimationSpec, EffectSpec, RenderSpec};
+use crate::safe_text::{safe_block, safe_line};
 use crate::tools::ToolResult;
 use crate::viz::theme::Role;
 use crate::viz::{animator, glyph, palette, sprite_render};
@@ -239,6 +247,10 @@ fn reclaim_prefix(n: usize) -> String {
 
 impl ReplOutput for TerminalOutput {
     fn assistant_delta(&self, chunk: &str) {
+        // Prose, so newlines are data; every other control is not. Sanitizing per chunk is safe
+        // because an escape sequence split across two chunks is still escaped character by
+        // character — the ESC alone is enough to defang the sequence.
+        let chunk = safe_block(chunk);
         let mut st = self.stream.lock().expect("stream state");
         if !st.started {
             self.emit(""); // blank separator before the assistant block
@@ -273,7 +285,8 @@ impl ReplOutput for TerminalOutput {
     }
 
     fn tool_call(&self, name: &str, arguments: &serde_json::Value) {
-        let args = clip(&arguments.to_string(), MAX_ARG_CHARS);
+        let args = clip(&safe_line(&arguments.to_string()), MAX_ARG_CHARS);
+        let name = safe_line(name);
         let line = format!("  {} {name} {args}", glyph::ARROW);
         self.emit(&self.role(Role::Dim, &line)); // dim
     }
@@ -287,7 +300,7 @@ impl ReplOutput for TerminalOutput {
         let content = if result.content.trim().is_empty() {
             "(no output)".to_string()
         } else {
-            result.content.clone()
+            safe_block(&result.content).into_owned()
         };
 
         let lines: Vec<&str> = content.lines().collect();
@@ -308,7 +321,14 @@ impl ReplOutput for TerminalOutput {
         // Kernel denials stand out in bold error color regardless of the result glyph above.
         for e in audit {
             if e.decision == "denied" {
-                let line = format!("  {} DENIED {} {}", glyph::WARN, e.op, e.target);
+                // The denied target is a path the model chose; it reaches the operator's screen
+                // verbatim, so it is exactly the string an attacker would load with an escape.
+                let line = format!(
+                    "  {} DENIED {} {}",
+                    glyph::WARN,
+                    safe_line(&e.op),
+                    safe_line(&e.target)
+                );
                 self.emit(&palette::bold_role_if(self.color, Role::Error, &line));
                 // bold red
             }
@@ -316,19 +336,25 @@ impl ReplOutput for TerminalOutput {
     }
 
     fn error(&self, msg: &str) {
+        let msg = safe_block(msg);
         self.emit(&self.role(Role::Error, &format!("error: {msg}"))); // red
     }
 
     fn info(&self, msg: &str) {
-        self.emit(&self.role(Role::Info, msg)); // yellow / info
+        // `info` carries harness-composed lines, but those lines interpolate untrusted names (a
+        // skill's, a tool's, a transcript path) and `markdown` defaults straight into it with a
+        // skill's whole body. None of bee's own callers pass pre-painted text, so sanitizing the
+        // whole message costs nothing and closes every one of those paths at one point.
+        self.emit(&self.role(Role::Info, &safe_block(msg))); // yellow / info
     }
 
     fn footer(&self, msg: &str) {
-        self.emit(&self.role(Role::Dim, msg)); // dim
+        self.emit(&self.role(Role::Dim, &safe_block(msg))); // dim
     }
 
     fn steering(&self, msg: &str) {
-        self.emit(&self.role(Role::Accent, msg)); // accent — user's steering nudge
+        // accent — user's steering nudge
+        self.emit(&self.role(Role::Accent, &safe_block(msg)));
     }
 
     fn render_widget(&self, spec: &RenderSpec, _effect: Option<&EffectSpec>) {
@@ -470,6 +496,67 @@ mod tests {
         let (t, buf) = term();
         t.info("hi");
         assert!(!buf.lock().unwrap().contains("\x1b["));
+    }
+
+    /// f040: nothing the model or a tool says may reach the terminal as a control sequence. Color is
+    /// off here, so *any* ESC in the buffer came from the payload rather than from bee's palette.
+    #[test]
+    fn untrusted_text_cannot_emit_control_sequences() {
+        // Screen-clear, window-title set, and a `\r` line-overwrite — the three cheap forgeries.
+        const ATTACK: &str = "\x1b[2J\x1b]0;pwned\x07ok\rDENIED nothing";
+
+        /// Drive one output method with the attack payload and assert nothing interpretable escapes.
+        fn check(name: &str, emit: impl Fn(&TerminalOutput)) {
+            let (t, buf) = term();
+            emit(&t);
+            let out = buf.lock().unwrap().clone();
+            assert!(
+                !out.chars().any(|c| c.is_control() && c != '\n'),
+                "{name} leaked a control character: {out:?}"
+            );
+            assert!(out.contains("\\x1b"), "{name} dropped the text: {out:?}");
+        }
+
+        check("assistant_delta", |t| {
+            t.assistant_delta(ATTACK);
+            t.assistant_end();
+        });
+        check("tool_call", |t| {
+            t.tool_call(ATTACK, &serde_json::json!({ "arg": ATTACK }))
+        });
+        check("tool_result", |t| {
+            t.tool_result(&ToolResult::ok(ATTACK), &[])
+        });
+        check("info", |t| t.info(ATTACK));
+        check("error", |t| t.error(ATTACK));
+        check("footer", |t| t.footer(ATTACK));
+        check("steering", |t| t.steering(ATTACK));
+    }
+
+    /// The denied target is model-chosen and lands in the line the operator most needs to trust.
+    #[test]
+    fn a_denied_audit_target_cannot_forge_its_own_line() {
+        let (t, buf) = term();
+        t.tool_result(
+            &ToolResult::ok("ok"),
+            &[AuditEvent {
+                ts: "2026-07-25T00:00:00Z".into(),
+                scope_id: None,
+                cgroup_id: 0,
+                pid: None,
+                tgid: None,
+                op: "open".into(),
+                decision: "denied".into(),
+                errno: 13,
+                target: "/etc/shadow\x1b[2K\rALLOWED /tmp/x".into(),
+            }],
+        );
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            !out.chars().any(|c| c.is_control() && c != '\n'),
+            "audit line leaked a control character: {out:?}"
+        );
+        assert!(out.contains("DENIED open /etc/shadow"), "got: {out:?}");
     }
 
     #[tokio::test]

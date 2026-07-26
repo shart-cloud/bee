@@ -13,6 +13,7 @@ are left in place unedited for provenance.
 |----------|-----|
 | f018, f020, f022, f026, f028, f030 (all six HIGHs) | `8e2cdbb` + `3225d44` — closed and VM-verified (31/31 matrix) |
 | f001, f002, f012, f014, f025 (+ absorbed f006, f032) | branch `013-attenuation-inheritance` — one root cause: attenuation validated only what a child *stated*, so omission widened authority. `Policy::derive` now returns the *effective* child policy (silence inherits, it does not reset) and refuses child grants reaching into FR-008 protected regions. See research R15; regression tests in `crates/core/tests/attenuation.rs`. |
+| f040, f046 (+ absorbed f047) | branch `014-terminal-safety` — untrusted text is escaped where it enters a front-end (`safe_text`, applied in `repl::terminal` and `tui::app::handle_session`) and only then styled; the consent prompt escapes every field it prints; skill frontmatter carrying control or bidi characters is refused at load. |
 
 ## Act on these
 ### [HIGH] Provider TOML can send an arbitrary environment secret to an attacker endpoint  (f018)

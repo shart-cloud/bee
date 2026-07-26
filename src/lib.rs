@@ -33,6 +33,8 @@ pub mod provider;
 pub mod render_api;
 pub mod render_spec;
 pub mod repl;
+// Terminal-safety for untrusted text. Ungated: every front-end and the consent prompt need it.
+pub mod safe_text;
 pub mod sandbox;
 pub mod scenario;
 pub mod search;
