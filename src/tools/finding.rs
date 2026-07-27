@@ -40,7 +40,14 @@ fn default_run_id() -> String {
     )
 }
 
+/// `deny_unknown_fields` because the `severity_score` trap below only catches the spelling it
+/// names. A caller who nests `severity = { score: … }` instead would otherwise have the whole object
+/// dropped by serde — no score reaches the ledger, so FR-005 is not *violated*, but the caller is
+/// silently ignored rather than told, which is the exact failure the trap exists to prevent. Every
+/// unrecognised field is now a refusal, so there is no spelling of "here is my score" that bee
+/// accepts quietly.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RecordArgs {
     path: String,
     class: String,
@@ -447,6 +454,33 @@ mod tests {
             .content
             .contains("severity score may not be supplied"));
         // And nothing was written: the refusal is total, not partial.
+        assert!(!tmp_ledger(tmp.path()).log_path().exists());
+    }
+
+    /// The trap field catches one spelling. A caller who nests the score under a `severity` object
+    /// used to have it dropped in silence — believing bee had taken their number when it had not.
+    #[tokio::test]
+    async fn a_score_nested_under_another_name_is_refused_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = RecordFinding::new(tmp_ledger(tmp.path()), "run-1");
+        let result = tool
+            .call(
+                json!({
+                    "path": "src/db.rs",
+                    "class": "sql-injection",
+                    "title": "t",
+                    "evidence": "e",
+                    "severity": { "score": 9.8, "band": "critical" }
+                }),
+                &sandbox(),
+            )
+            .await;
+        assert!(result.is_error, "{}", result.content);
+        assert!(
+            result.content.contains("severity"),
+            "the refusal must name the field it did not understand: {}",
+            result.content
+        );
         assert!(!tmp_ledger(tmp.path()).log_path().exists());
     }
 
