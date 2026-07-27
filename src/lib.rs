@@ -29,6 +29,10 @@ pub mod batch;
 pub mod concurrent;
 pub mod config;
 pub mod episode;
+// The finding ledger (016-native-tools US2). Gated: it is the substrate the security tools write
+// into, and a build that selects none of them has nothing to record.
+#[cfg(feature = "findings")]
+pub mod findings;
 pub mod grants;
 pub mod hooks;
 pub mod mcp;
@@ -42,6 +46,9 @@ pub mod safe_text;
 pub mod sandbox;
 pub mod scenario;
 pub mod search;
+// Operator configuration for the security tooling (016-native-tools). Ungated: plain data, so a
+// configuration file keeps parsing on a build that compiled none of the tools.
+pub mod security;
 // Shared conversation engine (008-grid-tui, plan M2). Gated behind `tui` for now — the inline REPL
 // rewire (task T006) makes it unconditional. Emits `SessionEvent`s both front-ends consume.
 #[cfg(feature = "tui")]

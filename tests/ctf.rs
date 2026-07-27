@@ -29,6 +29,7 @@ fn ctf_scenario(turn_limit: u32) -> Scenario {
         mcp: Default::default(),
         skills: Vec::new(),
         ceiling_policy_path: None,
+        security: Default::default(),
     }
 }
 

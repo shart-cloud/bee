@@ -82,10 +82,15 @@ Writers `O_APPEND` a single serialised line. There is no lock and no read-modify
 
 Two constraints make this safe rather than hopeful:
 
-1. **Bounded records.** A serialised event is capped (`MAX_EVENT_BYTES`, 4096). An event whose
+1. **Bounded records.** A serialised event is capped (`MAX_EVENT_BYTES`, **4000**). An event whose
    payload would exceed it has `evidence` truncated with a marker *before* serialisation, so no line
    is ever cut mid-write. Records under `PIPE_BUF` append atomically on Linux for regular files
    opened `O_APPEND`.
+
+   The cap is 4000 rather than `PIPE_BUF` itself. `PIPE_BUF` **is** 4096, and the thing actually
+   written is the serialised event *plus its newline* — so a 4096-byte payload writes 4097 bytes and
+   falls one past the guarantee the whole lock-free design leans on. Sizing the payload below the
+   boundary leaves room for the delimiter and for the appended line to stay atomic.
 2. **The view is a cache.** A concurrent fold producing a stale view is recoverable — refold. A lost
    *event* would not be, which is why the log, not the view, is the source of truth.
 

@@ -22,6 +22,10 @@ use crate::tools::{Tool, ToolResult};
 #[derive(Deserialize)]
 struct Args {
     vector: String,
+    /// The finding this score belongs to, if any. Supplying it is what turns a calculation into a
+    /// stored severity — and this is the **only** path that writes one (FR-005).
+    #[serde(default)]
+    finding: Option<String>,
 }
 
 /// A scored severity: the vector as given, plus the computed number and its band.
@@ -35,6 +39,23 @@ pub struct Scored {
 impl std::fmt::Display for Scored {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:.1} ({}) — {}", self.score, self.band, self.vector)
+    }
+}
+
+#[cfg(feature = "findings")]
+impl Scored {
+    /// The ledger's severity shape. **This conversion is the only way a `Severity` comes into
+    /// existence** (FR-005): it is reachable only from [`score`], which computes the number from the
+    /// vector, so there is no path by which an asserted score becomes a stored one.
+    ///
+    /// The band is re-derived from the score rather than carried across from the crate's own textual
+    /// severity, so `score` and `band` cannot disagree.
+    pub fn into_severity(self) -> crate::findings::Severity {
+        crate::findings::Severity {
+            band: crate::findings::SeverityBand::from_score(self.score),
+            vector: self.vector,
+            score: self.score,
+        }
     }
 }
 
@@ -68,8 +89,64 @@ pub fn score(vector: &str) -> Result<Scored, String> {
     })
 }
 
-/// `{ "vector": string }` → the computed score and band.
-pub struct CvssTool;
+/// `{ "vector": string, "finding"?: string }` → the computed score and band, optionally attached.
+pub struct CvssTool {
+    /// Where a `Scored` event lands when the call names a finding. Present only in a build that has
+    /// a ledger to write to.
+    #[cfg(feature = "findings")]
+    ledger: crate::findings::Ledger,
+}
+
+impl Default for CvssTool {
+    fn default() -> Self {
+        CvssTool {
+            #[cfg(feature = "findings")]
+            ledger: crate::findings::Ledger::resolve(None),
+        }
+    }
+}
+
+impl CvssTool {
+    /// A scoring tool that attaches to `ledger`.
+    #[cfg(feature = "findings")]
+    pub fn new(ledger: crate::findings::Ledger) -> Self {
+        CvssTool { ledger }
+    }
+
+    /// Append the `Scored` event, returning the line to add to the reply.
+    #[cfg(feature = "findings")]
+    fn attach(&self, finding: &str, scored: &Scored) -> String {
+        use crate::findings::{FindingId, LedgerEvent};
+
+        let id = FindingId::parse(finding);
+
+        // The id has to already exist: folding drops a `Scored` for an id it has never seen, so
+        // attaching to a typo'd id would score nothing at all while reporting success. Say so.
+        match crate::findings::fold(&self.ledger) {
+            Err(e) => return format!("\nnot attached: {e}"),
+            Ok(view) if view.get(&id).is_none() => {
+                return format!("\nnot attached: no finding `{finding}` in the ledger")
+            }
+            Ok(_) => {}
+        }
+
+        match self.ledger.append(&LedgerEvent::Scored {
+            id,
+            severity: scored.clone().into_severity(),
+        }) {
+            Ok(()) => {
+                crate::findings::refresh_view(&self.ledger);
+                format!("\nattached to finding {finding}")
+            }
+            Err(e) => format!("\nnot attached: {e}"),
+        }
+    }
+
+    #[cfg(not(feature = "findings"))]
+    fn attach(&self, _finding: &str, _scored: &Scored) -> String {
+        "\nnot attached: this build has no finding ledger (`findings` feature)".to_string()
+    }
+}
 
 #[async_trait::async_trait]
 impl Tool for CvssTool {
@@ -92,6 +169,10 @@ impl Tool for CvssTool {
                     "vector": {
                         "type": "string",
                         "description": "A CVSS vector string, e.g. \"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H\"."
+                    },
+                    "finding": {
+                        "type": "string",
+                        "description": "Optional id of a recorded finding to attach the computed severity to."
                     }
                 },
                 "required": ["vector"]
@@ -106,7 +187,13 @@ impl Tool for CvssTool {
         };
 
         match score(&args.vector) {
-            Ok(scored) => ToolOutcome::completed(scored).into_tool_result(|s| s.to_string()),
+            Ok(scored) => {
+                let mut body = scored.to_string();
+                if let Some(finding) = &args.finding {
+                    body.push_str(&self.attach(finding, &scored));
+                }
+                ToolOutcome::completed(body).into_tool_result(|b| b)
+            }
             Err(detail) => {
                 let reason = format!("could not parse `{}`: {detail}", args.vector);
                 crate::tools::outcome::audit_failure("cvss", &reason);

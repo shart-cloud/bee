@@ -130,8 +130,11 @@ tui = [
 # the rest (FR-006, SC-009). `default` is untouched above, so a build selecting none of these has the
 # dependency graph it had before 016.
 
-# The finding ledger and its tools. No new crates — just the append-only JSONL event log.
-findings = []
+# The finding ledger and its tools — the append-only JSONL event log. Two small additions: `sha2`
+# for the stable finding identity, and `time`'s parsing/serde halves so a sighting timestamp
+# round-trips through the log (the workspace `time` carries only `formatting`, which writes but
+# cannot read back).
+findings = ["dep:sha2", "time/parsing", "time/serde-well-known"]
 # Structural, syntax-aware code search. Compiles NO grammar on its own: pick languages below.
 # Requires Rust 1.88 (see the `rust-version` note on `[package]`).
 astgrep = ["dep:ast-grep-core", "dep:ast-grep-language"]
@@ -262,6 +265,13 @@ gix = { version = "=0.86.0", default-features = false, features = ["blame", "rev
 # crate does that half. `v3` covers CVSS v3.1 Base and `v4` covers 4.0; both are on by default
 # (research R10).
 cvss = { version = "2.2", optional = true }
+
+# Finding identity (US2). `FindingId` is a content hash that has to stay stable across processes and
+# across bee versions, because it is what makes a re-run merge with an earlier one instead of
+# duplicating it. `std::hash::DefaultHasher` explicitly does not promise that — its output may change
+# between releases — so an id built on it would silently fork every ledger on upgrade. SHA-256,
+# truncated to 16 bytes for a legible id, does promise it.
+sha2 = { version = "0.10", optional = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

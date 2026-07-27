@@ -156,6 +156,9 @@ impl RunArgs {
             mcp: Default::default(),
             skills: Vec::new(),
             ceiling_policy_path: cfg.ceiling_path.clone(),
+            // An ad-hoc run has no scenario file, so its security configuration comes from the
+            // resolved config layers — the same operator-only `[security]` table `bee repl` reads.
+            security: cfg.security.clone(),
         })
     }
 }

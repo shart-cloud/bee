@@ -48,6 +48,12 @@ enum Cmd {
     Repl(Box<app::repl::ReplArgs>),
     /// Report on recorded LLM usage, cost, and latency.
     Metrics(app::metrics::MetricsArgs),
+    /// Read the project's finding ledger, and adjudicate what is in it.
+    ///
+    /// Adjudication lives here, on the operator's side of the boundary, rather than in the agent's
+    /// tool surface: a verdict is only worth anything because a person formed it (016 FR-020).
+    #[cfg(feature = "findings")]
+    Findings(app::findings::FindingsArgs),
     /// Print kernel support diagnostics and exit (never attaches).
     Check,
     /// Compile-check a policy, or check attenuation of a child against a parent.
@@ -95,6 +101,8 @@ fn main() -> ExitCode {
         Cmd::Run(args) => app::run::main(*args),
         Cmd::Repl(args) => app::repl::main(*args),
         Cmd::Metrics(args) => app::metrics::main(args),
+        #[cfg(feature = "findings")]
+        Cmd::Findings(args) => app::findings::main(args),
         Cmd::Check => cmd_check(),
         Cmd::Validate { policy, parent } => cmd_validate(&policy, parent.as_deref()),
         Cmd::Exec {

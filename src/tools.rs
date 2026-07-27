@@ -27,6 +27,8 @@ pub mod skill;
 pub mod astgrep;
 #[cfg(feature = "cvss")]
 pub mod cvss;
+#[cfg(feature = "findings")]
+pub mod finding;
 
 pub use outcome::{ToolOutcome, UnavailableReason};
 
@@ -59,16 +61,13 @@ pub const SKILL_TOOLS: &[&str] = &["skill"];
 /// The native security-analysis tools (016-native-tools). **Not** in `DEFAULT_TOOLS`: a scenario or
 /// the REPL config opts in by listing them, exactly as it does for `render`.
 ///
-/// This list holds only tools that are **built**. `git_log` (US5), `record_finding`/`list_findings`
-/// (US2), and `scan` (US3) are specified and contracted but not yet implemented, so they are absent
-/// rather than present-and-broken: a scenario naming one gets the ordinary unknown-tool rejection at
-/// validation, which is the truthful answer today. They join this list with their phases.
-pub const SEC_TOOLS: &[&str] = &["ast_grep", "cvss"];
+/// This list holds only tools that are **built**. `git_log` (US5) is specified and contracted but
+/// not yet implemented, so it is absent rather than present-and-broken: a scenario naming it gets
+/// the ordinary unknown-tool rejection at validation, which is the truthful answer today. It joins
+/// this list with its phase.
+pub const SEC_TOOLS: &[&str] = &["ast_grep", "cvss", "record_finding", "list_findings"];
 
-/// The external scanner tier (016-native-tools). Empty until US3 lands. When `scan` arrives, listing
-/// it will be necessary but **not sufficient** to run a scanner: the episode's policy must also
-/// carry an inode-pinned `ExecPolicy.allow` grant for the specific binary, or the tool refuses with
-/// `NotGranted` (FR-008).
+/// The external scanner tier (016-native-tools). Empty until US3 lands.
 pub const SCANNER_TOOLS: &[&str] = &[];
 
 /// Every tool name the harness knows how to build. A scenario may only list names from this set
@@ -94,6 +93,7 @@ pub fn sec_tool_family(name: &str) -> Option<&'static str> {
     match name {
         "ast_grep" => Some("astgrep"),
         "cvss" => Some("cvss"),
+        "record_finding" | "list_findings" => Some("findings"),
         _ => None,
     }
 }
@@ -319,7 +319,14 @@ pub fn register_named(r: &mut ToolRegistry, name: &str, flag: Option<&str>) {
         #[cfg(feature = "astgrep")]
         "ast_grep" => r.insert(Box::new(astgrep::AstGrepTool)),
         #[cfg(feature = "cvss")]
-        "cvss" => r.insert(Box::new(cvss::CvssTool)),
+        "cvss" => r.insert(Box::<cvss::CvssTool>::default()),
+        // The ledger tools default to `.bee/findings` under the working directory and a
+        // pid-derived run id. A caller that knows the episode id re-inserts them configured —
+        // registration is last-wins — so the default is a working tool, not a placeholder.
+        #[cfg(feature = "findings")]
+        "record_finding" => r.insert(Box::<finding::RecordFinding>::default()),
+        #[cfg(feature = "findings")]
+        "list_findings" => r.insert(Box::<finding::ListFindings>::default()),
 
         other => {
             if let Some(family) = sec_tool_family(other) {
@@ -377,5 +384,52 @@ impl Tool for NotCompiledIn {
         };
         outcome::audit_refusal(&self.name, &reason);
         ToolOutcome::<()>::unavailable(reason).into_tool_result(|_| String::new())
+    }
+}
+
+/// Re-register the security tools with the session's ledger and scanner grants
+/// (016-native-tools US2/US3).
+///
+/// [`registry_for`] can build these from a name alone, but only with defaults: the ledger under the
+/// working directory, a pid-derived run id, and — for `scan` — **no grants at all**. This replaces
+/// them with instances that know the session's configuration. Registration is last-wins, so calling
+/// this after the registry is built is the whole mechanism.
+///
+/// The `scan` default is the one to understand: an unconfigured scan tool holds an empty grant list
+/// and refuses every call with `NotGranted`. Forgetting to call this therefore fails closed
+/// (Constitution I) — the failure mode is "bee would not run the scanner", never "bee ran a scanner
+/// nobody authorised".
+///
+/// Both front-ends call this at the same point in their sequence: after grant resolution, so a
+/// scanner a skill widened the policy to include is visible, and before the policy is moved into the
+/// scope, which is the last moment it can be read.
+pub fn configure_security_tools(
+    registry: &mut ToolRegistry,
+    security: &crate::security::SecurityConfig,
+    // Unused until the external scanner tier (US3) lands, which reads it to resolve the episode's
+    // scanner grants. Taken now so both front-ends' call sites are already correct.
+    _policy: Option<&bee_core::Policy>,
+    run_id: &str,
+) {
+    #[cfg(feature = "findings")]
+    {
+        use crate::findings::Ledger;
+        let ledger = Ledger::resolve(security.findings_dir.as_deref());
+
+        if registry.contains("record_finding") {
+            registry.insert(Box::new(finding::RecordFinding::new(
+                ledger.clone(),
+                run_id,
+            )));
+        }
+        if registry.contains("list_findings") {
+            registry.insert(Box::new(finding::ListFindings::new(ledger.clone())));
+        }
+        #[cfg(feature = "cvss")]
+        if registry.contains("cvss") {
+            // The scoring tool writes `Scored` events, so it needs the same ledger the recorder
+            // uses — otherwise a score would land in a different file from the finding it scores.
+            registry.insert(Box::new(cvss::CvssTool::new(ledger.clone())));
+        }
     }
 }

@@ -680,6 +680,15 @@ pub async fn run_episode(
     for tool in &grants.tools {
         tools::register_named(&mut registry, tool, flag);
     }
+    // Give the security tools this episode's ledger and scanner grants (016-native-tools). After
+    // skill grants, so a scanner a skill widened the policy to include is visible; before the policy
+    // is moved into the scope, which is the last point it can be read.
+    tools::configure_security_tools(
+        &mut registry,
+        &scenario.security,
+        Some(&grants.policy),
+        &format!("{}-{}", scenario.id, std::process::id()),
+    );
     // Keep the resolved policy as the escalation floor before it is moved into the scope (007).
     let escalation_base = grants.policy.clone();
 

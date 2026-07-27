@@ -67,7 +67,21 @@ pub struct FileConfig {
     /// deliberately still parsed by the same type, so an existing config file keeps working.
     #[serde(default)]
     pub theme: Option<ThemeConfig>,
+    /// Security tooling (016-native-tools). **Operator-only** — see
+    /// [`FileConfig::user_only_sections`].
+    #[serde(default)]
+    pub security: Option<SecuritySection>,
 }
+
+/// The `[security]` table — where findings are recorded and how a granted scanner is configured.
+///
+/// The shape lives in the library ([`bee::security`]) because the episode path needs it too, and
+/// duplicating it here would let the two drift. What this layer adds is *trust*: the section is
+/// **operator-only**, for the same reason `[policy] ceiling` is. A scanner's ruleset decides what a
+/// granted third-party binary does with the access it was given, and its timeout decides how long it
+/// holds that access. A repository that could set either would be configuring a capability the
+/// operator granted it — the wrong actor answering the question.
+pub use bee::security::SecurityConfig as SecuritySection;
 
 /// Where the provider TOML lives (the file naming the model, endpoint, and key variable).
 #[derive(Debug, Clone, Deserialize)]
@@ -151,6 +165,12 @@ impl FileConfig {
             found.push((
                 "[mcp]",
                 "MCP servers are launched with named credential variables",
+            ));
+        }
+        if self.security.is_some() {
+            found.push((
+                "[security]",
+                "it configures what a granted scanner does with the access the operator gave it",
             ));
         }
         found

@@ -382,10 +382,48 @@ feature exists to prevent).
 
 ## Open questions carried to `/speckit-tasks`
 
-1. **FR-022 concurrency coverage.** The checklist flagged that the user stories are written
-   single-writer. The event log makes concurrent append safe by construction, but the first slice
-   should either add an explicit concurrent-append test or record that concurrent episodes writing one
-   ledger is out of scope until the `concurrent` feature path needs it.
-2. **Ledger location.** `.bee/findings/` inside the analysed project is assumed. If the project under
-   analysis is read-only in policy, the ledger needs a configured writable location instead — worth
-   confirming against how scenarios already configure workdirs.
+Both were resolved during implementation. The original wording is kept above each resolution so the
+decision can be read against the question it answers.
+
+### 1. FR-022 concurrency coverage — **resolved: the test is written** (T034)
+
+> The checklist flagged that the user stories are written single-writer. The event log makes
+> concurrent append safe by construction, but the first slice should either add an explicit
+> concurrent-append test or record that concurrent episodes writing one ledger is out of scope until
+> the `concurrent` feature path needs it.
+
+**Decision**: `tests/finding_ledger.rs::concurrent_writers_lose_no_events` — 8 writers × 40 events —
+asserts that all 320 lines are present *and* that each parses independently. Deferring it was the
+cheaper option and the wrong one: "appends are independent, so nothing is lost" is the claim the
+entire lock-free design rests on, and an untested claim at the centre of a security record is exactly
+what the constitution's "a denial that no test exercises is not considered enforced" is about. The
+test is ~20 lines.
+
+**What it forced**: writing it exposed that `MAX_EVENT_BYTES = 4096` was wrong. `PIPE_BUF` **is**
+4096, and the thing written is the serialised event *plus* its newline — so a maximal event writes
+4097 bytes and falls one past the atomicity guarantee being relied on. The cap is now **4000**
+(`src/findings.rs`), with the reasoning recorded in `contracts/finding-ledger.md` §Concurrency.
+
+### 2. Ledger location — **resolved: configurable, and fails loudly when unwritable** (T033)
+
+> `.bee/findings/` inside the analysed project is assumed. If the project under analysis is read-only
+> in policy, the ledger needs a configured writable location instead — worth confirming against how
+> scenarios already configure workdirs.
+
+**Decision**: the default stays `.bee/findings/` under the working directory, and
+`[security] findings_dir` overrides it — an operator-only setting in the same layered configuration
+that carries `[policy] ceiling`, and a top-level `[security]` table on a scenario file (folded like
+`[mcp]`). When neither location can be written, `record_finding` returns **`Failed` naming the path**
+(`LedgerError::Io`). It never degrades to recording nothing quietly: a finding reported as recorded
+but absent from the ledger would be the worst outcome available, since the operator's next act is to
+trust the ledger as the complete record.
+
+**Why the harness writes it directly, rather than through a scope-joined child**: `.bee/findings/` is
+bee's own state, in the same category as the episode transcript, which the harness has always
+written. Constitution III's invariant is about *target* files — the code under analysis — which is
+why `search`, `astgrep`, and the SARIF normaliser all run as children and the ledger does not.
+
+**Why `[security]` is operator-only**: a ruleset path and a timeout decide what a granted third-party
+binary does with the access the operator gave it, and for how long. A repository that could set
+either would be configuring a capability granted *to* it. The grant itself stays in policy, where
+capabilities live (Constitution IV).
