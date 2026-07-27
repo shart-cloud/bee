@@ -73,7 +73,12 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-rust-version.workspace = true
+# NOT `rust-version.workspace = true` (which is 1.85, kept for the embeddable core crates).
+# `ast-grep-core` 0.45 — behind the default-off `astgrep` feature — declares 1.88, and Cargo cannot
+# express a per-feature floor. Splitting the promise by audience is the honest encoding: embedders
+# of bee-core/bee-common/bee-userspace keep 1.85; operators building this binary need 1.88
+# (016-native-tools research R3).
+rust-version = "1.88"
 description = "Kernel-enforced, capability-scoped sandboxing for AI coding agents."
 
 # The application package: the `bee` executable and the harness library it drives. They are one
@@ -119,6 +124,40 @@ tui = [
     "ratatui/crossterm",
     "tokio/sync",
 ]
+
+# ── Security analysis tooling (016-native-tools) ────────────────────────────────────────────────
+# Each family is independently selectable so a build includes only what it needs and pays nothing for
+# the rest (FR-006, SC-009). `default` is untouched above, so a build selecting none of these has the
+# dependency graph it had before 016.
+
+# The finding ledger and its tools — the append-only JSONL event log. Two small additions: `sha2`
+# for the stable finding identity, and `time`'s parsing/serde halves so a sighting timestamp
+# round-trips through the log (the workspace `time` carries only `formatting`, which writes but
+# cannot read back).
+findings = ["dep:sha2", "time/parsing", "time/serde-well-known"]
+# Structural, syntax-aware code search. Compiles NO grammar on its own: pick languages below.
+# Requires Rust 1.88 (see the `rust-version` note on `[package]`).
+astgrep = ["dep:ast-grep-core", "dep:ast-grep-language"]
+# One feature per grammar. Each is a compiled C tree-sitter parser, which is why they are opt-in one
+# at a time rather than arriving as a block.
+astgrep-rust = ["astgrep", "ast-grep-language/tree-sitter-rust"]
+astgrep-python = ["astgrep", "ast-grep-language/tree-sitter-python"]
+astgrep-javascript = ["astgrep", "ast-grep-language/tree-sitter-javascript"]
+astgrep-typescript = ["astgrep", "ast-grep-language/tree-sitter-typescript"]
+astgrep-go = ["astgrep", "ast-grep-language/tree-sitter-go"]
+astgrep-c = ["astgrep", "ast-grep-language/tree-sitter-c"]
+astgrep-cpp = ["astgrep", "ast-grep-language/tree-sitter-cpp"]
+astgrep-java = ["astgrep", "ast-grep-language/tree-sitter-java"]
+astgrep-ruby = ["astgrep", "ast-grep-language/tree-sitter-ruby"]
+# Repository history via gix (US5).
+gitlog = ["dep:gix"]
+# CVSS scoring (US4).
+cvss = ["dep:cvss"]
+# External scanner adapters + the SARIF normaliser. Implies `findings` because normalised scanner
+# results have nowhere to go without the ledger.
+scanners = ["findings"]
+# Convenience umbrella for a security-tooling build. Grammars are still chosen explicitly.
+sec = ["findings", "astgrep", "gitlog", "cvss", "scanners"]
 
 [dependencies]
 bee-core = { workspace = true }
@@ -194,6 +233,45 @@ rmcp = { version = "2.2", default-features = false, features = ["client", "trans
 # highlighter's colors under `NO_COLOR`. `default-features = false` + the explicit feature keeps the
 # list deliberate rather than whatever the crate's default grows into.
 tui-markdown = { version = "0.3.9", default-features = false, features = ["highlight-code"], optional = true }
+
+# Security analysis tooling (016-native-tools, application package only — MUST NOT propagate to
+# bee-core/bee-common, SC-009; guarded by tests/core_deps_guard.rs). All optional and default-off, so
+# a build that selects none of the `sec` features has the dependency graph it had before 016.
+#
+# `ast-grep-core` is the structural-search engine: matching happens on the tree-sitter parse tree, so
+# a construct inside a comment or a string literal is structurally distinct from the same text in
+# live code (SC-007) — which is the whole reason this is not just another regex. `ast-grep-language`
+# carries the grammars; `default-features = false` turns OFF its `builtin-parser` default, which
+# would pull all 27 tree-sitter grammars, every one of them compiled C. bee re-exposes them one at a
+# time as `astgrep-<lang>` features so a build pays only for what it scans (research R9).
+# NB: ast-grep 0.45 declares MSRV 1.88 — see the `rust-version` note on `[package]` above.
+ast-grep-core = { version = "0.45", optional = true }
+ast-grep-language = { version = "0.45", default-features = false, optional = true }
+
+# Pure-Rust git for history queries (US5). `default-features = false` because gix's defaults pull far
+# more than reading local history needs; `blame` gives line-origin attribution and `revision` gives
+# the log walk. Deliberately NOT shelling out to `git`: that would put a binary whose flag surface
+# includes `-c core.pager=<cmd>` into the exec allowlist for what is a read-only local query
+# (research R11). Pin exactly — gix's API churns across minor versions more than the rest of this
+# list, and an upgrade is expected to touch call sites.
+# `sha1` is not optional in practice: with `default-features = false` gix selects no hash backend and
+# `gix-hash` refuses to compile at all ("Please set either the `sha1` or the `sha256` feature flag").
+# Object IDs are SHA-1 for every repository bee will read.
+gix = { version = "=0.86.0", default-features = false, features = ["blame", "revision", "sha1"], optional = true }
+
+# CVSS parsing and *scoring* (US4, FR-005). The model emits the vector — characterising attack
+# vector, complexity, privileges, impact — which is judgement it is good at. The arithmetic is a
+# multi-step floating-point calculation with scope-conditional coefficients, which it is not. This
+# crate does that half. `v3` covers CVSS v3.1 Base and `v4` covers 4.0; both are on by default
+# (research R10).
+cvss = { version = "2.2", optional = true }
+
+# Finding identity (US2). `FindingId` is a content hash that has to stay stable across processes and
+# across bee versions, because it is what makes a re-run merge with an earlier one instead of
+# duplicating it. `std::hash::DefaultHasher` explicitly does not promise that — its output may change
+# between releases — so an id built on it would silently fork every ledger on upgrade. SHA-256,
+# truncated to 16 bytes for a legible id, does promise it.
+sha2 = { version = "0.10", optional = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

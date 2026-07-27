@@ -80,6 +80,95 @@ pub async fn run_child(
     tool_result_from_output(content, out.status.code(), !out.status.success(), cap)
 }
 
+/// What a timed child left behind (016-native-tools, T039a).
+///
+/// Deliberately not a [`ToolResult`]. [`run_child`] folds stderr into the content, caps it, and
+/// reports only "was it non-zero" — all correct for a tool whose output *is* its answer, and all
+/// wrong for a pipeline stage whose output has to be parsed and whose success is decided by
+/// something other than its exit status (research R6). So this returns the pieces separately and
+/// lets the caller judge.
+#[cfg(feature = "scanners")]
+pub struct ChildRun {
+    pub stdout: String,
+    pub stderr: String,
+    /// `None` when the child was killed by a signal — which is not the same as a non-zero exit and
+    /// must not be read as one.
+    pub code: Option<i32>,
+    pub success: bool,
+}
+
+/// Why a timed child produced no result at all.
+#[cfg(feature = "scanners")]
+pub enum ChildError {
+    /// The child did not finish within its budget and was killed. Never a partial `Completed`.
+    TimedOut(std::time::Duration),
+    /// It could not be spawned or waited on.
+    Spawn(String),
+}
+
+#[cfg(feature = "scanners")]
+impl std::fmt::Display for ChildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChildError::TimedOut(d) => write!(f, "timed out after {}s", d.as_secs()),
+            ChildError::Spawn(e) => f.write_str(e),
+        }
+    }
+}
+
+/// Run `program args` inside `sandbox` under a wall-clock `budget`, keeping stdout and stderr apart.
+///
+/// Same hardened, scope-joined, credential-stripped spawn as [`run_child`] — it goes through the
+/// same [`Sandbox::tool_command`] — and the same process-group cleanup, which matters more here:
+/// a scanner that exceeds its budget is killed mid-walk, and anything it forked has to go with it.
+#[cfg(feature = "scanners")]
+pub async fn run_child_timed(
+    sandbox: &Sandbox,
+    program: &str,
+    args: &[String],
+    budget: std::time::Duration,
+) -> Result<ChildRun, ChildError> {
+    let std_cmd = match sandbox.tool_command(program, args) {
+        Ok(c) => c,
+        Err(e) => return Err(ChildError::Spawn(format!("{program}: cannot spawn: {e}"))),
+    };
+
+    let mut cmd = TokioCommand::from(std_cmd);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .process_group(0);
+
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return Err(ChildError::Spawn(format!("{program}: spawn failed: {e}"))),
+    };
+    let pgid = child.id().map(|id| id as i32);
+
+    let out = match tokio::time::timeout(budget, child.wait_with_output()).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            kill_process_group(pgid);
+            return Err(ChildError::Spawn(format!("{program}: wait failed: {e}")));
+        }
+        Err(_elapsed) => {
+            // The future is dropped here, so `kill_on_drop` reaps the direct child; the group kill
+            // catches whatever it left running.
+            kill_process_group(pgid);
+            return Err(ChildError::TimedOut(budget));
+        }
+    };
+    kill_process_group(pgid);
+
+    Ok(ChildRun {
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        code: out.status.code(),
+        success: out.status.success(),
+    })
+}
+
 /// SIGKILL every process left in the tool child's process group.
 ///
 /// The group leader has already been reaped by the time this runs, so the only members left are

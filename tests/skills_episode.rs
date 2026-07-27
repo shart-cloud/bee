@@ -59,6 +59,7 @@ fn scenario(skills: Vec<PathBuf>) -> Scenario {
         mcp: Default::default(),
         skills,
         ceiling_policy_path: None,
+        security: Default::default(),
     }
 }
 

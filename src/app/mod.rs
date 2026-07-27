@@ -7,6 +7,10 @@
 //! dependency visible.
 
 pub mod config;
+// `bee findings` — the operator's half of the finding ledger (016-native-tools US2). Gated with the
+// ledger itself.
+#[cfg(feature = "findings")]
+pub mod findings;
 pub mod metrics;
 pub mod repl;
 pub mod run;

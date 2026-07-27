@@ -48,6 +48,12 @@ enum Cmd {
     Repl(Box<app::repl::ReplArgs>),
     /// Report on recorded LLM usage, cost, and latency.
     Metrics(app::metrics::MetricsArgs),
+    /// Read the project's finding ledger, and adjudicate what is in it.
+    ///
+    /// Adjudication lives here, on the operator's side of the boundary, rather than in the agent's
+    /// tool surface: a verdict is only worth anything because a person formed it (016 FR-020).
+    #[cfg(feature = "findings")]
+    Findings(app::findings::FindingsArgs),
     /// Print kernel support diagnostics and exit (never attaches).
     Check,
     /// Compile-check a policy, or check attenuation of a child against a parent.
@@ -82,6 +88,21 @@ enum Cmd {
     /// tool uses to keep the library search under enforcement.
     #[command(hide = true)]
     SearchWorker(bee::search::SearchArgs),
+    /// Internal: run a structural (tree-sitter) search and print `path:line:text`. Same seam as
+    /// `search-worker` and for the same reason — the `ast_grep` tool execs this through the sandbox
+    /// so the parse runs *inside the scope*, with every file it opens mediated by the LSM.
+    #[cfg(feature = "astgrep")]
+    #[command(hide = true)]
+    AstgrepWorker(bee::astgrep::AstGrepArgs),
+    /// Internal: read a scanner's SARIF report and print normalised findings as JSONL.
+    ///
+    /// The second child of the scanner pipeline, and the reason there are two: the report is
+    /// megabytes of mostly rule catalogue (research R4), so it is written to a file rather than
+    /// piped — and reading that file in the *harness* would open a path inside the sandbox, which
+    /// Constitution III forbids. So the normaliser is itself a scope-joined child.
+    #[cfg(feature = "scanners")]
+    #[command(hide = true)]
+    SarifWorker(bee::sarif::SarifArgs),
 }
 
 fn main() -> ExitCode {
@@ -89,6 +110,8 @@ fn main() -> ExitCode {
         Cmd::Run(args) => app::run::main(*args),
         Cmd::Repl(args) => app::repl::main(*args),
         Cmd::Metrics(args) => app::metrics::main(args),
+        #[cfg(feature = "findings")]
+        Cmd::Findings(args) => app::findings::main(args),
         Cmd::Check => cmd_check(),
         Cmd::Validate { policy, parent } => cmd_validate(&policy, parent.as_deref()),
         Cmd::Exec {
@@ -105,6 +128,43 @@ fn main() -> ExitCode {
             &command,
         ),
         Cmd::SearchWorker(args) => cmd_search_worker(&args),
+        #[cfg(feature = "astgrep")]
+        Cmd::AstgrepWorker(args) => cmd_astgrep_worker(&args),
+        #[cfg(feature = "scanners")]
+        Cmd::SarifWorker(args) => cmd_sarif_worker(&args),
+    }
+}
+
+/// Normalise a scanner report inside the scope. Reached only via the `scan` tool.
+///
+/// Exit 0 means *the report was read and normalised* — which includes a report that legitimately
+/// held no results. A read or parse failure exits non-zero with a diagnostic, so "could not read the
+/// scanner's answer" can never be mistaken for "the scanner had no answer" (Constitution I).
+#[cfg(feature = "scanners")]
+fn cmd_sarif_worker(args: &bee::sarif::SarifArgs) -> ExitCode {
+    match bee::sarif::run_worker(args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("bee sarif-worker: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// Run the `ast_grep` tool's structural search, printing `path:line:text`. Reached only via the
+/// tool, which execs `bee astgrep-worker …` inside the scope (see [`bee::astgrep`]).
+///
+/// The exit code carries the fail-closed distinction the whole feature rests on: **0 with no output
+/// means parsed and found nothing**, while an unsupported language or an unparseable pattern exits
+/// non-zero with a diagnostic. A refusal must never be readable as a clean scan (Constitution I).
+#[cfg(feature = "astgrep")]
+fn cmd_astgrep_worker(args: &bee::astgrep::AstGrepArgs) -> ExitCode {
+    match bee::astgrep::run_worker(args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("bee astgrep-worker: {e}");
+            ExitCode::from(1)
+        }
     }
 }
 

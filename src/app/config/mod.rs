@@ -98,6 +98,9 @@ pub struct EffectiveConfig {
     /// ceiling and falling back could widen it.
     pub theme_warning: Option<String>,
     pub visual: VisualConfig,
+    /// Security tooling configuration (016-native-tools): the ledger location and per-scanner
+    /// settings. Paths are already resolved against the file that declared them.
+    pub security: file::SecuritySection,
 }
 
 /// One thing bee needs and does not have, with the places it could come from.
@@ -181,6 +184,7 @@ struct Merged {
     theme: Option<file::ThemeConfig>,
     visual_level: Option<String>,
     animations: Option<bool>,
+    security: Option<file::SecuritySection>,
 }
 
 impl Merged {
@@ -231,6 +235,18 @@ impl Merged {
             }
             if let Some(t) = &c.theme {
                 m.theme = Some(t.clone());
+            }
+            if let Some(s) = &c.security {
+                // Resolve every path against the file that wrote it, as the other sections do: a
+                // ruleset written in the user config means the same thing regardless of which
+                // directory bee was invoked from.
+                let mut s = s.clone();
+                s.findings_dir = s.findings_dir.as_ref().map(|p| layer.resolve_path(p));
+                for scanner in s.scanners.values_mut() {
+                    scanner.rules = scanner.rules.as_ref().map(|p| layer.resolve_path(p));
+                    scanner.bundle = scanner.bundle.as_ref().map(|p| layer.resolve_path(p));
+                }
+                m.security = Some(s);
             }
         }
 
@@ -388,6 +404,7 @@ pub fn resolve_from_layers(
         theme,
         theme_warning,
         visual,
+        security: m.security.unwrap_or_default(),
     })
 }
 

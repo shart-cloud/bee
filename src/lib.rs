@@ -20,11 +20,19 @@
 
 #![warn(rust_2018_idioms)]
 
+// Structural code search (016-native-tools US1). Gated: the grammars are compiled C, so a build that
+// wants none of them compiles none of them.
+#[cfg(feature = "astgrep")]
+pub mod astgrep;
 pub mod batch;
 #[cfg(feature = "concurrent")]
 pub mod concurrent;
 pub mod config;
 pub mod episode;
+// The finding ledger (016-native-tools US2). Gated: it is the substrate the security tools write
+// into, and a build that selects none of them has nothing to record.
+#[cfg(feature = "findings")]
+pub mod findings;
 pub mod grants;
 pub mod hooks;
 pub mod mcp;
@@ -36,8 +44,17 @@ pub mod repl;
 // Terminal-safety for untrusted text. Ungated: every front-end and the consent prompt need it.
 pub mod safe_text;
 pub mod sandbox;
+// SARIF ingestion for the external scanner tier (016-native-tools US3).
+#[cfg(feature = "scanners")]
+pub mod sarif;
+// External scanner adapters (016-native-tools US3).
+#[cfg(feature = "scanners")]
+pub mod scanners;
 pub mod scenario;
 pub mod search;
+// Operator configuration for the security tooling (016-native-tools). Ungated: plain data, so a
+// configuration file keeps parsing on a build that compiled none of the tools.
+pub mod security;
 // Shared conversation engine (008-grid-tui, plan M2). Gated behind `tui` for now — the inline REPL
 // rewire (task T006) makes it unconditional. Emits `SessionEvent`s both front-ends consume.
 #[cfg(feature = "tui")]

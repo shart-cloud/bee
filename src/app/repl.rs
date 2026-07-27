@@ -192,6 +192,16 @@ async fn repl(args: ReplArgs) -> ExitCode {
         registry.insert(Box::new(bee::tools::skill::SkillTool::new(skills.clone())));
     }
 
+    // Give the security tools the session's ledger and scanner grants (016-native-tools). After
+    // grant resolution, so a scanner a skill widened the policy to include is visible; before the
+    // policy is moved into the scope, which is the last point it can be read.
+    bee::tools::configure_security_tools(
+        &mut registry,
+        &cfg.security,
+        resolved_policy.as_ref(),
+        &format!("repl-{}", std::process::id()),
+    );
+
     let (mut sbox, policy_label) =
         match session::build_sandbox(resolved_policy, cfg.policy_path.as_deref(), strip_env) {
             Ok(pair) => pair,

@@ -88,6 +88,13 @@ pub struct Scenario {
     /// nothing (instructions-only). Relative paths resolve against the scenario file's directory.
     #[serde(default)]
     pub ceiling_policy_path: Option<PathBuf>,
+    /// Security tooling configuration (016-native-tools). Sourced from the **top-level**
+    /// `[security]` table, a sibling of `[scenario]` — the same treatment `[mcp]` gets, and for the
+    /// same reason: it configures a subsystem rather than describing the episode. Governs where
+    /// findings are recorded and how a granted scanner runs; the grant itself stays in the policy
+    /// file, where capabilities live.
+    #[serde(default)]
+    pub security: crate::security::SecurityConfig,
 }
 
 fn default_tools() -> Vec<String> {
@@ -101,6 +108,9 @@ struct ScenarioFile {
     /// `Scenario::mcp` in [`Scenario::from_path`] so callers see a single `Scenario`.
     #[serde(default)]
     mcp: Option<crate::mcp::McpPolicy>,
+    /// The top-level `[security]` table, folded the same way (016-native-tools).
+    #[serde(default)]
+    security: Option<crate::security::SecurityConfig>,
 }
 
 impl Scenario {
@@ -117,6 +127,9 @@ impl Scenario {
         // Fold the top-level `[mcp]` table (sibling of `[scenario]`) onto the scenario (research R10).
         if let Some(mcp) = file.mcp {
             s.mcp = mcp;
+        }
+        if let Some(security) = file.security {
+            s.security = security;
         }
         // Resolve a relative policy_path against the scenario file's directory for portability.
         if s.policy_path.is_relative() {

@@ -1,0 +1,74 @@
+{
+    "version": "2.1.0",
+    "runs": [
+        {
+            "invocations": [
+                {
+                    "executionSuccessful": true,
+                    "toolExecutionNotifications": []
+                }
+            ],
+            "results": [
+                {
+                    "fingerprints": {
+                        "matchBasedId/v1": "604b608abdb0919144f98eb581f2772b18c2bfd66a3897995ab3b2f36d1d90d55a660c0f29efcd775a3ee3b42629ec828f5baed977a533a6cd477c62d91c3ff3_0"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "vuln.py",
+                                    "uriBaseId": "%SRCROOT%"
+                                },
+                                "region": {
+                                    "endColumn": 35,
+                                    "endLine": 3,
+                                    "snippet": {
+                                        "text": "    subprocess.call(x, shell=True)"
+                                    },
+                                    "startColumn": 5,
+                                    "startLine": 3
+                                }
+                            }
+                        }
+                    ],
+                    "message": {
+                        "text": "subprocess call with shell=True can execute attacker-controlled input"
+                    },
+                    "properties": {},
+                    "ruleId": "subprocess-shell-true"
+                }
+            ],
+            "tool": {
+                "driver": {
+                    "name": "Opengrep OSS",
+                    "rules": [
+                        {
+                            "defaultConfiguration": {
+                                "level": "error"
+                            },
+                            "fullDescription": {
+                                "text": "subprocess call with shell=True can execute attacker-controlled input"
+                            },
+                            "help": {
+                                "markdown": "subprocess call with shell=True can execute attacker-controlled input",
+                                "text": "subprocess call with shell=True can execute attacker-controlled input"
+                            },
+                            "id": "subprocess-shell-true",
+                            "name": "subprocess-shell-true",
+                            "properties": {
+                                "precision": "very-high",
+                                "tags": []
+                            },
+                            "shortDescription": {
+                                "text": "Opengrep Finding: subprocess-shell-true"
+                            }
+                        }
+                    ],
+                    "semanticVersion": "1.22.0"
+                }
+            }
+        }
+    ],
+    "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json"
+}
