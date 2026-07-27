@@ -29,6 +29,8 @@ pub mod astgrep;
 pub mod cvss;
 #[cfg(feature = "findings")]
 pub mod finding;
+#[cfg(feature = "scanners")]
+pub mod scanner;
 
 pub use outcome::{ToolOutcome, UnavailableReason};
 
@@ -67,8 +69,10 @@ pub const SKILL_TOOLS: &[&str] = &["skill"];
 /// this list with its phase.
 pub const SEC_TOOLS: &[&str] = &["ast_grep", "cvss", "record_finding", "list_findings"];
 
-/// The external scanner tier (016-native-tools). Empty until US3 lands.
-pub const SCANNER_TOOLS: &[&str] = &[];
+/// The external scanner tier (016-native-tools). Listing `scan` is necessary but **not sufficient**
+/// to run a scanner: the episode's policy must also carry an inode-pinned `ExecPolicy.allow` grant
+/// for the specific binary, or the tool refuses with `NotGranted` (FR-008).
+pub const SCANNER_TOOLS: &[&str] = &["scan"];
 
 /// Every tool name the harness knows how to build. A scenario may only list names from this set
 /// (scenario validation rejects the rest before a run).
@@ -94,6 +98,7 @@ pub fn sec_tool_family(name: &str) -> Option<&'static str> {
         "ast_grep" => Some("astgrep"),
         "cvss" => Some("cvss"),
         "record_finding" | "list_findings" => Some("findings"),
+        "scan" => Some("scanners"),
         _ => None,
     }
 }
@@ -327,6 +332,11 @@ pub fn register_named(r: &mut ToolRegistry, name: &str, flag: Option<&str>) {
         "record_finding" => r.insert(Box::<finding::RecordFinding>::default()),
         #[cfg(feature = "findings")]
         "list_findings" => r.insert(Box::<finding::ListFindings>::default()),
+        // `scan` defaults to holding NO grants, which means it refuses with `NotGranted` until a
+        // caller inserts it with the episode's resolved grants. That is the right default for a
+        // tool that runs a third-party binary: forgetting to wire it up fails closed.
+        #[cfg(feature = "scanners")]
+        "scan" => r.insert(Box::<scanner::ScanTool>::default()),
 
         other => {
             if let Some(family) = sec_tool_family(other) {
@@ -403,12 +413,12 @@ impl Tool for NotCompiledIn {
 /// Both front-ends call this at the same point in their sequence: after grant resolution, so a
 /// scanner a skill widened the policy to include is visible, and before the policy is moved into the
 /// scope, which is the last moment it can be read.
+// `policy` is read only to resolve scanner grants, so a build without `scanners` does not use it.
+#[cfg_attr(not(feature = "scanners"), allow(unused_variables))]
 pub fn configure_security_tools(
     registry: &mut ToolRegistry,
     security: &crate::security::SecurityConfig,
-    // Unused until the external scanner tier (US3) lands, which reads it to resolve the episode's
-    // scanner grants. Taken now so both front-ends' call sites are already correct.
-    _policy: Option<&bee_core::Policy>,
+    policy: Option<&bee_core::Policy>,
     run_id: &str,
 ) {
     #[cfg(feature = "findings")]
@@ -430,6 +440,11 @@ pub fn configure_security_tools(
             // The scoring tool writes `Scored` events, so it needs the same ledger the recorder
             // uses — otherwise a score would land in a different file from the finding it scores.
             registry.insert(Box::new(cvss::CvssTool::new(ledger.clone())));
+        }
+        #[cfg(feature = "scanners")]
+        if registry.contains("scan") {
+            let grants = crate::scanners::grants_from_policy(policy, security);
+            registry.insert(Box::new(scanner::ScanTool::new(grants, ledger, run_id)));
         }
     }
 }

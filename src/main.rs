@@ -94,6 +94,15 @@ enum Cmd {
     #[cfg(feature = "astgrep")]
     #[command(hide = true)]
     AstgrepWorker(bee::astgrep::AstGrepArgs),
+    /// Internal: read a scanner's SARIF report and print normalised findings as JSONL.
+    ///
+    /// The second child of the scanner pipeline, and the reason there are two: the report is
+    /// megabytes of mostly rule catalogue (research R4), so it is written to a file rather than
+    /// piped — and reading that file in the *harness* would open a path inside the sandbox, which
+    /// Constitution III forbids. So the normaliser is itself a scope-joined child.
+    #[cfg(feature = "scanners")]
+    #[command(hide = true)]
+    SarifWorker(bee::sarif::SarifArgs),
 }
 
 fn main() -> ExitCode {
@@ -121,6 +130,24 @@ fn main() -> ExitCode {
         Cmd::SearchWorker(args) => cmd_search_worker(&args),
         #[cfg(feature = "astgrep")]
         Cmd::AstgrepWorker(args) => cmd_astgrep_worker(&args),
+        #[cfg(feature = "scanners")]
+        Cmd::SarifWorker(args) => cmd_sarif_worker(&args),
+    }
+}
+
+/// Normalise a scanner report inside the scope. Reached only via the `scan` tool.
+///
+/// Exit 0 means *the report was read and normalised* — which includes a report that legitimately
+/// held no results. A read or parse failure exits non-zero with a diagnostic, so "could not read the
+/// scanner's answer" can never be mistaken for "the scanner had no answer" (Constitution I).
+#[cfg(feature = "scanners")]
+fn cmd_sarif_worker(args: &bee::sarif::SarifArgs) -> ExitCode {
+    match bee::sarif::run_worker(args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("bee sarif-worker: {e}");
+            ExitCode::from(1)
+        }
     }
 }
 

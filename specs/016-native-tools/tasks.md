@@ -103,21 +103,22 @@ the union is present, repeats did not duplicate, and a human verdict from the fi
 
 ### Tests first
 
-- [ ] T023 [P] [US2] Write a failing test in `tests/finding_ledger.rs`: recording the same finding across two runs yields one entry with two sightings, not two entries (FR-019, SC-003).
-- [ ] T024 [P] [US2] Write a failing test in `tests/finding_ledger.rs`: a finding marked `FalsePositive` keeps that verdict when automated re-discovery appends a sighting (FR-020, SC-004).
-- [ ] T025 [P] [US2] Write a failing test in `tests/finding_ledger.rs`: a record missing `path`, `class`, `title`, or `evidence` is rejected with a diagnostic naming the field, and `ledger.jsonl` is byte-identical afterwards (FR-021).
-- [ ] T026 [P] [US2] Write a failing test in `tests/finding_ledger.rs`: a finding whose line moved between runs but whose substance is unchanged merges rather than duplicating (identity excludes line number — data-model §FindingId).
+- [X] T023 [P] [US2] Write a failing test in `tests/finding_ledger.rs`: recording the same finding across two runs yields one entry with two sightings, not two entries (FR-019, SC-003).
+- [X] T024 [P] [US2] Write a failing test in `tests/finding_ledger.rs`: a finding marked `FalsePositive` keeps that verdict when automated re-discovery appends a sighting (FR-020, SC-004).
+- [X] T025 [P] [US2] Write a failing test in `tests/finding_ledger.rs`: a record missing `path`, `class`, `title`, or `evidence` is rejected with a diagnostic naming the field, and `ledger.jsonl` is byte-identical afterwards (FR-021).
+- [X] T026 [P] [US2] Write a failing test in `tests/finding_ledger.rs`: a finding whose line moved between runs but whose substance is unchanged merges rather than duplicating (identity excludes line number — data-model §FindingId).
 
 ### Implementation
 
-- [ ] T027 [US2] Define `Finding`, `FindingId`, `Sighting`, `Severity`, `SeverityBand`, `Verdict`, `VerdictState`, and `FindingSource` in `src/findings.rs` per `data-model.md`. `FindingId` = hash of normalised path ‖ class ‖ normalised title, **excluding** the line number. *(depends: T004)*
-- [ ] T028 [US2] Implement validation in `src/findings.rs` — reject a record missing any required evidence field, returning `Failed` with the field named; never partially write. *(depends: T027)*
-- [ ] T029 [US2] Implement `LedgerEvent` and the append path in `src/findings.rs`: `O_APPEND` of one serialised line to `.bee/findings/ledger.jsonl`, with `MAX_EVENT_BYTES` (4096) enforced by truncating `evidence` with a marker *before* serialisation so no line is ever cut mid-write (contract `finding-ledger.md`). *(depends: T027)*
-- [ ] T030 [US2] Implement `fold(log) -> view` in `src/findings.rs` and materialise `.bee/findings/view.json`. Folding is pure and total: an unrecognised `event` tag is skipped and counted, never fatal. `Observed` on a known id appends a sighting and must **not** overwrite `title`/`evidence`/`path`. *(depends: T029)*
-- [ ] T031 [US2] Implement the `record_finding` and `list_findings` tools in `src/tools/finding.rs`, returning `ToolOutcome<FindingId>` and `ToolOutcome<Vec<Finding>>`. Reject a caller-supplied `severity.score` outright rather than silently recomputing it (FR-005). *(depends: T030, T007)*
-- [ ] T032 [US2] Apply `safe_text` to every finding text field at the front-end boundary in `src/repl/terminal.rs` and `src/tui/app.rs`, extending the 014 treatment to this new channel (FR-015). *(depends: T031)*
-- [ ] T033 [US2] Resolve open question 2 — decide and implement the ledger location when the analysed project is read-only in policy: either a configured writable location or an explicit `Failed`. Record the decision in `research.md`. *(depends: T029)*
-- [ ] T034 [US2] Resolve open question 1 — either add a concurrent-append test to `tests/finding_ledger.rs` proving two writers lose no events (FR-022), or record in `research.md` that concurrent episodes sharing one ledger is out of scope until the `concurrent` feature path needs it. *(depends: T029)*
+- [X] T027 [US2] Define `Finding`, `FindingId`, `Sighting`, `Severity`, `SeverityBand`, `Verdict`, `VerdictState`, and `FindingSource` in `src/findings.rs` per `data-model.md`. `FindingId` = hash of normalised path ‖ class ‖ normalised title, **excluding** the line number. Two manifest additions the `findings` feature needs: `dep:sha2` (the workspace has no hash crate) and `time/parsing` + `time/serde-well-known` (the workspace `time` carries only `formatting`, and `Sighting.at` has to round-trip through the log). Separate the three hashed components with `␟` (U+001F) rather than concatenating bare: `("a/b", "c")` and `("a", "b/c")` must not collide into one id. *(depends: T004)*
+- [X] T028 [US2] Implement validation in `src/findings.rs` — reject a record missing any required evidence field, returning `Failed` with the field named; never partially write. *(depends: T027)*
+- [X] T029 [US2] Implement `LedgerEvent` and the append path in `src/findings.rs`: `O_APPEND` of one serialised line to `.bee/findings/ledger.jsonl`, with `MAX_EVENT_BYTES` (**4000**) enforced by truncating `evidence` with a marker *before* serialisation so no line is ever cut mid-write (contract `finding-ledger.md`). The cap is 4000 rather than the 4096 the contract first stated: `PIPE_BUF` **is** 4096, so a 4096-byte payload plus its `\n` is 4097 — one byte past the atomicity the whole lock-free design rests on. `contracts/finding-ledger.md` §Concurrency records the corrected value and the reasoning. *(depends: T027)*
+- [X] T030 [US2] Implement `fold(log) -> view` in `src/findings.rs` and materialise `.bee/findings/view.json`. Folding is pure and total: an unrecognised `event` tag is skipped and counted, never fatal. `Observed` on a known id appends a sighting and must **not** overwrite `title`/`evidence`/`path`. *(depends: T029)*
+- [X] T031 [US2] Implement the `record_finding` and `list_findings` tools in `src/tools/finding.rs`, returning `ToolOutcome<FindingId>` and `ToolOutcome<Vec<Finding>>`. Reject a caller-supplied `severity.score` outright rather than silently recomputing it (FR-005). Both need a `run_id` and a ledger directory that `Tool::call(&self, args, &Sandbox)` cannot supply, so inject them at construction — `RecordFinding::new(run_id, ledger_dir)`, `ListFindings::new(ledger_dir)` — following the `SubmitFlag::new(flag)` precedent. Add both names to `SEC_TOOLS` and `sec_tool_family` and add their `register_named` arms; the `NotCompiledIn` stub path then covers them automatically. *(depends: T030, T007)*
+- [X] T031a [US2] Add the `bee findings {list,adjudicate}` subcommand in `src/main.rs` — `adjudicate <id> --state <confirmed|false-positive|fixed|duplicate|deferred> [--note]` appends a `LedgerEvent::Adjudicated`. This is the **only** writer of that event and is deliberately CLI-only: adjudication is the human's act, so it is never a model-facing tool. Without it FR-020 is tested but unreachable in practice, and `quickstart.md` §US2 already documents the command. *(depends: T029)*
+- [X] T032 [US2] Apply `safe_text` to every finding text field at the front-end boundary in `src/repl/terminal.rs` and `src/tui/app.rs`, extending the 014 treatment to this new channel (FR-015). *(depends: T031)*
+- [X] T033 [US2] Resolve open question 2 — decide and implement the ledger location when the analysed project is read-only in policy: either a configured writable location or an explicit `Failed`. Record the decision in `research.md`. *(depends: T029)*
+- [X] T034 [US2] Resolve open question 1 by **writing the test**: add a concurrent-append case to `tests/finding_ledger.rs` proving two writers lose no events (FR-022) — N writers × M events each, assert N×M lines and that every one parses. It is the only thing that substantiates the claim the lock-free design rests on, it is ~20 lines, and the 4000-byte cap from T029 is what makes it pass. Deferring it (the alternative the open question offered) leaves an untested assertion at the centre of the ledger. *(depends: T029)*
 
 **Checkpoint**: US2 delivers standalone value — findings stop evaporating between sessions.
 
@@ -136,23 +137,25 @@ unavailability and nothing is written.
 
 ### Tests first
 
-- [ ] T035 [P] [US3] Capture the measured Opengrep SARIF as a fixture at `tests/fixtures/sarif/opengrep-shell-true.json` (research R4: 1 result, 1074 embedded rules, 1,912,546 bytes — keep a trimmed variant plus a note recording the real proportions).
-- [ ] T036 [P] [US3] Write failing tests in `tests/scanner_adapter.rs` for each fail-closed case in `quickstart.md` §US3: no grant → `NotGranted`; missing binary → `BinaryMissing`; substituted binary → `PinMismatch` and never executed (SC-010); unparseable report → `Failed`; timeout → `Failed`; feature off → `NotCompiledIn`. Each must be distinguishable from a clean scan (SC-002).
-- [ ] T037 [P] [US3] Write a failing test in `tests/scanner_adapter.rs`: `--config auto` is refused at argv construction, not at runtime (research R6).
-- [ ] T038 [P] [US3] Write a failing test in `tests/scanner_adapter.rs`: a SARIF whose `message.text`/`snippet.text` carries terminal control and bidi characters renders inert and cannot alter the terminal (SC-005, FR-015).
-- [ ] T039 [P] [US3] Write a failing test in `tests/scanner_adapter.rs`: a scanner exiting `0` **with** findings is not treated as failure, and one exiting `0` with `executionSuccessful: false` **is** — success comes from the report, never the exit code (research R6).
+- [X] T035 [P] [US3] Capture the measured Opengrep SARIF as a fixture at `tests/fixtures/sarif/opengrep-shell-true.json` (research R4: 1 result, 1074 embedded rules, 1,912,546 bytes — keep a trimmed variant plus a note recording the real proportions).
+- [X] T036 [P] [US3] Write failing tests in `tests/scanner_adapter.rs` for each fail-closed case in `quickstart.md` §US3: no grant → `NotGranted`; missing binary → `BinaryMissing`; substituted binary → `PinMismatch` and never executed (SC-010); unparseable report → `Failed`; timeout → `Failed`; feature off → `NotCompiledIn`. Each must be distinguishable from a clean scan (SC-002).
+- [X] T037 [P] [US3] Write a failing test in `tests/scanner_adapter.rs`: `--config auto` is refused at argv construction, not at runtime (research R6).
+- [X] T038 [P] [US3] Write a failing test in `tests/scanner_adapter.rs`: a SARIF whose `message.text`/`snippet.text` carries terminal control and bidi characters renders inert and cannot alter the terminal (SC-005, FR-015).
+- [X] T039 [P] [US3] Write a failing test in `tests/scanner_adapter.rs`: a scanner exiting `0` **with** findings is not treated as failure, and one exiting `0` with `executionSuccessful: false` **is** — success comes from the report, never the exit code (research R6).
 
 ### Implementation
 
-- [ ] T040 [US3] Define the minimal SARIF structs in `src/sarif.rs` covering only the documented subset (`executionSuccessful`, `ruleId`, `level`, `message.text`, `artifactLocation.uri`, `region.startLine`/`endLine`/`snippet.text`). Serde ignores unknown fields; `tool.driver.rules` is never materialised (research R5). *(depends: T004)*
-- [ ] T041 [US3] Implement SARIF → `Finding` normalisation in `src/sarif.rs`, bounded at `MAX_FINDINGS_PER_SCAN` (200), setting `ToolOutcome::truncated` when the cap bites. A scanner's `level` is recorded as advisory and never becomes `Severity` (FR-005). *(depends: T040, T027)*
-- [ ] T042 [US3] Add the `sarif-worker` subcommand to `src/main.rs` (`--report`, `--source`, `--limit`) so normalisation runs **inside the scope** — the harness never opens the report file (Constitution III). *(depends: T041)*
-- [ ] T043 [US3] Define the `ScannerAdapter` trait (`name`, `probe`, `argv`, `report_kind`) and `ScanRequest` (`target`, `lang`, `timeout` — deliberately no free-form arg field) in `src/scanners/mod.rs` (contract `scanner-adapter.md`). *(depends: T006)*
-- [ ] T044 [US3] Implement `ScannerGrant` resolution in `src/scanners/mod.rs` — read the `!`-pinned `ExecPolicy.allow` entry via the existing grant/attenuation path; a binary merely present on `PATH` yields `NotGranted` (FR-008). *(depends: T043)*
-- [ ] T045 [US3] Implement `probe()` in `src/scanners/mod.rs`: existence, then inode-pin re-check immediately before spawn so a binary substituted after the grant is never executed (FR-009, SC-010). *(depends: T044)*
-- [ ] T046 [US3] Implement the Opengrep adapter in `src/scanners/opengrep.rs` — argv `["scan", "--sarif", "--sarif-output=<out>", "--quiet", "--config", <grant.rules>, "--timeout", <secs>, <target>]`, with validation rejecting `auto`, out-of-scope paths, and any caller-influenced flag (FR-007). *(depends: T043)*
-- [ ] T047 [US3] Implement the two-child pipeline in `src/tools/scanner.rs`: child 1 runs the scanner writing SARIF to a scope-internal scratch path, child 2 runs `bee sarif-worker` over it; both via `run_child`. Determine success from exit-without-signal → report parses → `executionSuccessful`, in that order (research R4, R6). *(depends: T042, T046, T045)*
-- [ ] T048 [US3] Merge normalised findings into the ledger as `Observed` events sourced `scanner:<name>` in `src/tools/scanner.rs`. *(depends: T047, T029)*
+- [X] T039a [US3] Add `run_child_timed` to `src/tools/exec.rs`: same hardened, scope-joined spawn as `run_child`, but returning the raw exit status with stdout and stderr **kept apart**, under a wall-clock budget. The existing `run_child` cannot serve the pipeline — it folds stderr into the content, caps at `DEFAULT_OUTPUT_CAP`, and takes no timeout, so T036's timeout case has nothing to trip and T047 has nothing clean to parse. `run_child` itself is untouched, so no existing tool changes behaviour. *(depends: none)*
+
+- [X] T040 [US3] Define the minimal SARIF structs in `src/sarif.rs` covering only the documented subset (`executionSuccessful`, `ruleId`, `level`, `message.text`, `artifactLocation.uri`, `region.startLine`/`endLine`/`snippet.text`). Serde ignores unknown fields; `tool.driver.rules` is never materialised (research R5). *(depends: T004)*
+- [X] T041 [US3] Implement SARIF → `Finding` normalisation in `src/sarif.rs`, bounded at `MAX_FINDINGS_PER_SCAN` (200), setting `ToolOutcome::truncated` when the cap bites. A scanner's `level` is recorded as advisory and never becomes `Severity` (FR-005), which needs somewhere to live: `Finding.advisory_level: Option<String>`, now carried in `data-model.md`. *(depends: T040, T027)*
+- [X] T042 [US3] Add the `sarif-worker` subcommand to `src/main.rs` (`--report`, `--source`, `--limit`) so normalisation runs **inside the scope** — the harness never opens the report file (Constitution III). The worker emits **JSONL**: one finding per line, bounded to `MAX_FINDINGS_PER_SCAN` *before* printing. One object per line rather than one array means a transport cut costs the last record instead of the whole parse, which keeps a truncated read from degrading into "the scanner found nothing". *(depends: T041)*
+- [X] T043 [US3] Define the `ScannerAdapter` trait (`name`, `probe`, `argv`, `report_kind`) and `ScanRequest` (`target`, `lang`, `timeout` — deliberately no free-form arg field) in `src/scanners/mod.rs` (contract `scanner-adapter.md`). *(depends: T006)*
+- [X] T044 [US3] Implement `ScannerGrant` resolution in `src/scanners/mod.rs` — read the `!`-pinned `ExecPolicy.allow` entry via the existing grant/attenuation path; a binary merely present on `PATH` yields `NotGranted` (FR-008). Grants resolve **once, at registry construction** (`ScanTool::new(grants, run_id, ledger_dir)`), because `Tool::call` receives only a `&Sandbox` and the policy is not reachable from there — same injection shape as `SubmitFlag::new(flag)`. The accepted cost: a scanner granted mid-episode through 007 escalation is not visible until the next episode; the inode pin is still re-checked per call in T045, so this trades freshness of the *grant set*, never freshness of the *identity check*. `grant.rules` is populated from a new `[scanners.<name>]` block in `src/config.rs` — a ruleset path is configuration, not a capability, so policy keeps exactly the surface it has today (Constitution IV). *(depends: T043)*
+- [X] T045 [US3] Implement `probe()` in `src/scanners/mod.rs`: existence, then inode-pin re-check immediately before spawn so a binary substituted after the grant is never executed (FR-009, SC-010). *(depends: T044)*
+- [X] T046 [US3] Implement the Opengrep adapter in `src/scanners/opengrep.rs` — argv `["scan", "--sarif", "--sarif-output=<out>", "--quiet", "--config", <grant.rules>, "--timeout", <secs>, <target>]`, with validation rejecting `auto`, out-of-scope paths, and any caller-influenced flag (FR-007). *(depends: T043)*
+- [X] T047 [US3] Implement the two-child pipeline in `src/tools/scanner.rs`: child 1 runs the scanner writing SARIF to `.bee/scan/<run_id>.sarif`, child 2 runs `bee sarif-worker` over it; both via `run_child_timed`. The report path is project-local rather than under `/tmp` because it has to be writable by child 1 *and* readable by child 2 while both are in-scope, and a scanning policy need not admit `/tmp` at all; remove it after normalisation. Determine success from exit-without-signal-and-within-budget → report parses → `executionSuccessful`, in that order (research R4, R6). *(depends: T042, T046, T045, T039a)*
+- [X] T048 [US3] Merge normalised findings into the ledger as `Observed` events sourced `scanner:<name>` in `src/tools/scanner.rs`. *(depends: T047, T029)*
 
 **Checkpoint**: US3 proves the external tier end to end and buys a large rule corpus.
 
@@ -174,7 +177,7 @@ malformed vector is rejected; a caller-supplied score is rejected rather than re
 ### Implementation
 
 - [X] T052 [US4] Implement the `cvss` tool in `src/tools/cvss.rs` — parse the vector via `cvss::v3::Base` / `cvss::v4::Vector`, return `ToolOutcome<Severity>` with the computed score and band. **No worker and no child**: it opens no files, so the sandboxed-child seam has nothing to protect (contract `native-tools.md`). *(depends: T004, T007)*
-- [ ] T053 [US4] Wire the optional `finding` argument to emit a `LedgerEvent::Scored`, the only path that may write `Severity.score` (FR-005). *(depends: T052, T029)*
+- [X] T053 [US4] Wire the optional `finding` argument to emit a `LedgerEvent::Scored`, the only path that may write `Severity.score` (FR-005). *(depends: T052, T029)*
 
 **Checkpoint**: First slice complete — US1–US4 all shippable and host-testable.
 
@@ -208,14 +211,14 @@ malformed vector is rejected; a caller-supplied score is rejected rather than re
 
 ## Phase 9: Polish & Cross-Cutting Concerns
 
-- [ ] T062 [P] Verify SC-009 — confirm the default build's dependency graph and binary size are unchanged from `main`, and that each feature builds standalone (`cargo build --features cvss`, `--features findings`, `--features astgrep,astgrep-rust`).
-- [ ] T063 [P] Verify SC-006 — assert a scanning episode's compiled exec allowlist contains bee's own inode plus only explicitly granted scanners, in `tests/scanner_adapter.rs`.
-- [ ] T064 [P] Add a property test in `crates/core/tests/attenuation.rs` asserting no sequence of scanner grants yields an exec allowlist outside the ceiling, reusing the 007 attenuation harness (Constitution II gate).
-- [ ] T065 [P] Add a test asserting `ledger.jsonl` round-trips through a text diff without loss (Constitution IV gate).
+- [X] T062 [P] Verify SC-009 — confirm the default build's dependency graph and binary size are unchanged from `main`, and that each feature builds standalone (`cargo build --features cvss`, `--features findings`, `--features astgrep,astgrep-rust`).
+- [X] T063 [P] Verify SC-006 — assert a scanning episode's compiled exec allowlist contains bee's own inode plus only explicitly granted scanners, in `tests/scanner_adapter.rs`. *(Done in two halves: `a_grant_is_only_ever_an_inode_pinned_exec_entry` / `an_unpinned_allow_entry_is_not_a_scanner_grant` / `no_policy_at_all_grants_no_scanner` prove the grant path adds nothing to `exec.allow` and reads nothing from `PATH`; `the_compiled_exec_surface_is_bee_plus_the_granted_scanner_and_nothing_else` compiles the policy and asserts over the lowered allowlist the kernel is handed, including that every entry is inode-pinned.)*
+- [X] T064 [P] Add a property test in `crates/core/tests/attenuation_prop.rs` (not `attenuation.rs` — that file holds the targeted unit cases, and the property tests have always lived beside it) asserting no sequence of scanner grants yields an exec allowlist outside the ceiling, reusing the 007 attenuation harness (Constitution II gate).
+- [X] T065 [P] Add a test asserting `ledger.jsonl` round-trips through a text diff without loss (Constitution IV gate).
 - [ ] T066 Walk `quickstart.md` end to end on a clean checkout with no security tooling installed and confirm every stated expectation, including the measured SARIF proportions (SC-001, SC-011).
-- [ ] T067 [P] Document the tool surface in `README.md` and the two-tier decision rule in `CONTEXT.md`; note the application package's 1.88 MSRV and the per-language `astgrep-<lang>` features.
+- [X] T067 [P] Document the tool surface in `README.md` and the two-tier decision rule in `CONTEXT.md`; note the application package's 1.88 MSRV and the per-language `astgrep-<lang>` features.
 - [ ] T068 [P] Add the `scanner-escape-denied` case to `test/vm/remote-matrix.sh` — a scanner child's out-of-scope read is refused by the kernel (currently 35/35; not required for the first slice to land).
-- [ ] T069 `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --features sec,astgrep-rust,astgrep-python -- -D warnings`.
+- [X] T069 `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --features sec,astgrep-rust,astgrep-python -- -D warnings`.
 
 ---
 
@@ -225,8 +228,8 @@ malformed vector is rejected; a caller-supplied score is rejected rather than re
 Setup (T001–T005)
    └─▶ Foundational (T006–T013)     ← blocks every story
           ├─▶ US1  astgrep   (T014–T022)   independent  🎯 MVP
-          ├─▶ US2  ledger    (T023–T034)   independent
-          │      ├─▶ US3  scanner (T035–T048)   needs the ledger
+          ├─▶ US2  ledger    (T023–T034, +T031a)   independent
+          │      ├─▶ US3  scanner (T035–T048, +T039a)   needs the ledger
           │      └─▶ US4  cvss    (T049–T053)   T053 needs the ledger; T052 does not
           ├─▶ US5  gitlog    (T054–T057)   DEFERRED, independent
           └─▶ US6  codeql    (T058–T061)   DEFERRED, needs US3
@@ -245,11 +248,12 @@ inherent to the feature rather than an artefact of the plan.
 **US1** — T014, T015, T016, T017 all parallel (fixture + three independent test fns), then
 T018 → T019 → T020 → T021 → T022 strictly sequential (each builds on the last).
 
-**US2** — T023, T024, T025, T026 all parallel; then T027 → T028/T029 → T030 → T031 → T032.
-T033 and T034 are parallel with each other once T029 lands.
+**US2** — T023, T024, T025, T026 all parallel; then T027 → T028/T029 → T030 → T031 → T031a → T032.
+T033 and T034 are parallel with each other (and with T031a) once T029 lands.
 
-**US3** — T035, T036, T037, T038, T039 all parallel; then T040 → T041 → T042 and T043 → T044 → T045
-and T046 proceed as three parallel chains, converging at T047.
+**US3** — T035, T036, T037, T038, T039 all parallel, and T039a alongside them (it depends on nothing
+in this phase); then T040 → T041 → T042 and T043 → T044 → T045 and T046 proceed as three parallel
+chains, converging at T047.
 
 **US4** — T049, T050, T051 all parallel; then T052 → T053.
 

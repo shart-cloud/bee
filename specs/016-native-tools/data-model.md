@@ -25,6 +25,10 @@ pub struct Finding {
     pub source: FindingSource,
     /// Computed only. Never a model-supplied number (FR-005).
     pub severity: Option<Severity>,
+    /// A producing scanner's own `level`, kept verbatim as advisory context. Deliberately separate
+    /// from `severity`: it is what someone else's rule asserted, not what bee computed, and only the
+    /// scoring path may write a number (FR-005).
+    pub advisory_level: Option<String>,
     /// Every time this finding has been seen, oldest first. Never empty.
     pub sightings: Vec<Sighting>,
     /// Human adjudication, if any. Survives automated re-discovery (FR-020).

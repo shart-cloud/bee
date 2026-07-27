@@ -109,6 +109,61 @@ walk input history, `Tab` focus, `p` panel overlay on narrow terminals, `y` yank
 Mouse reporting is on so the wheel works, which means drag-to-select is the terminal's `Shift`-click
 gesture there.
 
+## Security analysis tooling (opt-in)
+
+Tools for using an agent to *review* code, rather than only to write it. All default-off: a build
+that selects none of them has the dependency graph it had before they existed.
+
+```bash
+cargo build --features sec,astgrep-rust,astgrep-python   # everything, with two grammars
+cargo build --features findings                          # just the ledger
+cargo build --features astgrep,astgrep-rust              # just structural search, one grammar
+```
+
+| Feature | Tool | What it is |
+|---|---|---|
+| `astgrep` + `astgrep-<lang>` | `ast_grep` | Structural search over the parse tree, so a match in a comment or a string literal is not a match. One feature per grammar — each is compiled C, so a build pays only for the languages it scans. |
+| `findings` | `record_finding`, `list_findings` | The durable finding ledger. |
+| `cvss` | `cvss` | Severity **computed** from a vector, never asserted by the model. |
+| `scanners` | `scan` | External scanner adapters (Opengrep today). Implies `findings`. |
+| `gitlog` | — | Repository history via `gix`. Planned, not yet built. |
+| `sec` | — | Umbrella for all of the above. Grammars stay explicit. |
+
+**Two tiers, one rule.** When the value is the *engine*, bee links the crate and runs it as a
+scope-joined child. When the value is a curated *rule corpus*, bee drives the third-party binary
+instead of reimplementing it — under an inode-pinned `exec.allow` grant, with argv built from typed
+inputs. The model chooses what to scan; never how the scanner is configured.
+
+```toml
+# policy — the capability
+[exec]
+allow = ["!/home/you/.local/bin/opengrep"]      # `!` pins the inode
+
+# config — how the granted binary is configured (operator-only)
+[security.scanners.opengrep]
+rules = "/etc/bee/opengrep-rules"               # `auto` is refused: a scanning scope has no egress
+```
+
+**Findings outlive the session.** They land in `.bee/findings/ledger.jsonl` — append-only, one JSON
+object per line, meant to be committed and reviewed in a pull request. Re-running merges rather than
+duplicating, and identity excludes the line number so code movement does not mint a duplicate.
+
+```bash
+./target/debug/bee findings list
+./target/debug/bee findings adjudicate <id> --state false-positive --note "sanitised upstream"
+```
+
+Adjudication is CLI-only and has no tool equivalent: an agent can record what it saw, and only a
+person can rule on it. A later automated rediscovery appends a sighting and cannot clear the verdict.
+
+**Every tool answers in three states** — completed, could-not-run, or failed. A missing binary, an
+ungranted scanner, a substituted binary, a timeout, or an unparseable report each say so explicitly.
+None of them can render as "scanned, found nothing", because a security tool that reports no issues
+when it did not run is worse than one that was never installed.
+
+> **MSRV note.** The application package declares Rust **1.88** (`ast-grep-core`'s floor). The
+> embeddable crates — `bee-core`, `bee-common`, `bee-userspace` — keep **1.85**.
+
 ## Kernel requirements (for enforcement)
 
 The `enforce` feature and the `crates/ebpf` package require:

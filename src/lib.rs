@@ -44,6 +44,12 @@ pub mod repl;
 // Terminal-safety for untrusted text. Ungated: every front-end and the consent prompt need it.
 pub mod safe_text;
 pub mod sandbox;
+// SARIF ingestion for the external scanner tier (016-native-tools US3).
+#[cfg(feature = "scanners")]
+pub mod sarif;
+// External scanner adapters (016-native-tools US3).
+#[cfg(feature = "scanners")]
+pub mod scanners;
 pub mod scenario;
 pub mod search;
 // Operator configuration for the security tooling (016-native-tools). Ungated: plain data, so a

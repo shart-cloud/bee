@@ -103,6 +103,11 @@ The normaliser caps the finding set (`MAX_FINDINGS_PER_SCAN`, initially 200 — 
 stated rather than inferred. Bounding happens **before** rendering, so the transport cap never has to
 cut a structured result mid-object.
 
+The worker emits **JSONL** — one finding per line — rather than a single array, and belt-and-braces
+with the bound above: if a cut ever did happen at the transport, it costs the last record instead of
+the whole parse. An array would fail to parse entirely, and an unparseable result is one step from
+reading as "the scanner found nothing", which is the failure this whole feature is built against.
+
 ## Grant and pin
 
 A grant is an ordinary `ExecPolicy.allow` entry using the existing `!`-prefix inode pin
@@ -118,6 +123,19 @@ allow = ["!/home/jg/.local/bin/opengrep"]
   `NotGranted` regardless of what is installed.
 - **FR-009 / SC-010**: `probe()` re-checks the pin immediately before spawning. A binary substituted
   between grant issuance and run yields `PinMismatch` and is never executed.
+
+**Where `grant.rules` comes from.** Not from policy: a ruleset path is configuration, not a
+capability — it says *how* a granted scanner is configured, never *what* the episode may reach — so
+admitting it to `ExecPolicy` would widen the policy surface for something that grants nothing
+(Constitution IV). It lives in a `[scanners.<name>]` block in bee's own config, while the exec grant
+stays exactly the `!`-pinned entry above. The model still cannot influence it either way: it is
+operator-set in both halves.
+
+**When grants are resolved.** Once, at registry construction (`ScanTool::new(grants, run_id,
+ledger_dir)`) — `Tool::call` receives only a `&Sandbox`, from which the policy is not reachable. The
+consequence is bounded and worth stating: a scanner granted mid-episode through 007 escalation is not
+visible until the next episode. What is *not* deferred is the identity check — `probe()` re-stats the
+pin on every call, so this trades freshness of the grant set, never freshness of the pin.
 
 ## Opengrep adapter
 
