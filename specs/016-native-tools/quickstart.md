@@ -252,11 +252,13 @@ falsifying the record — while every rendering escapes them: `x = "\x1b[2J\x1b[
 \u{202e}`. The screen does not clear. This is the 014 `safe_text` property applied to a new input
 channel.
 
-**Known gap**: `Finding.advisory_level` is always `None` for Opengrep. Opengrep reports severity in
-`tool.driver.rules[].defaultConfiguration.level`, not on the result, and `src/sarif.rs` deliberately
-never materialises `tool.driver.rules` — that array is the 99.96% of the report that research R4
-says not to read. The field is harmless (advisory level never becomes `Severity`, FR-005) but
-presently unreachable through this adapter.
+**Where the advisory level comes from**: Opengrep reports severity on the *rule*
+(`tool.driver.rules[].defaultConfiguration.level`), not on the result. That array is the 99.96% of
+the report research R4 says not to read, so `src/sarif.rs` streams it and retains only `id → level`
+— two short strings per rule, bounded by `MAX_RULE_LEVELS` (4096) — while the descriptions, help
+text, and tags are parsed and dropped. A result carrying its own `level` overrides the rule default.
+The level is recorded and rendered as advisory and never becomes a `Severity` (FR-005); an
+over-cap catalogue costs advisory levels for the overflow and never a finding or a scan.
 
 ## US4 — severity is computed, not guessed
 

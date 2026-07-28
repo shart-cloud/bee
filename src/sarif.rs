@@ -7,8 +7,14 @@
 //! **1,912,546 bytes**, of which **99.96% is the embedded rule catalogue** — 1074 rule objects
 //! carrying descriptions, help text, and tags — to deliver **839 bytes** of results. A faithful
 //! model of the 2.1.0 schema materialises all of it to reach the part that matters. The structs
-//! below name only the fields bee reads; serde ignores the rest, so `tool.driver.rules` is never
-//! allocated at all.
+//! below name only the fields bee reads; serde ignores the rest.
+//!
+//! One thing bee does need from that catalogue: Opengrep reports a rule's severity on the *rule*
+//! (`defaultConfiguration.level`), not on the result, so a normaliser that skipped the array
+//! entirely could never populate `advisory_level` at all. [`retain_rule_levels`] streams the array
+//! and retains **only** `id → level` — two short strings per rule, bounded by
+//! [`MAX_RULE_LEVELS`] — while the descriptions, help text, and tags that are the 99.96% are parsed
+//! and dropped without ever being allocated.
 //!
 //! ## Why this runs in a child rather than in the harness
 //!
@@ -26,6 +32,8 @@
 //! scanner's `level` is recorded as advisory only — it never becomes a [`Severity`], because
 //! severity comes from the computed path alone (FR-005).
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 
 use crate::findings::{Finding, FindingSource};
@@ -38,6 +46,13 @@ pub const MAX_FINDINGS_PER_SCAN: usize = 200;
 /// Kept rather than dropped: a result with no location is still a result, and silently discarding
 /// one would under-report a scan that ran correctly.
 pub const WHOLE_PROGRAM: &str = "(whole program)";
+
+/// The cap on `id → level` pairs retained from one report's rule catalogue.
+///
+/// The measured registry ruleset carries 1074 rules; 4096 leaves room for a corpus several times
+/// that while keeping a hostile report from turning an unbounded array into unbounded retention.
+/// Exceeding it costs only advisory levels for the overflow — never a finding, and never the scan.
+pub const MAX_RULE_LEVELS: usize = 4096;
 
 // ── The subset bee reads (data-model.md §Scanner Report) ─────────────────────────────────────────
 
@@ -53,6 +68,78 @@ struct Run {
     invocations: Vec<Invocation>,
     #[serde(default)]
     results: Vec<SarifResult>,
+    /// Read for exactly one thing: the rule → level map (see [`retain_rule_levels`]).
+    #[serde(default)]
+    tool: Option<Tool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Tool {
+    #[serde(default)]
+    driver: Option<Driver>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Driver {
+    /// The catalogue, collapsed to `id → level` as it streams past. Never materialised as objects.
+    #[serde(default, deserialize_with = "retain_rule_levels")]
+    rules: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuleMeta {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(rename = "defaultConfiguration", default)]
+    default_configuration: Option<DefaultConfiguration>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DefaultConfiguration {
+    #[serde(default)]
+    level: Option<String>,
+}
+
+/// Stream `tool.driver.rules`, keeping `id → level` and discarding everything else.
+///
+/// The sequence is drained to the end even once [`MAX_RULE_LEVELS`] is reached — stopping early
+/// would abort the deserializer mid-document and turn a large catalogue into "unparseable report",
+/// i.e. a scan that ran fine reading as a failure. Overflow costs advisory levels, nothing more.
+fn retain_rule_levels<'de, D>(d: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Collapse;
+
+    impl<'de> serde::de::Visitor<'de> for Collapse {
+        type Value = BTreeMap<String, String>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a SARIF rule catalogue")
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut levels = BTreeMap::new();
+            while let Some(rule) = seq.next_element::<RuleMeta>()? {
+                if levels.len() >= MAX_RULE_LEVELS {
+                    continue;
+                }
+                let level = rule
+                    .default_configuration
+                    .and_then(|c| c.level)
+                    .filter(|l| !l.trim().is_empty());
+                if let (Some(id), Some(level)) = (rule.id, level) {
+                    levels.insert(id, level);
+                }
+            }
+            Ok(levels)
+        }
+    }
+
+    d.deserialize_seq(Collapse)
 }
 
 #[derive(Debug, Deserialize)]
@@ -184,12 +271,18 @@ pub fn normalise(raw: &str, _scanner: &str, limit: usize) -> Result<ScanOutcome,
     let mut findings = Vec::new();
     let mut truncated = false;
     for run in &report.runs {
+        // Per run, because a rule id is only meaningful against the driver that declared it.
+        let levels = run
+            .tool
+            .as_ref()
+            .and_then(|t| t.driver.as_ref())
+            .map(|d| &d.rules);
         for result in &run.results {
             if findings.len() >= limit {
                 truncated = true;
                 break;
             }
-            findings.push(normalise_result(result));
+            findings.push(normalise_result(result, levels));
         }
         if truncated {
             break;
@@ -203,7 +296,21 @@ pub fn normalise(raw: &str, _scanner: &str, limit: usize) -> Result<ScanOutcome,
     })
 }
 
-fn normalise_result(result: &SarifResult) -> ScanFinding {
+fn normalise_result(
+    result: &SarifResult,
+    rule_levels: Option<&BTreeMap<String, String>>,
+) -> ScanFinding {
+    // A result's own `level` overrides the rule's default, per SARIF 2.1.0 §3.27.10 — the rule
+    // default is what applies when the result is silent, which for Opengrep is always.
+    let level = result
+        .level
+        .clone()
+        .filter(|l| !l.trim().is_empty())
+        .or_else(|| {
+            let id = result.rule_id.as_deref()?;
+            rule_levels?.get(id).cloned()
+        });
+
     let physical = result
         .locations
         .first()
@@ -235,7 +342,7 @@ fn normalise_result(result: &SarifResult) -> ScanFinding {
         .and_then(|r| r.snippet.as_ref())
         .and_then(|s| s.text.clone())
         .filter(|t| !t.trim().is_empty())
-        .unwrap_or_else(|| match (&result.rule_id, &result.level) {
+        .unwrap_or_else(|| match (&result.rule_id, &level) {
             (Some(rule), Some(level)) => format!("rule {rule} fired at {level} with no snippet"),
             (Some(rule), None) => format!("rule {rule} fired with no snippet"),
             _ => "the scanner reported no snippet".to_string(),
@@ -254,7 +361,7 @@ fn normalise_result(result: &SarifResult) -> ScanFinding {
         line: region.and_then(|r| r.start_line),
         end_line: region.and_then(|r| r.end_line),
         rule_id: result.rule_id.clone(),
-        advisory_level: result.level.clone(),
+        advisory_level: level,
     }
 }
 
@@ -362,6 +469,73 @@ mod tests {
         let f = out.findings[0].to_finding("opengrep");
         assert_eq!(f.advisory_level.as_deref(), Some("error"));
         assert!(f.severity.is_none(), "a level must never become a score");
+    }
+
+    #[test]
+    fn a_rule_default_level_reaches_a_result_that_carries_none() {
+        // Opengrep's actual shape: the result is silent, the catalogue holds the severity.
+        let report = r#"{"runs":[{
+            "tool":{"driver":{"name":"Opengrep","rules":[
+                {"id":"r1","defaultConfiguration":{"level":"error"},
+                 "help":{"text":"a long help string that must never be retained"}}]}},
+            "invocations":[{"executionSuccessful":true}],
+            "results":[{"ruleId":"r1","message":{"text":"m"}}]}]}"#;
+        let out = normalise(report, "opengrep", 10).unwrap();
+        assert_eq!(out.findings[0].advisory_level.as_deref(), Some("error"));
+        assert!(
+            out.findings[0].to_finding("opengrep").severity.is_none(),
+            "reaching the level must not start scoring findings"
+        );
+    }
+
+    #[test]
+    fn a_results_own_level_wins_over_the_rules_default() {
+        let report = r#"{"runs":[{
+            "tool":{"driver":{"rules":[{"id":"r1","defaultConfiguration":{"level":"note"}}]}},
+            "invocations":[{"executionSuccessful":true}],
+            "results":[{"ruleId":"r1","level":"error","message":{"text":"m"}}]}]}"#;
+        let out = normalise(report, "opengrep", 10).unwrap();
+        assert_eq!(out.findings[0].advisory_level.as_deref(), Some("error"));
+    }
+
+    #[test]
+    fn a_rule_id_with_no_matching_catalogue_entry_is_simply_unlevelled() {
+        let report = r#"{"runs":[{
+            "tool":{"driver":{"rules":[{"id":"other","defaultConfiguration":{"level":"error"}}]}},
+            "invocations":[{"executionSuccessful":true}],
+            "results":[{"ruleId":"r1","message":{"text":"m"}}]}]}"#;
+        let out = normalise(report, "opengrep", 10).unwrap();
+        assert!(out.findings[0].advisory_level.is_none());
+    }
+
+    #[test]
+    fn an_oversized_catalogue_costs_levels_and_never_the_scan() {
+        // The retention cap must degrade, not abort: the finding still lands.
+        let rules: Vec<String> = (0..MAX_RULE_LEVELS + 50)
+            .map(|i| format!(r#"{{"id":"r{i}","defaultConfiguration":{{"level":"error"}}}}"#))
+            .collect();
+        let report = format!(
+            r#"{{"runs":[{{"tool":{{"driver":{{"rules":[{}]}}}},
+            "invocations":[{{"executionSuccessful":true}}],
+            "results":[{{"ruleId":"r{}","message":{{"text":"m"}}}}]}}]}}"#,
+            rules.join(","),
+            MAX_RULE_LEVELS + 10
+        );
+        let out = normalise(&report, "opengrep", 10).expect("an overlong catalogue still parses");
+        assert_eq!(out.findings.len(), 1);
+        assert!(
+            out.findings[0].advisory_level.is_none(),
+            "a rule past the cap has no retained level — but the finding survives"
+        );
+    }
+
+    #[test]
+    fn a_report_with_no_catalogue_at_all_still_normalises() {
+        let report = r#"{"runs":[{"invocations":[{"executionSuccessful":true}],
+            "results":[{"ruleId":"r1","message":{"text":"m"}}]}]}"#;
+        let out = normalise(report, "opengrep", 10).unwrap();
+        assert_eq!(out.findings.len(), 1);
+        assert!(out.findings[0].advisory_level.is_none());
     }
 
     #[test]
