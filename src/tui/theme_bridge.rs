@@ -50,6 +50,7 @@ mod tests {
 
     #[test]
     fn no_color_toggles_the_foreground() {
+        let _no_color = crate::viz::palette::lock_no_color();
         // NO_COLOR is process-global, so both states are checked in one serial test to avoid racing a
         // parallel test in this binary (mirrors the palette tests).
         // With NO_COLOR set (SC-005): no foreground color (monochrome floor); bold still applies.

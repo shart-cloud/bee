@@ -192,6 +192,7 @@ mod tests {
 
     #[test]
     fn a_recognized_fence_is_highlighted_and_no_color_strips_it() {
+        let _no_color = crate::viz::palette::lock_no_color();
         // NO_COLOR is process-global, so both states live in one serial test (mirrors the
         // theme_bridge and palette tests in this binary).
         let md = "```rust\nfn main() { let answer = 42; }\n```\n";

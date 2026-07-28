@@ -75,6 +75,7 @@ mod tests {
     // parallel tests in the same binary would race (SC-013 + AS-3).
     #[test]
     fn status_grid_color_and_no_color() {
+        let _no_color = crate::viz::palette::lock_no_color();
         // Color on (SC-013): 3 green + 1 red dot, fraction present.
         std::env::remove_var("NO_COLOR");
         let rows = vec![(
