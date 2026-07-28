@@ -29,6 +29,8 @@ pub mod astgrep;
 pub mod cvss;
 #[cfg(feature = "findings")]
 pub mod finding;
+#[cfg(feature = "gitlog")]
+pub mod gitlog;
 #[cfg(feature = "scanners")]
 pub mod scanner;
 
@@ -63,11 +65,16 @@ pub const SKILL_TOOLS: &[&str] = &["skill"];
 /// The native security-analysis tools (016-native-tools). **Not** in `DEFAULT_TOOLS`: a scenario or
 /// the REPL config opts in by listing them, exactly as it does for `render`.
 ///
-/// This list holds only tools that are **built**. `git_log` (US5) is specified and contracted but
-/// not yet implemented, so it is absent rather than present-and-broken: a scenario naming it gets
-/// the ordinary unknown-tool rejection at validation, which is the truthful answer today. It joins
-/// this list with its phase.
-pub const SEC_TOOLS: &[&str] = &["ast_grep", "cvss", "record_finding", "list_findings"];
+/// This list holds only tools that are **built**. A tool named here but compiled out registers as a
+/// refusing stub (`NotCompiledIn`); a tool absent from it is rejected at validation as unknown. Both
+/// are honest answers, and neither is "it ran and found nothing".
+pub const SEC_TOOLS: &[&str] = &[
+    "ast_grep",
+    "cvss",
+    "record_finding",
+    "list_findings",
+    "git_log",
+];
 
 /// The external scanner tier (016-native-tools). Listing `scan` is necessary but **not sufficient**
 /// to run a scanner: the episode's policy must also carry an inode-pinned `ExecPolicy.allow` grant
@@ -96,6 +103,7 @@ pub fn is_known_tool(name: &str) -> bool {
 pub fn sec_tool_family(name: &str) -> Option<&'static str> {
     match name {
         "ast_grep" => Some("astgrep"),
+        "git_log" => Some("gitlog"),
         "cvss" => Some("cvss"),
         "record_finding" | "list_findings" => Some("findings"),
         "scan" => Some("scanners"),
@@ -323,6 +331,8 @@ pub fn register_named(r: &mut ToolRegistry, name: &str, flag: Option<&str>) {
         // never answer as though it ran (Constitution I).
         #[cfg(feature = "astgrep")]
         "ast_grep" => r.insert(Box::new(astgrep::AstGrepTool)),
+        #[cfg(feature = "gitlog")]
+        "git_log" => r.insert(Box::new(gitlog::GitLogTool)),
         #[cfg(feature = "cvss")]
         "cvss" => r.insert(Box::<cvss::CvssTool>::default()),
         // The ledger tools default to `.bee/findings` under the working directory and a

@@ -33,6 +33,10 @@ pub mod episode;
 // into, and a build that selects none of them has nothing to record.
 #[cfg(feature = "findings")]
 pub mod findings;
+// Repository history (016-native-tools US5). Gated: `gix` is a large dependency tree, and a build
+// that does not ask a repository anything should not carry a git implementation.
+#[cfg(feature = "gitlog")]
+pub mod gitlog;
 pub mod grants;
 pub mod hooks;
 pub mod mcp;
