@@ -507,10 +507,23 @@ fn the_measured_fixture_normalises_to_one_finding() {
     assert!(f.title.contains("shell=True"));
     assert!(f.evidence.contains("subprocess.call"));
     assert_eq!(f.class, "subprocess-shell-true");
-    // Opengrep puts severity on the rule, not the result, and bee never materialises the rules
-    // array — so this is legitimately absent (see fixtures/sarif/NOTES.md).
-    assert!(f.advisory_level.is_none());
+    // Opengrep puts severity on the rule, not the result. The normaliser reaches it through the
+    // streaming id→level pass over the catalogue (T070) rather than materialising the catalogue.
+    assert_eq!(f.advisory_level.as_deref(), Some("error"));
     assert!(!out.truncated);
+}
+
+#[test]
+fn a_rule_level_reaches_the_ledger_without_becoming_a_severity() {
+    // The whole point of populating `advisory_level`: it is carried, attributed, and still never a
+    // score. FR-005 holds on the path that now has something to carry.
+    let out = sarif::normalise(FIXTURE, "opengrep", 200).unwrap();
+    let f = out.findings[0].to_finding("opengrep");
+    assert_eq!(f.advisory_level.as_deref(), Some("error"));
+    assert!(
+        f.severity.is_none(),
+        "a scanner's own level must never become a computed severity"
+    );
 }
 
 #[test]

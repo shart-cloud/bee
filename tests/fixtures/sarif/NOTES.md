@@ -43,8 +43,12 @@ is not reviewable, and the trimmed variant exercises every field the normaliser 
 ### Two things this fixture pins that are easy to get wrong
 
 1. **`result.level` is absent.** Opengrep puts the severity on the *rule*
-   (`tool.driver.rules[].defaultConfiguration.level`), not the result. bee never materialises the
-   rules array (research R5), so `advisory_level` is legitimately `None` here — and that is fine,
-   because a scanner's level is advisory only and never becomes a `Severity` (FR-005).
+   (`tool.driver.rules[].defaultConfiguration.level`), not the result. A normaliser that skipped the
+   catalogue entirely could therefore never populate `advisory_level` at all, so `src/sarif.rs`
+   streams that array and retains only `id → level`, bounded by `MAX_RULE_LEVELS` — the
+   descriptions, help text, and tags that are the 99.96% are still never materialised (research R5).
+   This fixture pins that path: its one rule carries `"level": "error"`, and the finding it produces
+   comes out `advisory_level: Some("error")` with `severity: None`, because a scanner's level is
+   advisory only and never becomes a `Severity` (FR-005).
 2. **`executionSuccessful: true` sits in `runs[].invocations[]`.** It, not the exit status, is what
    says the scan actually ran (research R6).
