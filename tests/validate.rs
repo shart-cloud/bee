@@ -45,11 +45,19 @@ fn unsupported_segment_is_rejected_before_kernel_probe() {
 }
 
 #[test]
-fn inode_pin_and_enabled_exfiltration_are_rejected() {
+fn an_inode_pin_now_validates_and_enabled_exfiltration_is_still_rejected() {
+    // 017 flipped the first half. A pinned entry used to be refused here — "eBPF backend cannot
+    // enforce inode-pinned executable" — which made every 016 scanner grant uninstallable, since a
+    // grant is *only* ever a pinned entry. The kernel matches identity now, so this is a policy bee
+    // can actually run.
     let pinned = policy("pinned", "[policy.exec]\nallow = [\"!sh\"]\n");
     let output = validate(&pinned);
-    assert_eq!(output.status.code(), Some(64));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("inode-pinned"));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let exfil = policy("exfil", "[policy.exfiltration]\nenabled = true\n");
     let output = validate(&exfil);

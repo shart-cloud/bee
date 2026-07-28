@@ -131,9 +131,49 @@ pub fn fs_open_blocked(
     write_default_deny
 }
 
+/// Does `rule` admit the executable identified by `(ino, dev)` (017 FR-002)?
+///
+/// Only a pinned rule can answer yes here, and it answers on identity alone. The unpinned rules in
+/// the same list are decided by path, elsewhere — the two are deliberately disjoint, so a pin can
+/// never be *widened* by the path it happens to carry, and a path rule can never be *narrowed* by an
+/// identity it never claimed.
+pub fn exec_pin_matches(rule: &crate::layout::DenyRule, ino: u64, dev: u32) -> bool {
+    rule.is_pinned() && rule.ino == ino && rule.dev == dev
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pinned(path: &[u8], ino: u64, dev: u32) -> DenyRule {
+        let mut r = DenyRule::EMPTY;
+        r.len = path.len() as u16;
+        r.bytes[..path.len()].copy_from_slice(path);
+        r.ino = ino;
+        r.dev = dev;
+        r
+    }
+
+    #[test]
+    fn a_pin_is_decided_by_identity_and_not_by_the_path_it_carries() {
+        let rule = pinned(b"/usr/bin/opengrep", 4242, 66_306);
+        assert!(exec_pin_matches(&rule, 4242, 66_306));
+        // The same path, a different file: this is the swap the pin exists to refuse.
+        assert!(!exec_pin_matches(&rule, 9999, 66_306));
+        // The same inode number on another device is another file entirely.
+        assert!(!exec_pin_matches(&rule, 4242, 2049));
+    }
+
+    #[test]
+    fn an_unpinned_rule_never_matches_on_identity() {
+        // Not "matches everything" and not "matches nothing by accident": an unpinned rule is simply
+        // not in the identity conversation, and `ino == 0` is what says so.
+        let mut rule = pinned(b"/usr/bin/opengrep", 0, 0);
+        rule.ino = 0;
+        assert!(!rule.is_pinned());
+        assert!(!exec_pin_matches(&rule, 0, 0));
+        assert!(!exec_pin_matches(&rule, 4242, 66_306));
+    }
 
     #[test]
     fn subtree_boundaries() {

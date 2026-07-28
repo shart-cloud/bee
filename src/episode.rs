@@ -844,7 +844,40 @@ async fn resolve_episode_grants(
                 .or_insert(Access::Read);
         }
     }
+    widen_for_scanner_reports(&mut outcome.policy, scenario);
     outcome
+}
+
+/// Granting a scanner authorizes the report exchange the scan is made of (017).
+///
+/// The two-child pipeline has the scanner write SARIF to `.bee/scan/` and `bee sarif-worker` read it
+/// back — both of them tool children, both under the scope. But `:project_root/.bee` is a
+/// **default protection** (`PROTECTED_DEFAULTS`, FR-008): bee's own state is denied to tool children
+/// so the model cannot reach the ledger or the transcripts. The scan report lives inside that
+/// subtree, so under enforcement child 1's write and child 2's read were both refused and the scan
+/// failed with `cannot read …: Permission denied` — invisible under `--host`, where nothing enforces
+/// the deny at all.
+///
+/// So a resolved scanner grant widens the policy by exactly one subtree, in the same place and the
+/// same way a skill grant does. More-specific-wins means `.bee/scan` is carved out while the rest of
+/// `.bee` — `findings/` above all, where the ledger and its human verdicts live — stays denied.
+fn widen_for_scanner_reports(policy: &mut bee_core::Policy, scenario: &Scenario) {
+    #[cfg(feature = "scanners")]
+    {
+        use bee_core::Access;
+        let grants = crate::scanners::grants_from_policy(Some(policy), &scenario.security);
+        if grants.is_empty() {
+            return;
+        }
+        policy
+            .filesystem
+            .entry(format!(":project_root/{}", crate::tools::scanner::SCAN_DIR))
+            .or_insert(Access::Write);
+    }
+    #[cfg(not(feature = "scanners"))]
+    {
+        let _ = (policy, scenario);
+    }
 }
 
 /// Bring up a real bee scope from the resolved policy and wrap it as an [`Sandbox::Enforced`]. The

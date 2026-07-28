@@ -224,6 +224,15 @@ cargo run --features sec,astgrep-rust -- run --scenario scenario.toml \
     --provider scan-prov.toml --host --quiet --out scan.json
 ```
 
+Two things this `--host` example does not have to get right, and an enforcing build does (017):
+
+* **The policy must grant bee itself** — `allow = ["!$(command -v opengrep)", "!$(which bee)"]`. The
+  pipeline's second child is `bee sarif-worker`; nothing admits it implicitly.
+* **The report channel is granted for you.** `.bee/scan` sits inside `:project_root/.bee`, which is a
+  default protection, so a resolved scanner grant widens the policy by exactly that subtree — the
+  same mechanism a skill grant uses. `.bee/findings` stays denied: the ledger is written by the
+  harness, never by a child.
+
 **Expected**: `opengrep: 1 finding(s), 1 recorded in the ledger`, the finding sourced
 `scanner:opengrep` in `.bee/findings/ledger.jsonl`, and `.bee/scan/` empty afterwards — the SARIF
 report is removed once normalised.

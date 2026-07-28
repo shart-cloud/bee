@@ -27,7 +27,9 @@ echo "== build (host) =="
 if [ "${BEE_SKIP_BUILD:-0}" != 1 ]; then
   # `concurrent` implies `enforce`, so one build covers every case in the matrix — including the
   # concurrent-audit-isolation one, which used to need a second binary and skipped without it.
-  ( cd "$REPO" && cargo build --features concurrent --release )
+  # `sec` is here for the 016 scanner case: without it `scan` is a compiled-out stub that reports
+  # `not compiled in` — which is a correct answer, and would sail past a case looking for a leak.
+  ( cd "$REPO" && cargo build --features concurrent,sec --release )
 fi
 BIN="$REPO/target/release/bee"
 [ -x "$BIN" ] || { echo "FAIL: $BIN not found (build first)"; exit 1; }

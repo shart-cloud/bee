@@ -96,8 +96,12 @@ impl EnforcementPlan {
 pub enum PlanError {
     #[error("eBPF backend cannot enforce filesystem {kind} rule '{target}'")]
     UnsupportedFilesystem { kind: &'static str, target: String },
-    #[error("eBPF backend cannot enforce inode-pinned executable '{target}'")]
-    UnsupportedInodePin { target: String },
+    /// A pinned executable rule with no resolved identity (017). Formerly this variant said the
+    /// backend could not enforce a pin *at all*, which made every scanner grant uninstallable and
+    /// left 016's external tier reachable only under `--host`. The kernel matches identity now; what
+    /// remains unenforceable is a pin whose file could not be identified.
+    #[error("inode-pinned executable '{target}' has no resolved identity")]
+    UnidentifiedPin { target: String },
     #[error("eBPF backend cannot enforce enabled exfiltration detection")]
     UnsupportedExfiltration,
     #[error(
@@ -194,10 +198,21 @@ fn plan_exec(rules: &[bee_core::CompiledExec]) -> Result<DenyList, PlanError> {
 
     let mut list = DenyList::EMPTY;
     for (i, rule) in rules.iter().enumerate() {
-        if rule.pin_inode {
-            return Err(PlanError::UnsupportedInodePin {
-                target: display_bytes(&rule.path),
-            });
+        // A pinned rule is decided in the kernel by identity, so it carries one; the path rides
+        // along for the audit line only. The compiler establishes `pin_inode ⇒ identity`, and a pin
+        // that arrives without one is refused rather than installed as a path rule — degrading a pin
+        // to its own path is exactly the widening a pin exists to prevent (017 FR-004).
+        match (rule.pin_inode, rule.identity) {
+            (true, Some(id)) => {
+                list.rules[i].ino = id.ino;
+                list.rules[i].dev = id.dev;
+            }
+            (true, None) => {
+                return Err(PlanError::UnidentifiedPin {
+                    target: display_bytes(&rule.path),
+                })
+            }
+            (false, _) => {}
         }
         if rule.path.len() > DENY_PREFIX_MAX {
             return Err(PlanError::RuleTooLong {
@@ -403,23 +418,66 @@ mod tests {
     }
 
     #[test]
-    fn executable_pinning_and_length_fail_closed() {
+    fn a_pin_installs_carrying_the_identity_it_was_given() {
+        // 017: this is the case that used to be refused outright, which made every 016 scanner
+        // grant uninstallable. The rule now carries identity; the path is along for the audit line.
         let pinned = CompiledPolicy {
             exec: vec![CompiledExec {
-                path: b"/usr/bin/cargo".to_vec(),
+                path: b"/usr/bin/opengrep".to_vec(),
                 pin_inode: true,
+                identity: Some(bee_core::ExecIdentity {
+                    ino: 4242,
+                    dev: 66_306,
+                }),
+            }],
+            ..CompiledPolicy::default()
+        };
+        let plan = EnforcementPlan::prepare(&pinned, ScopeMode::Enforce).expect("a pin installs");
+        assert_eq!(plan.exec_rules.count, 1);
+        assert_eq!(plan.exec_rules.rules[0].ino, 4242);
+        assert_eq!(plan.exec_rules.rules[0].dev, 66_306);
+        assert!(plan.exec_rules.rules[0].is_pinned());
+    }
+
+    #[test]
+    fn an_unpinned_rule_carries_no_identity() {
+        let unpinned = CompiledPolicy {
+            exec: vec![CompiledExec {
+                path: b"/usr/bin/cargo".to_vec(),
+                pin_inode: false,
+                identity: None,
+            }],
+            ..CompiledPolicy::default()
+        };
+        let plan = EnforcementPlan::prepare(&unpinned, ScopeMode::Enforce).unwrap();
+        assert!(!plan.exec_rules.rules[0].is_pinned(), "ino must stay 0");
+    }
+
+    #[test]
+    fn a_pin_with_no_identity_is_refused_rather_than_loosened() {
+        // The compiler cannot produce this, which is the point: if it ever did, the backend must not
+        // quietly install a path rule that matches whatever now sits at that path (FR-004).
+        let orphan = CompiledPolicy {
+            exec: vec![CompiledExec {
+                path: b"/usr/bin/opengrep".to_vec(),
+                pin_inode: true,
+                identity: None,
             }],
             ..CompiledPolicy::default()
         };
         assert!(matches!(
-            EnforcementPlan::prepare(&pinned, ScopeMode::Enforce),
-            Err(PlanError::UnsupportedInodePin { .. })
+            EnforcementPlan::prepare(&orphan, ScopeMode::Enforce),
+            Err(PlanError::UnidentifiedPin { .. })
         ));
+    }
 
+    #[test]
+    fn executable_length_and_count_fail_closed() {
         let long = CompiledPolicy {
             exec: vec![CompiledExec {
                 path: vec![b'x'; DENY_PREFIX_MAX + 1],
                 pin_inode: false,
+                identity: None,
             }],
             ..CompiledPolicy::default()
         };
@@ -436,6 +494,7 @@ mod tests {
                 .map(|i| CompiledExec {
                     path: format!("/bin/tool-{i}").into_bytes(),
                     pin_inode: false,
+                    identity: None,
                 })
                 .collect(),
             ..CompiledPolicy::default()
