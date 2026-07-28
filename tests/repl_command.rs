@@ -31,9 +31,19 @@ fn mock_provider(dir: &Path, name: &str, reply: &str) -> PathBuf {
 }
 
 /// Run a command with `input` on stdin, closing it so the session ends.
+///
+/// The child runs in an empty directory with `XDG_CONFIG_HOME` and `HOME` pointed at it, so it
+/// discovers **no** user or project configuration. Without that, these assertions depend on the
+/// developer's own `~/.config/bee/config.toml`: a provider there silently completes a session these
+/// tests mean to leave incomplete, and a policy there contradicts `--host` outright. What the
+/// session resolves from flags is the whole subject here, so the ambient layers have to be absent.
 fn run_with_stdin(bin: &Path, args: &[&str], input: &str) -> Output {
+    let empty = tempfile::tempdir().unwrap();
     let mut child = Command::new(bin)
         .args(args)
+        .current_dir(empty.path())
+        .env("XDG_CONFIG_HOME", empty.path())
+        .env("HOME", empty.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -132,7 +142,14 @@ fn no_provider_at_all_reports_what_is_missing() {
     // The resolver's contribution: `bee-repl` required `--provider` as a clap argument and said so
     // in usage. `bee repl` can take it from configuration, so its absence is a *completeness*
     // failure that names the places it could come from.
-    let out = bee_repl(&["--no-bee"], "");
+    //
+    // `--host` is not incidental. Enforcement is resolved before configuration completeness, so
+    // without it a non-`enforce` build refuses the unenforced session first and this assertion
+    // never reaches the resolver — and an `enforce` build reports the *policy* as the missing
+    // piece. Settling enforcement is what lets the completeness failure be about the provider.
+    // No `skip_on_enforcement_build()` guard for the same reason its neighbours have one: this
+    // case exits at configuration and never starts a session, so no kernel is involved either way.
+    let out = bee_repl(&["--no-bee", "--host"], "");
     assert_eq!(out.status.code(), Some(64));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("incomplete configuration"), "{stderr}");
