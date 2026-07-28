@@ -22,6 +22,12 @@ pub trait Resolver {
     fn home(&self) -> &str;
     /// Resolve an executable name or path to an absolute path (PATH search + existence check).
     fn resolve_exec(&self, name: &str) -> Result<PathBuf, CompileError>;
+    /// Identity of an already-resolved executable, for a `!`-pinned entry only (017 FR-001).
+    ///
+    /// Separate from [`Resolver::resolve_exec`] because most entries never need it, and because
+    /// failure here means something different: the path resolved, but the file it names could not be
+    /// identified — which must be a refusal, never a rule that matches the path loosely (FR-004).
+    fn resolve_exec_identity(&self, path: &std::path::Path) -> Result<ExecIdentity, CompileError>;
     /// Resolve a network host (domain/IP/CIDR) to concrete IP addresses.
     fn resolve_host(&self, host: &str) -> Result<Vec<IpAddr>, CompileError>;
 }
@@ -44,12 +50,28 @@ pub enum FsPrimitive {
     BoundedStar { pattern: Vec<u8>, mode: AccessMode },
 }
 
+/// The identity of a file: what a pin actually names (017).
+///
+/// A path is a way of *reaching* a file, not the file itself, and the two can come apart between the
+/// moment a policy is written and the moment an image is loaded. `dev` is the **kernel's** `s_dev`
+/// encoding rather than the libc `st_dev` the host reports — the resolver converts, because the
+/// comparison happens in the kernel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExecIdentity {
+    pub ino: u64,
+    pub dev: u32,
+}
+
 /// A compiled executable rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledExec {
     pub path: Vec<u8>,
     /// Pin the resolved inode (TOCTOU-hard) rather than match by path.
     pub pin_inode: bool,
+    /// The identity the pin resolved to, `Some` **iff** `pin_inode` — the compiler establishes that
+    /// invariant, and a backend is entitled to treat a pin with no identity as a bug rather than as
+    /// a rule to install loosely.
+    pub identity: Option<ExecIdentity>,
 }
 
 /// A compiled network egress rule (one per resolved IP).
@@ -109,9 +131,18 @@ impl Policy {
                 None => (entry.as_str(), false),
             };
             let path = r.resolve_exec(name)?;
+            // Resolved here rather than at install time so a pin that names nothing identifiable is
+            // a compile-time refusal — the operator learns it when they write the policy, not when
+            // the kernel silently has one fewer rule than they think.
+            let identity = if pin {
+                Some(r.resolve_exec_identity(&path)?)
+            } else {
+                None
+            };
             exec.push(CompiledExec {
                 path: path.into_os_string().into_encoded_bytes(),
                 pin_inode: pin,
+                identity,
             });
         }
 

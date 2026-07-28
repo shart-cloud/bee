@@ -14,6 +14,8 @@ pub mod error;
 pub mod policy;
 
 pub use audit::AuditEvent;
-pub use compiler::{CompiledExec, CompiledNet, CompiledPolicy, FsPrimitive, Resolver};
+pub use compiler::{
+    CompiledExec, CompiledNet, CompiledPolicy, ExecIdentity, FsPrimitive, Resolver,
+};
 pub use error::{AttenuationError, CompileError, PolicyError};
 pub use policy::{Access, ExecPolicy, ExfilPolicy, Mode, NetPolicy, Policy};

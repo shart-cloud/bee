@@ -36,12 +36,28 @@ pub mod offsets {
     /// `offsetof(struct linux_binprm, file)` — the `struct file *` of the program being exec'd.
     pub const BINPRM_FILE: usize = 64;
 
+    // The chain that answers "which file is this, regardless of what it is called" (017). An
+    // executable's identity is `(i_ino, s_dev)`, reached from the same `struct file *` the exec hook
+    // already holds: file → f_inode → {i_ino, i_sb → s_dev}.
+    /// `offsetof(struct file, f_inode)` — the `struct inode *` this file refers to.
+    pub const FILE_F_INODE: usize = 168;
+    /// `offsetof(struct inode, i_ino)` — the inode number (`unsigned long`, u64 on x86_64).
+    pub const INODE_I_INO: usize = 80;
+    /// `offsetof(struct inode, i_sb)` — the `struct super_block *` the inode lives on.
+    pub const INODE_I_SB: usize = 56;
+    /// `offsetof(struct super_block, s_dev)` — `dev_t` (u32), the kernel's device encoding.
+    pub const SUPER_BLOCK_S_DEV: usize = 16;
+
     /// `(struct, member, compiled_offset)` triples the loader validates against the running kernel's
     /// BTF at startup. If any disagrees, bee refuses to enforce (fail-closed).
     pub const VALIDATED: &[(&str, &str, usize)] = &[
         ("file", "f_path", FILE_F_PATH),
         ("file", "f_mode", FILE_F_MODE),
         ("linux_binprm", "file", BINPRM_FILE),
+        ("file", "f_inode", FILE_F_INODE),
+        ("inode", "i_ino", INODE_I_INO),
+        ("inode", "i_sb", INODE_I_SB),
+        ("super_block", "s_dev", SUPER_BLOCK_S_DEV),
     ];
 }
 

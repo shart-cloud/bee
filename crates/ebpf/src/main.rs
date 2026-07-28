@@ -62,7 +62,7 @@ const EACCES: i32 = 13;
 
 /// Kernel struct field offsets (target 6.8 x86_64), shared with user space so its startup guard can
 /// validate them against the running kernel's BTF (see `bee_common::offsets` and module docs).
-use bee_common::offsets::{BINPRM_FILE as BINPRM_FILE_OFF, FILE_F_MODE as FILE_F_MODE_OFF, FILE_F_PATH as FILE_F_PATH_OFF};
+use bee_common::offsets::{BINPRM_FILE as BINPRM_FILE_OFF, FILE_F_INODE as FILE_F_INODE_OFF, FILE_F_MODE as FILE_F_MODE_OFF, FILE_F_PATH as FILE_F_PATH_OFF, INODE_I_INO as INODE_I_INO_OFF, INODE_I_SB as INODE_I_SB_OFF, SUPER_BLOCK_S_DEV as SUPER_BLOCK_S_DEV_OFF};
 
 /// `FMODE_WRITE` (UAPI-stable): the open requests write access. Set for `O_WRONLY`/`O_RDWR`.
 const FMODE_WRITE: u32 = 0x2;
@@ -288,6 +288,15 @@ pub fn bprm_check_security(ctx: LsmContext) -> i32 {
     if file_val == 0 {
         return deny_unevaluated(cgid, meta, Op::Exec, -EACCES);
     }
+
+    // Identity first, path second (017). A pinned rule names a *file*, and this hook holds the very
+    // file the kernel is about to load — so the decision needs no name at all, and cannot be raced
+    // by re-pointing one. It is also the cheaper question: three loads against a path resolution.
+    let (ino, dev) = file_identity(file_val);
+    if allow_pins(allow, ino, dev) {
+        return 0; // this exact image was granted
+    }
+
     let buf_ptr = match PATHBUF.get_ptr_mut(0) {
         Some(p) => p,
         None => return deny_unevaluated(cgid, meta, Op::Exec, -EACCES),
@@ -339,8 +348,64 @@ fn rule_matches(buf: &[u8; PATH_MAX], plen: usize, rule: &DenyRule) -> bool {
     }
 }
 
+/// The identity of the file being executed: `(i_ino, s_dev)`, reached from the `struct file *` the
+/// exec hook already holds.
+///
+/// Direct loads at constant offsets, the same mechanism `f_mode` uses: because `file` came out of a
+/// trusted LSM BTF pointer, the verifier maps each offset to its field and keeps the intermediate
+/// `inode *` / `super_block *` loads typed. `bpf_probe_read` would hand back untyped scalars and the
+/// chain would not verify.
+///
+/// A zero inode means the chain gave nothing — the caller must treat that as "matches no pin",
+/// never as "matches every pin", which is why [`allow_pins`] tests it explicitly.
+#[inline(always)]
+fn file_identity(file_val: usize) -> (u64, u32) {
+    let inode = unsafe { *((file_val + FILE_F_INODE_OFF) as *const usize) };
+    if inode == 0 {
+        return (0, 0);
+    }
+    let ino = unsafe { *((inode + INODE_I_INO_OFF) as *const u64) };
+    let sb = unsafe { *((inode + INODE_I_SB_OFF) as *const usize) };
+    if sb == 0 {
+        return (0, 0);
+    }
+    let dev = unsafe { *((sb + SUPER_BLOCK_S_DEV_OFF) as *const u32) };
+    (ino, dev)
+}
+
+/// Does any **pinned** rule in `list` admit `(ino, dev)`? Bounded, early-returning, verifier-safe —
+/// the same shape as [`matches_any`], which handles the unpinned half of the same list.
+fn allow_pins(list: &DenyList, ino: u64, dev: u32) -> bool {
+    if ino == 0 {
+        // No identity, no identity-based grant. An image whose inode the hook cannot read is left to
+        // the path scan, which fails closed on an unresolvable path.
+        return false;
+    }
+    let count = if (list.count as usize) < DENY_MAX_RULES {
+        list.count as usize
+    } else {
+        DENY_MAX_RULES
+    };
+    let mut i = 0usize;
+    while i < DENY_MAX_RULES {
+        if i >= count {
+            break;
+        }
+        let rule = &list.rules[i];
+        if rule.ino != 0 && rule.ino == ino && rule.dev == dev {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Does any rule in `list` match `buf`? Used for the executable allowlist (pure membership, mode
 /// ignored). Bounded, verifier-safe.
+///
+/// **Pinned rules are skipped here.** They were already decided on identity by [`allow_pins`], and a
+/// pin that also matched its own path would silently degrade to a path rule the moment the file it
+/// named was replaced — which is the one thing a pin exists to prevent (017 FR-002).
 fn matches_any(buf: &[u8; PATH_MAX], plen: usize, list: &DenyList) -> bool {
     let count = if (list.count as usize) < DENY_MAX_RULES {
         list.count as usize
@@ -352,7 +417,8 @@ fn matches_any(buf: &[u8; PATH_MAX], plen: usize, list: &DenyList) -> bool {
         if i >= count {
             break;
         }
-        if rule_matches(buf, plen, &list.rules[i]) {
+        let rule = &list.rules[i];
+        if rule.ino == 0 && rule_matches(buf, plen, rule) {
             return true;
         }
         i += 1;

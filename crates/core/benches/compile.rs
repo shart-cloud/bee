@@ -18,6 +18,12 @@ impl Resolver for BenchResolver {
     fn resolve_exec(&self, name: &str) -> Result<PathBuf, CompileError> {
         Ok(PathBuf::from(format!("/usr/bin/{name}")))
     }
+    fn resolve_exec_identity(
+        &self,
+        _path: &std::path::Path,
+    ) -> Result<bee_core::ExecIdentity, CompileError> {
+        Ok(bee_core::ExecIdentity { ino: 1, dev: 1 })
+    }
     fn resolve_host(&self, _host: &str) -> Result<Vec<IpAddr>, CompileError> {
         Ok(vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))])
     }

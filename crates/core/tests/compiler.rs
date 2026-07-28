@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 
 use bee_common::AccessMode;
-use bee_core::{CompileError, FsPrimitive, Policy, Resolver};
+use bee_core::{CompileError, ExecIdentity, FsPrimitive, Policy, Resolver};
 
 struct Mock;
 
@@ -27,6 +27,19 @@ impl Resolver for Mock {
         } else {
             Ok(PathBuf::from(format!("/usr/bin/{name}")))
         }
+    }
+    fn resolve_exec_identity(&self, path: &std::path::Path) -> Result<ExecIdentity, CompileError> {
+        // A stable fake identity per path: the compiler's job is to *ask*, not to know.
+        if path.ends_with("unidentifiable") {
+            return Err(CompileError::UnresolvableExec(
+                path.display().to_string(),
+                "cannot stat".into(),
+            ));
+        }
+        Ok(ExecIdentity {
+            ino: path.display().to_string().len() as u64,
+            dev: 66_306,
+        })
     }
     fn resolve_host(&self, host: &str) -> Result<Vec<IpAddr>, CompileError> {
         if host == "bad" {

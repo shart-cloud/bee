@@ -46,7 +46,16 @@ pub struct DenyRule {
     pub mode: u8,
     /// Number of valid bytes in `bytes`.
     pub len: u16,
-    pub _pad: [u8; 4],
+    /// The kernel's `s_dev` for a pinned rule. Meaningless when `ino == 0`.
+    pub dev: u32,
+    /// The pinned inode number, or **0 for an unpinned rule** — no real file has inode 0, so the
+    /// sentinel costs no expressiveness and keeps the hot path a single comparison (017 FR-002).
+    ///
+    /// A pinned rule is matched on `(ino, dev)` alone: `bytes` is retained for the audit line and
+    /// for the diagnostics an operator reads, but it does **not** participate in the decision. That
+    /// is the point — the grant was made to a file, not to a name, and a name can be re-pointed
+    /// between the grant and the exec.
+    pub ino: u64,
     pub bytes: [u8; DENY_PREFIX_MAX],
 }
 
@@ -55,9 +64,15 @@ impl DenyRule {
         kind: 0,
         mode: 0,
         len: 0,
-        _pad: [0; 4],
+        dev: 0,
+        ino: 0,
         bytes: [0; DENY_PREFIX_MAX],
     };
+
+    /// Whether this rule is decided by identity rather than by path.
+    pub const fn is_pinned(&self) -> bool {
+        self.ino != 0
+    }
 }
 
 /// The set of file rules for one scope, stored in `FS_DENY` keyed by cgroup id.

@@ -8,9 +8,22 @@
 //! time, before any agent loop runs.
 
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use bee_core::{CompileError, Resolver};
+use bee_core::{CompileError, ExecIdentity, Resolver};
+
+/// Convert a libc `st_dev` into the kernel's `s_dev` encoding — a **conversion, not a cast**.
+///
+/// glibc packs a 64-bit `dev_t` with the major split across two ranges; the kernel's `s_dev` is the
+/// 32-bit `(major << 20) | minor` that `new_encode_dev` produces, and that is the value the LSM hook
+/// reads out of `super_block`. Comparing the two directly would silently never match, which for a
+/// pin means an exec the operator granted is denied — fail-closed, but for a reason no one could
+/// diagnose.
+fn kernel_dev(st_dev: u64) -> u32 {
+    let major = libc::major(st_dev);
+    let minor = libc::minor(st_dev);
+    ((major & 0xfff) << 20) | (minor & 0xf_ffff)
+}
 
 /// Resolver backed by the real host environment (cwd, `$HOME`, `PATH`, system DNS).
 pub struct SystemResolver {
@@ -40,6 +53,16 @@ impl Resolver for SystemResolver {
     fn resolve_exec(&self, name: &str) -> Result<PathBuf, CompileError> {
         crate::spawn::resolve_in_path(name)
             .ok_or_else(|| CompileError::UnresolvableExec(name.into(), "not found on PATH".into()))
+    }
+    fn resolve_exec_identity(&self, path: &Path) -> Result<ExecIdentity, CompileError> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).map_err(|e| {
+            CompileError::UnresolvableExec(path.display().to_string(), format!("cannot stat: {e}"))
+        })?;
+        Ok(ExecIdentity {
+            ino: meta.ino(),
+            dev: kernel_dev(meta.dev()),
+        })
     }
     fn resolve_host(&self, host: &str) -> Result<Vec<IpAddr>, CompileError> {
         use std::net::ToSocketAddrs;
