@@ -147,6 +147,24 @@ pub fn bold_if(color: bool, code: &str, text: &str) -> String {
     }
 }
 
+/// Serialises the tests that toggle the process-global `NO_COLOR`.
+///
+/// Each such test already checks both colour states in one body, precisely to avoid racing — but
+/// they live in different modules of the *same* test binary (`viz::grid`, `tui::theme_bridge`,
+/// `tui::markdown`), so they still run concurrently with **each other**. One clearing the variable
+/// while another has it set makes the suite's outcome depend on thread scheduling, which is how a
+/// green run and a red run come out of identical code. Every site that mutates `NO_COLOR` takes
+/// this first.
+#[cfg(test)]
+pub(crate) static NO_COLOR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take [`NO_COLOR_LOCK`], ignoring poisoning: a panicking test has already reported its own
+/// failure, and refusing the lock afterwards would turn that one failure into every failure.
+#[cfg(test)]
+pub(crate) fn lock_no_color() -> std::sync::MutexGuard<'static, ()> {
+    NO_COLOR_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
