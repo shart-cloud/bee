@@ -94,6 +94,12 @@ enum Cmd {
     #[cfg(feature = "astgrep")]
     #[command(hide = true)]
     AstgrepWorker(bee::astgrep::AstGrepArgs),
+    /// Internal: read repository history and print one commit per line. Same seam again — the
+    /// `git_log` tool execs this through the sandbox, so the object files and packs `gix` opens are
+    /// mediated by the LSM rather than read from the harness.
+    #[cfg(feature = "gitlog")]
+    #[command(hide = true)]
+    GitlogWorker(bee::gitlog::GitLogArgs),
     /// Internal: read a scanner's SARIF report and print normalised findings as JSONL.
     ///
     /// The second child of the scanner pipeline, and the reason there are two: the report is
@@ -130,6 +136,8 @@ fn main() -> ExitCode {
         Cmd::SearchWorker(args) => cmd_search_worker(&args),
         #[cfg(feature = "astgrep")]
         Cmd::AstgrepWorker(args) => cmd_astgrep_worker(&args),
+        #[cfg(feature = "gitlog")]
+        Cmd::GitlogWorker(args) => cmd_gitlog_worker(&args),
         #[cfg(feature = "scanners")]
         Cmd::SarifWorker(args) => cmd_sarif_worker(&args),
     }
@@ -166,6 +174,18 @@ fn cmd_astgrep_worker(args: &bee::astgrep::AstGrepArgs) -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+/// Run the `git_log` tool's history query. Reached only via the tool, which execs
+/// `bee gitlog-worker …` inside the scope (see [`bee::gitlog`]).
+///
+/// The exit code is the contract: **0 with no output means the history was read and nothing matched**,
+/// while a path outside any repository exits [`bee::gitlog::EXIT_NOT_A_REPOSITORY`] and an
+/// unanswerable request exits [`bee::gitlog::EXIT_FAILED`]. The wrapper turns those into `Unavailable`
+/// and `Failed`; without distinct codes all three would arrive as silence (Constitution I).
+#[cfg(feature = "gitlog")]
+fn cmd_gitlog_worker(args: &bee::gitlog::GitLogArgs) -> ExitCode {
+    ExitCode::from(bee::gitlog::run_worker(args) as u8)
 }
 
 /// Run the `search` tool's library search, streaming results to stdout. Reached only via the tool,

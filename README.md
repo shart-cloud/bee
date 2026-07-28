@@ -126,7 +126,7 @@ cargo build --features astgrep,astgrep-rust              # just structural searc
 | `findings` | `record_finding`, `list_findings` | The durable finding ledger. |
 | `cvss` | `cvss` | Severity **computed** from a vector, never asserted by the model. |
 | `scanners` | `scan` | External scanner adapters (Opengrep today). Implies `findings`. |
-| `gitlog` | — | Repository history via `gix`. Planned, not yet built. |
+| `gitlog` | `git_log` | Repository history via `gix` — `log` for the commits touching a path, `blame` for the commit that introduced one line. Read-only; runs in a scope-joined child like every other file tool, because `.git` is a directory of files. |
 | `sec` | — | Umbrella for all of the above. Grammars stay explicit. |
 
 **Two tiers, one rule.** When the value is the *engine*, bee links the crate and runs it as a

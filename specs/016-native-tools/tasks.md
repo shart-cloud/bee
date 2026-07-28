@@ -183,16 +183,18 @@ malformed vector is rejected; a caller-supplied score is rejected rather than re
 
 ---
 
-## Phase 7: User Story 5 — Read the repository's history (P5) — DEFERRED
+## Phase 7: User Story 5 — Read the repository's history (P5)
 
 **Goal**: Log and blame from the repository itself, with no `git` binary in the allowlist.
 
-> Not in the first slice. Specified and contracted; build after US1–US4 land.
+> Landed after US1–US4, as planned. The refusal is the load-bearing part: a path with no
+> repository above it exits with a distinct code, so `Unavailable { NotARepository }` can never be
+> confused with a history that happens to be empty.
 
-- [ ] T054 [P] [US5] Write failing tests in `tests/gitlog_tool.rs`: log returns commits with author/date/summary; blame identifies the introducing commit; a non-repository path returns `Unavailable { NotARepository }`, never an empty history (US5 scenarios 1–3).
-- [ ] T055 [US5] Define `GitLogArgs` (`--path`, `--mode`, `--line`, `--limit`) and `worker_argv()` in `src/gitlog.rs`. *(depends: T004)*
-- [ ] T056 [US5] Implement the worker over `gix` 0.86 (`revision` for log, `blame` for line origin) in `src/gitlog.rs`. *(depends: T055)*
-- [ ] T057 [US5] Add the `gitlog-worker` subcommand to `src/main.rs` and the `Tool` impl in `src/tools/gitlog.rs`. *(depends: T056, T007)*
+- [X] T054 [P] [US5] Write failing tests in `tests/gitlog_tool.rs`: log returns commits with author/date/summary; blame identifies the introducing commit; a non-repository path returns `Unavailable { NotARepository }`, never an empty history (US5 scenarios 1–3).
+- [X] T055 [US5] Define `GitLogArgs` (`--path`, `--mode`, `--line`, `--limit`) and `worker_argv()` in `src/gitlog.rs`. *(depends: T004)*
+- [X] T056 [US5] Implement the worker over `gix` 0.86 (`revision` for log, `blame` for line origin) in `src/gitlog.rs`. *(depends: T055)*
+- [X] T057 [US5] Add the `gitlog-worker` subcommand to `src/main.rs` and the `Tool` impl in `src/tools/gitlog.rs`. *(depends: T056, T007)*
 
 ---
 
@@ -240,7 +242,7 @@ Setup (T001–T005)
           ├─▶ US2  ledger    (T023–T034, +T031a)   independent
           │      ├─▶ US3  scanner (T035–T048, +T039a)   needs the ledger
           │      └─▶ US4  cvss    (T049–T053)   T053 needs the ledger; T052 does not
-          ├─▶ US5  gitlog    (T054–T057)   DEFERRED, independent
+          ├─▶ US5  gitlog    (T054–T057)   independent
           └─▶ US6  codeql    (T058–T061)   DEFERRED, needs US3
                  └─▶ Polish (T062–T069)
 ```

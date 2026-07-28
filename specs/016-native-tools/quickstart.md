@@ -302,6 +302,37 @@ dropped in silence. There is no spelling of "here is my score" that bee accepts 
 
 ---
 
+## US5 — read the repository's history
+
+```bash
+# In any git repository (this one will do):
+cargo run --features gitlog -- gitlog-worker --path src/tools.rs --mode log --limit 5
+cargo run --features gitlog -- gitlog-worker --path src/tools.rs --mode blame --line 1
+```
+
+**Expected**: five `<sha> <date> <author> <summary>` lines, newest first, for `log`; one
+`<sha> <date> <author> line 1: <summary>` for `blame`. The dates are RFC 3339 in UTC — a repository
+records a per-commit offset, and normalising means two commits from two timezones sort the way a
+reader assumes they do.
+
+The three outcomes that look alike from outside a quiet child, and how they are kept apart:
+
+| Case | Exit | What the model sees |
+|---|---|---|
+| Commits found | 0 | the lines |
+| No commit touches the path (but there is a repository) | 0 | `no commits in this repository touch that path` |
+| The path is not inside a repository | 3 | `did not run: <path> is not inside a repository…` |
+| The request cannot be answered (bad line, unreadable object) | 4 | `failed: <diagnostic>` |
+
+```bash
+# The refusal, from a directory with no repository above it:
+cd /tmp && mkdir -p not-a-repo && cargo run --features gitlog --manifest-path <repo>/Cargo.toml \
+    -- gitlog-worker --path /tmp/not-a-repo --mode log; echo "exit=$?"
+```
+
+**Expected**: `exit=3` and nothing on stdout. An empty history and an unreadable one are different
+answers, and the exit code — not the wording — is what the tool wrapper reads to keep them apart.
+
 ## Constitution verification
 
 ```bash
@@ -317,9 +348,9 @@ cargo build -p bee-core
 
 ## Deferred to follow-on
 
-- **US5** (`git_log` via `gix`) and **US6** (CodeQL bundle) are planned in
-  [`contracts/native-tools.md`](./contracts/native-tools.md) and
-  [`contracts/scanner-adapter.md`](./contracts/scanner-adapter.md) but are not in the first slice.
-- **VM case `scanner-escape-denied`** — proving the kernel refuses a scanner child's out-of-scope
-  read — belongs on the `ac-matrix-vm` matrix (currently 35/35). Not required for the first slice to
-  land, since everything above is host-testable.
+- **US6** (CodeQL bundle) is planned in
+  [`contracts/scanner-adapter.md`](./contracts/scanner-adapter.md) but is not built. Its traced
+  languages would require admitting every compiler and linker a build invokes (research R7), which
+  is the widening SC-006 exists to prevent — so it stays deferred deliberately, not incidentally.
+- **VM case `scanner-escape-denied`** — landed on the matrix (38/38) once 017 made a scanner grant
+  installable under enforcement; see `specs/017-enforceable-pins/`.
