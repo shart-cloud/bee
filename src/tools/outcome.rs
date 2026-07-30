@@ -71,6 +71,14 @@ pub enum UnavailableReason {
     },
     /// The path is not inside a repository (US5 scenario 3).
     NotARepository { path: PathBuf },
+    /// The requested language can only be analysed by observing a build, which bee will not do
+    /// (FR-011, US6 scenario 3). Carries the languages that *are* analysable, so a caller can retry
+    /// usefully. Distinct from [`UnavailableReason::LanguageUnsupported`], which is about a grammar
+    /// this binary was not built with: this one is a deliberate refusal, and no rebuild changes it.
+    LanguageRequiresBuild {
+        lang: String,
+        supported: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for UnavailableReason {
@@ -122,6 +130,20 @@ impl std::fmt::Display for UnavailableReason {
             UnavailableReason::NotARepository { path } => {
                 write!(f, "{} is not inside a repository", path.display())
             }
+            UnavailableReason::LanguageRequiresBuild { lang, supported } => {
+                write!(
+                    f,
+                    "`{lang}` can only be analysed by observing its build, which would mean \
+                     admitting every compiler and build tool that build happens to invoke; bee \
+                     will not widen a scope that far, so this is declined rather than half-run. \
+                     Analysable without a build: {}",
+                    if supported.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        supported.join(", ")
+                    }
+                )
+            }
         }
     }
 }
@@ -137,6 +159,7 @@ impl UnavailableReason {
             UnavailableReason::BundleMismatch { .. } => "bundle_mismatch",
             UnavailableReason::LanguageUnsupported { .. } => "language_unsupported",
             UnavailableReason::NotARepository { .. } => "not_a_repository",
+            UnavailableReason::LanguageRequiresBuild { .. } => "language_requires_build",
         }
     }
 

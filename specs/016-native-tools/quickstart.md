@@ -355,11 +355,38 @@ cargo build -p bee-core
 # Expected: bee's own inode, plus exactly the scanners explicitly granted. Nothing else.
 ```
 
+## US6 — the CodeQL bundle
+
+Built, and testable without provisioning a bundle, because everything US6 turns on is a refusal:
+
+```bash
+cargo test --features scanners --test codeql_adapter
+# Expected: 10 passed. Each refusal asserts both the outcome and that the stub CLI logged no
+# invocation — for a version mismatch, exactly one (the version check itself, and nothing after).
+```
+
+Configuration is the Opengrep shape plus a pin. The grant names the bundle's own CLI:
+
+```toml
+[exec]
+allow = ["!/opt/codeql-bundle/codeql/codeql"]
+
+[security.scanners.codeql]
+bundle_version = "codeql-bundle-v2.26.1"   # or "2.26.1"; both spell the same pin
+```
+
+Analysable: `actions`, `csharp`, `java`, `javascript`, `python`, `ruby` — plus CodeQL's own aliases,
+so `typescript` reaches the `javascript` extractor. Everything else is declined **by name** with what
+*is* analysable, because a traced language extracted without tracing yields a thin database, and a
+thin database reads exactly like clean code.
+
+> **Not yet walked against a real bundle.** A stub proves bee's half — the argv it authors, the order
+> it runs, every path on which it refuses, and the report reaching the ledger. It cannot prove that
+> CodeQL, handed these arguments, produces useful findings. That walkthrough is **T073**, and it is
+> also where `rust` gets settled: if the bundle's Rust extractor ships no `tools/tracing-config.lua`,
+> it joins the list and bee can analyse itself.
+
 ## Deferred to follow-on
 
-- **US6** (CodeQL bundle) is planned in
-  [`contracts/scanner-adapter.md`](./contracts/scanner-adapter.md) but is not built. Its traced
-  languages would require admitting every compiler and linker a build invokes (research R7), which
-  is the widening SC-006 exists to prevent — so it stays deferred deliberately, not incidentally.
 - **VM case `scanner-escape-denied`** — landed on the matrix (38/38) once 017 made a scanner grant
   installable under enforcement; see `specs/017-enforceable-pins/`.

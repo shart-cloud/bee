@@ -21,7 +21,7 @@ A security-analysis tool whose engine is a maintained Rust crate compiled into B
 _Avoid_: Built-in tool, internal scanner
 
 **External scanner**:
-A third-party analysis binary whose value is its curated **rule corpus** rather than its engine, run only under an inode-pinned `exec.allow` grant with argv Bee constructs from typed inputs. Bee never reimplements a corpus and never hands the model a command line.
+A third-party analysis binary whose value is its curated **rule corpus** rather than its engine, run only under an inode-pinned `exec.allow` grant with argv Bee constructs from typed inputs. Bee never reimplements a corpus and never hands the model a command line. One scan may be several children — a version pin verified before use, then the analysis itself — but every one of them is a child, because asking a binary what it is, running it, and reading what it wrote are all things the harness does from outside the scope if it does them itself.
 _Avoid_: Plugin, integration, shell-out
 
 **Finding ledger**:

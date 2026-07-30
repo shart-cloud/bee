@@ -198,16 +198,31 @@ malformed vector is rejected; a caller-supplied score is rejected rather than re
 
 ---
 
-## Phase 8: User Story 6 — Deep whole-program analysis (P6) — DEFERRED
+## Phase 8: User Story 6 — Deep whole-program analysis (P6)
 
 **Goal**: Run a provisioned, version-pinned CodeQL bundle over build-mode-`none` languages.
 
-> Not in the first slice. Depends on the whole external tier (US3) being proven.
+> Landed after the external tier was proven, as planned. Two things this phase changed that were not
+> foreseen when it was written. The `ScannerAdapter` trait grew from one argv to three phases —
+> `probe` / `preflight` / `steps` — because a CodeQL analysis is two commands and its version pin can
+> only be read by *running* the CLI, which has to happen in a scope-joined child like everything
+> else. And `probe` now takes the `ScanRequest`: a bundle can be present, pinned, and correct and
+> still be unable to answer the question asked, which is a fact about the request, not the
+> installation.
+>
+> **Not verified against a real bundle.** Scenarios 2 and 3 are refusals, and refusals are provable
+> against a stub — indeed only provable that way, since a real bundle cannot be asked to report the
+> wrong version on demand, and half of what `tests/codeql_adapter.rs` asserts is that a child was
+> never spawned. Scenario 1's happy path is proven as far as bee's half goes (argv, order, the report
+> reaching the ledger); that CodeQL handed these arguments produces useful findings needs a
+> provisioned bundle and a `quickstart.md` walkthrough. See T073.
 
-- [ ] T058 [P] [US6] Write failing tests in `tests/codeql_adapter.rs`: an absent or version-mismatched bundle returns `Unavailable { BundleMismatch { expected, found } }` (US6 scenario 2); a traced (compiled) language is declined explicitly rather than half-supported (US6 scenario 3).
-- [ ] T059 [US6] Implement bundle probing in `src/scanners/codeql.rs` — run `<bundle>/codeql/codeql version --format=json` and compare against `grant.bundle_version` (pin `codeql-bundle-v2.26.1` / CLI `2.26.1`, per `codeql-action` v4.37.3 `src/defaults.json`). *(depends: T043)*
-- [ ] T060 [US6] Implement the argv builder in `src/scanners/codeql.rs`: `database create <db> --language=<lang> --build-mode=none --source-root=<target>` then `database analyze <db> --format=sarif-latest --output=<out> <suite>`. *(depends: T059)*
-- [ ] T061 [US6] Refuse traced languages in `src/scanners/codeql.rs` with an explanatory `Unavailable` — extraction for compiled languages intercepts the build's process spawns (`--begin-tracing`, `--trace-process-name`), which would require admitting every compiler and linker the build invokes, an unbounded widening that surrenders SC-006 and violates Constitution II (research R7). *(depends: T060)*
+- [X] T058 [P] [US6] Write failing tests in `tests/codeql_adapter.rs`: an absent or version-mismatched bundle returns `Unavailable { BundleMismatch { expected, found } }` (US6 scenario 2); a traced (compiled) language is declined explicitly rather than half-supported (US6 scenario 3). *(10 cases, each driven through `ScanTool` against a stub CLI rather than against the adapter directly, because the wiring is where a refusal would leak: every refusal case asserts not only the outcome but that the stub logged no invocation — or, for a version mismatch, exactly one. Also covers the two failure modes the task did not name and the stub made cheap: a CLI whose `version` output is unreadable is a mismatch rather than a pass, and an unpinned bundle produces no preflight and no command at all.)*
+- [X] T059 [US6] Implement bundle probing in `src/scanners/codeql.rs` — run `<bundle>/codeql/codeql version --format=json` and compare against `grant.bundle_version` (pin `codeql-bundle-v2.26.1` / CLI `2.26.1`, per `codeql-action` v4.37.3 `src/defaults.json`). *(depends: T043)* *(Split across the new `preflight` / `verify_preflight` pair: the version check is a child, because asking a binary what it is means running it, and running it from the harness would run it around the sandbox. What `probe` keeps is everything answerable without a process. Either spelling of the pin is accepted — the operator has `codeql-bundle-v2.26.1` to hand, the CLI only ever reports `2.26.1`, and rejecting one of those would turn a correct pin into a mismatch.)*
+- [X] T060 [US6] Implement the argv builder in `src/scanners/codeql.rs`: `database create <db> --language=<lang> --build-mode=none --source-root=<target>` then `database analyze <db> --format=sarif-latest --output=<out> <suite>`. *(depends: T059)* *(The "then" is what forced `argv` to become `steps`. An intermediate step is judged by its exit status — it has no report to be judged by — while the last is still judged by the report, because an exit status conflates "findings exist" with "run failed" (research R6). The database goes in a per-call scratch directory that is removed with the call: it is large, and it is built out of the code under analysis.)*
+- [X] T061 [US6] Refuse traced languages in `src/scanners/codeql.rs` with an explanatory `Unavailable` — extraction for compiled languages intercepts the build's process spawns (`--begin-tracing`, `--trace-process-name`), which would require admitting every compiler and linker the build invokes, an unbounded widening that surrenders SC-006 and violates Constitution II (research R7). *(depends: T060)* *(New `UnavailableReason::LanguageRequiresBuild`, carrying what **is** analysable so the refusal is actionable; kept distinct from `LanguageUnsupported`, which means "this build lacks that grammar" and which a rebuild fixes — this one no rebuild fixes. CodeQL decides tracedness by stat'ing `<extractor>/tools/tracing-config.lua` (`codeql-action/src/codeql.ts:535`), a fact inside the provisioned bundle that bee cannot read from the harness, so `BUILDLESS_LANGUAGES` is a static evidence-backed list that fails closed: unlisted ⇒ declined, so staleness costs coverage, never correctness. `rust` is deliberately absent — very likely buildless, but "likely" is not evidence.)*
+
+- [ ] T073 [US6] Walk a provisioned `codeql-bundle-v2.26.1` end to end and record it in `quickstart.md` — one buildless language analysed for real, findings in the ledger, and the version pin confirmed against the CLI's actual `version --format=json` output. This is the only part of US6 a stub cannot stand in for. Settle `rust` while there: if the bundle's Rust extractor ships no `tools/tracing-config.lua`, add it to `BUILDLESS_LANGUAGES` and bee can analyse itself.
 
 ---
 

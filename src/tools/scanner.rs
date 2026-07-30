@@ -1,17 +1,25 @@
 //! The `scan` tool (016-native-tools US3): run a granted external scanner, in scope, fail-closed.
 //!
-//! ## The two-child pipeline, and why it is not one child
+//! ## The pipeline, and why the report is a file rather than a stream
 //!
 //! ```text
-//!   ScannerGrant ──▶ child 1: the scanner        argv built by the adapter, never by the model
-//!   (inode-pinned)              │ writes
-//!                               ▼
+//!   ScannerGrant ──▶ preflight (optional)        what is this binary? verified before it is used
+//!   (inode-pinned)   │
+//!                    ▼
+//!                    the scan: one child per step, argv built by the adapter, never by the model
+//!                    │ Opengrep needs one step; CodeQL needs create-then-analyse
+//!                    │ writes
+//!                    ▼
 //!                    <scan dir>/report.sarif     inside the scope
-//!                               │
-//!                    child 2: `bee sarif-worker` reads and normalises IN SCOPE, bounded
-//!                               ▼
+//!                    │
+//!                    `bee sarif-worker` reads and normalises IN SCOPE, bounded
+//!                    ▼
 //!                    ToolOutcome<Vec<Finding>>
 //! ```
+//!
+//! Every one of those is a child. The harness never runs a scanner, never reads a report, and never
+//! asks a binary what version it is — all three would be the harness reaching around the sandbox it
+//! is meant to be imposing (Constitution III).
 //!
 //! Forced by measurement (research R4): an Opengrep SARIF over one file is 1,912,546 bytes against a
 //! 102,400-byte `DEFAULT_OUTPUT_CAP`. Capturing it on stdout truncates it into unparseable JSON,
@@ -183,14 +191,7 @@ impl Tool for ScanTool {
             });
         };
 
-        // ── 2. Is the binary there, and is it still the one that was granted? ───────────────────
-        // Before argv construction and before any spawn, so unavailability costs no process — and,
-        // more importantly, so a swapped binary is never executed (FR-009, SC-010).
-        if let Err(reason) = adapter.probe(grant) {
-            return unavailable(reason);
-        }
-
-        // ── 3. Build the command from typed inputs ──────────────────────────────────────────────
+        // ── 2. What is being asked, and within what budget? ─────────────────────────────────────
         let budget = match args.timeout_secs {
             // The operator's budget is a ceiling. A caller may ask for less, never for more.
             Some(secs) => Duration::from_secs(secs).min(grant.timeout),
@@ -202,69 +203,149 @@ impl Tool for ScanTool {
             timeout: budget,
         };
 
+        // ── 3. Can this scanner answer this request at all? ─────────────────────────────────────
+        // Before argv construction and before any spawn, so unavailability costs no process — and,
+        // more importantly, so a swapped binary is never executed (FR-009, SC-010).
+        if let Err(reason) = adapter.probe(grant, &req) {
+            return unavailable(reason);
+        }
+
         // Unique per *call*, not per run: two scans in one episode, or two episodes sharing a
         // project, would otherwise write the same path and each would read a file the other was
         // still writing — producing a mid-document parse failure that looks like a broken scanner.
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let report_path = PathBuf::from(SCAN_DIR).join(format!(
-            "{}-{}-{}-{}.sarif",
+        let stem = format!(
+            "{}-{}-{}-{}",
             args.scanner,
             self.run_id.replace(['/', ' ', '.'], "_"),
             std::process::id(),
             seq
-        ));
-        if let Some(parent) = report_path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return failed(format!(
-                    "cannot create the scan directory {}: {e}",
-                    parent.display()
-                ));
-            }
+        );
+        let report_path = PathBuf::from(SCAN_DIR).join(format!("{stem}.sarif"));
+        // Intermediate state an adapter needs mid-scan — a CodeQL database, for instance — lives
+        // here and nowhere else, so it is bounded to the call and cleaned up with it.
+        let scratch = PathBuf::from(SCAN_DIR).join(&stem);
+        if let Err(e) = std::fs::create_dir_all(&scratch) {
+            return failed(format!(
+                "cannot create the scan directory {}: {e}",
+                scratch.display()
+            ));
         }
         // A stale report from an earlier call must never be mistaken for this call's output.
         let _ = std::fs::remove_file(&report_path);
-
-        let argv = match adapter.argv(grant, &req, &report_path) {
-            Ok(a) => a,
-            Err(e) => return failed(e),
+        let cleanup = || {
+            let _ = std::fs::remove_dir_all(&scratch);
         };
 
-        // ── 4. Child 1: the scanner ─────────────────────────────────────────────────────────────
+        let steps = match adapter.steps(grant, &req, &scratch, &report_path) {
+            Ok(s) => s,
+            Err(e) => {
+                cleanup();
+                return failed(e);
+            }
+        };
+
         let program = grant.path.to_string_lossy().into_owned();
-        let run = match run_child_timed(sandbox, &program, &argv, budget).await {
-            Ok(r) => r,
-            Err(ChildError::TimedOut(d)) => {
-                // No partial answer: whatever it wrote is by definition incomplete, and presenting
-                // an incomplete scan as a scan is the failure this feature is built against.
-                let _ = std::fs::remove_file(&report_path);
+
+        // ── 4. Preflight: ask the binary what it is, in scope, before trusting its answers ──────
+        if let Some(argv) = adapter.preflight(grant) {
+            let probe = match run_child_timed(sandbox, &program, &argv, budget).await {
+                Ok(r) => r,
+                Err(ChildError::TimedOut(d)) => {
+                    cleanup();
+                    return failed(format!(
+                        "{} did not answer a version check within {}s",
+                        args.scanner,
+                        d.as_secs()
+                    ));
+                }
+                Err(ChildError::Spawn(e)) => {
+                    cleanup();
+                    return failed(e);
+                }
+            };
+            // A check that did not run has not passed. Handing its empty stdout to the verifier
+            // would let a crashing binary look like an unreadable version — the right refusal by
+            // luck rather than by construction, so it is stated here instead.
+            if !probe.success {
+                cleanup();
                 return failed(format!(
-                    "{} timed out after {}s; no partial findings are reported",
+                    "{} could not report its version{}",
                     args.scanner,
-                    d.as_secs()
+                    stderr_tail(&probe.stderr)
                 ));
             }
-            Err(ChildError::Spawn(e)) => return failed(e),
-        };
-
-        // A signal kill (`code == None`) is not an ordinary non-zero exit and is never a clean scan.
-        if run.code.is_none() {
-            return failed(format!(
-                "{} was killed by a signal{}",
-                args.scanner,
-                stderr_tail(&run.stderr)
-            ));
-        }
-        if !report_path.exists() {
-            return failed(format!(
-                "{} exited {} without writing a report{}",
-                args.scanner,
-                run.code.unwrap_or(-1),
-                stderr_tail(&run.stderr)
-            ));
+            if let Err(reason) = adapter.verify_preflight(grant, &probe.stdout) {
+                cleanup();
+                return unavailable(reason);
+            }
         }
 
-        // ── 5. Child 2: normalise in scope ──────────────────────────────────────────────────────
+        // ── 5. The scan itself, one child per step, in order ────────────────────────────────────
+        // Every step must succeed before the next runs: a database that failed to build cannot be
+        // analysed, and analysing it anyway would produce an empty report — a clean scan by
+        // accident, which is the one outcome this tool may never manufacture (FR-012).
+        for (i, argv) in steps.iter().enumerate() {
+            let run = match run_child_timed(sandbox, &program, argv, budget).await {
+                Ok(r) => r,
+                Err(ChildError::TimedOut(d)) => {
+                    // No partial answer: whatever it wrote is by definition incomplete, and
+                    // presenting an incomplete scan as a scan is the failure this feature is built
+                    // against.
+                    let _ = std::fs::remove_file(&report_path);
+                    cleanup();
+                    return failed(format!(
+                        "{} timed out after {}s; no partial findings are reported",
+                        args.scanner,
+                        d.as_secs()
+                    ));
+                }
+                Err(ChildError::Spawn(e)) => {
+                    cleanup();
+                    return failed(e);
+                }
+            };
+
+            // A signal kill (`code == None`) is not an ordinary non-zero exit and is never a clean
+            // scan.
+            if run.code.is_none() {
+                cleanup();
+                return failed(format!(
+                    "{} was killed by a signal{}",
+                    args.scanner,
+                    stderr_tail(&run.stderr)
+                ));
+            }
+            // Intermediate steps are judged by their exit status because they have no report to be
+            // judged by; the final step is judged by the report, below, because an exit status
+            // conflates "findings exist" with "run failed" (research R6).
+            if i + 1 < steps.len() && !run.success {
+                cleanup();
+                return failed(format!(
+                    "{} step {} of {} exited {}{}",
+                    args.scanner,
+                    i + 1,
+                    steps.len(),
+                    run.code.unwrap_or(-1),
+                    stderr_tail(&run.stderr)
+                ));
+            }
+            if i + 1 == steps.len() && !report_path.exists() {
+                cleanup();
+                return failed(format!(
+                    "{} exited {} without writing a report{}",
+                    args.scanner,
+                    run.code.unwrap_or(-1),
+                    stderr_tail(&run.stderr)
+                ));
+            }
+        }
+        // The database, or whatever else the scan needed on the way, has served its purpose. The
+        // report has not yet — child 2 still has to read it.
+        cleanup();
+
+        // ── 6. Child 2: normalise in scope ──────────────────────────────────────────────────────
         let exe = match self.exe() {
             Ok(e) => e,
             Err(e) => return failed(e),
@@ -306,7 +387,7 @@ impl Tool for ScanTool {
             Err(e) => return failed(e),
         };
 
-        // ── 6. Did the scan actually run? ───────────────────────────────────────────────────────
+        // ── 7. Did the scan actually run? ───────────────────────────────────────────────────────
         if !outcome.execution_successful {
             return failed(format!(
                 "{} reported that its run did not complete successfully; its results are not \
@@ -315,7 +396,7 @@ impl Tool for ScanTool {
             ));
         }
 
-        // ── 7. Merge into the ledger ────────────────────────────────────────────────────────────
+        // ── 8. Merge into the ledger ────────────────────────────────────────────────────────────
         let mut recorded = 0usize;
         let mut rejected = Vec::new();
         for f in &findings {
