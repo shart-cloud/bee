@@ -20,22 +20,28 @@ impl ScannerAdapter for Opengrep {
         "opengrep"
     }
 
-    fn probe(&self, grant: &ScannerGrant) -> Result<(), UnavailableReason> {
+    fn probe(&self, grant: &ScannerGrant, _req: &ScanRequest) -> Result<(), UnavailableReason> {
+        // Nothing about the request can make Opengrep unavailable: it needs no provisioned bundle,
+        // and its own rule corpus decides which languages it reads.
         probe_binary(grant)
     }
 
+    /// One step, because Opengrep needs one:
+    ///
     /// ```text
     /// scan --sarif --sarif-output=<out> --quiet --config <rules> --timeout <secs> <target>
     /// ```
     ///
     /// Every argument here is either a constant or a validated, typed input. There is no path by
-    /// which a model-supplied string becomes a flag (FR-007).
-    fn argv(
+    /// which a model-supplied string becomes a flag (FR-007). The scratch directory goes unused —
+    /// Opengrep reads the tree and writes the report, with nothing in between to keep.
+    fn steps(
         &self,
         grant: &ScannerGrant,
         req: &ScanRequest,
+        _scratch: &Path,
         out: &Path,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<Vec<String>>, String> {
         validate_target(&req.target)?;
 
         let rules = grant.rules.as_ref().ok_or_else(|| {
@@ -68,7 +74,7 @@ impl ScannerAdapter for Opengrep {
         // `--quiet` because Opengrep also prints the report to stdout when `--sarif` is set, and the
         // copy bee reads is the file. `--timeout` is Opengrep's own per-rule budget; the wall-clock
         // budget the tool enforces around the child is the one that actually bounds the call.
-        Ok(vec![
+        Ok(vec![vec![
             "scan".to_string(),
             "--sarif".to_string(),
             format!("--sarif-output={}", out.display()),
@@ -78,7 +84,7 @@ impl ScannerAdapter for Opengrep {
             "--timeout".to_string(),
             req.timeout.as_secs().to_string(),
             req.target.to_string_lossy().into_owned(),
-        ])
+        ]])
     }
 }
 
@@ -91,6 +97,7 @@ mod tests {
         _tmp: tempfile::TempDir,
         grant: ScannerGrant,
         target: PathBuf,
+        scratch: PathBuf,
         out: PathBuf,
     }
 
@@ -100,22 +107,30 @@ mod tests {
         std::fs::write(&rules, "rules: []\n").unwrap();
         let target = tmp.path().join("src");
         std::fs::create_dir_all(&target).unwrap();
+        let scratch = tmp.path().join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
         let grant = ScannerGrant::for_test("opengrep", tmp.path().join("opengrep"), Some(rules));
         let out = tmp.path().join("report.sarif");
         Fixture {
             _tmp: tmp,
             grant,
             target,
+            scratch,
             out,
         }
+    }
+
+    /// Opengrep is a one-step adapter; every case below asserts over that single command.
+    fn only_step(f: &Fixture, req: &ScanRequest) -> Result<Vec<String>, String> {
+        let mut steps = Opengrep.steps(&f.grant, req, &f.scratch, &f.out)?;
+        assert_eq!(steps.len(), 1, "opengrep runs exactly one child");
+        Ok(steps.remove(0))
     }
 
     #[test]
     fn the_command_is_exactly_what_the_contract_says() {
         let f = fixture();
-        let argv = Opengrep
-            .argv(&f.grant, &ScanRequest::new(f.target.clone()), &f.out)
-            .unwrap();
+        let argv = only_step(&f, &ScanRequest::new(f.target.clone())).unwrap();
         assert_eq!(argv[0], "scan");
         assert!(argv.contains(&"--sarif".to_string()));
         assert!(argv.contains(&"--quiet".to_string()));
@@ -131,9 +146,7 @@ mod tests {
     fn auto_is_refused_at_construction_with_the_reason() {
         let mut f = fixture();
         f.grant.rules = Some(PathBuf::from("auto"));
-        let err = Opengrep
-            .argv(&f.grant, &ScanRequest::new(f.target.clone()), &f.out)
-            .unwrap_err();
+        let err = only_step(&f, &ScanRequest::new(f.target.clone())).unwrap_err();
         assert!(err.contains("auto"), "{err}");
         assert!(err.contains("network"), "{err}");
     }
@@ -142,18 +155,14 @@ mod tests {
     fn no_ruleset_means_no_command() {
         let mut f = fixture();
         f.grant.rules = None;
-        assert!(Opengrep
-            .argv(&f.grant, &ScanRequest::new(f.target.clone()), &f.out)
-            .is_err());
+        assert!(only_step(&f, &ScanRequest::new(f.target.clone())).is_err());
     }
 
     #[test]
     fn a_missing_ruleset_is_refused_before_spawning() {
         let mut f = fixture();
         f.grant.rules = Some(PathBuf::from("/nonexistent/rules.yml"));
-        assert!(Opengrep
-            .argv(&f.grant, &ScanRequest::new(f.target.clone()), &f.out)
-            .is_err());
+        assert!(only_step(&f, &ScanRequest::new(f.target.clone())).is_err());
     }
 
     #[test]
@@ -161,7 +170,7 @@ mod tests {
         let f = fixture();
         let mut req = ScanRequest::new(f.target.clone());
         req.timeout = std::time::Duration::from_secs(42);
-        let argv = Opengrep.argv(&f.grant, &req, &f.out).unwrap();
+        let argv = only_step(&f, &req).unwrap();
         let i = argv.iter().position(|a| a == "--timeout").unwrap();
         assert_eq!(argv[i + 1], "42");
         // The report path never comes from the caller — it is the one bee handed in.

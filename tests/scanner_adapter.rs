@@ -281,9 +281,10 @@ fn config_auto_is_refused_when_the_command_is_built() {
         ScannerGrant::for_test("opengrep", tmp.path().join("opengrep"), Some("auto".into()));
     let adapter = scanners::adapter_for("opengrep").expect("opengrep adapter");
     let err = adapter
-        .argv(
+        .steps(
             &grant,
             &ScanRequest::new(target),
+            tmp.path(),
             &tmp.path().join("out.sarif"),
         )
         .expect_err("`auto` must be refused");
@@ -298,9 +299,10 @@ fn a_scanner_with_no_ruleset_configured_refuses_rather_than_defaulting_to_auto()
     let grant = ScannerGrant::for_test("opengrep", tmp.path().join("opengrep"), None);
     let adapter = scanners::adapter_for("opengrep").unwrap();
     let err = adapter
-        .argv(
+        .steps(
             &grant,
             &ScanRequest::new(tmp.path().to_path_buf()),
+            tmp.path(),
             &tmp.path().join("out.sarif"),
         )
         .expect_err("no rules ⇒ no scan");
@@ -317,9 +319,10 @@ fn the_model_cannot_smuggle_a_flag_through_the_target() {
 
     for hostile in ["--config=auto", "-e", "--pro"] {
         let err = adapter
-            .argv(
+            .steps(
                 &grant,
                 &ScanRequest::new(PathBuf::from(hostile)),
+                tmp.path(),
                 &tmp.path().join("out.sarif"),
             )
             .expect_err("a target that is really a flag must be refused");

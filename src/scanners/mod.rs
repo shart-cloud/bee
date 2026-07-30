@@ -25,6 +25,7 @@
 //! the kernel holds the same pin; in a host build this check is the only one, which is exactly why
 //! it lives at the tool layer rather than being left to the LSM.
 
+pub mod codeql;
 pub mod opengrep;
 
 use std::path::{Path, PathBuf};
@@ -122,22 +123,61 @@ impl ScanRequest {
 }
 
 /// One external scanner bee knows how to drive.
+///
+/// A scan is up to three phases, and an adapter opts into as much of that as it needs. Opengrep
+/// uses one; CodeQL uses all three, which is why the shape is not simply "one argv" (US6).
+///
+/// ```text
+///   probe()      no process at all — pin, provisioning, and whether this request is even answerable
+///   preflight()  one child whose stdout verify_preflight() reads — a version pin, checked in scope
+///   steps()      the scan itself, in order; every step must exit 0 before the next one runs
+/// ```
 pub trait ScannerAdapter: Send + Sync {
     /// Stable name, used in policy grants and in `FindingSource::Scanner(name)`.
     fn name(&self) -> &'static str;
 
-    /// Can this scanner run right now? Existence, pin, and any provisioned artefact. Runs **before**
+    /// Can this scanner answer *this request* right now? Existence, pin, provisioned artefacts, and
+    /// whether the thing being asked for is something this adapter will do at all. Runs **before**
     /// argv construction, so unavailability is reported without spawning anything.
-    fn probe(&self, grant: &ScannerGrant) -> Result<(), UnavailableReason>;
+    ///
+    /// It takes the request because availability is not purely a property of the installation: a
+    /// CodeQL bundle that is present, pinned, and correct still cannot analyse a language whose
+    /// extraction requires observing a build (FR-011).
+    fn probe(&self, grant: &ScannerGrant, req: &ScanRequest) -> Result<(), UnavailableReason>;
 
-    /// Build the child's argv from typed, validated inputs. The **only** place argv is authored.
+    /// A child to run before the scan, whose stdout [`ScannerAdapter::verify_preflight`] reads.
+    /// `None` — the default — means there is nothing to ask the binary before using it.
+    ///
+    /// This exists because some facts can only be had by asking the tool, and asking it is running
+    /// it: the tool is spawned in scope like any other child rather than probed from the harness
+    /// (Constitution III).
+    fn preflight(&self, _grant: &ScannerGrant) -> Option<Vec<String>> {
+        None
+    }
+
+    /// Judge what [`ScannerAdapter::preflight`] printed. An `Err` here stops the scan before its
+    /// first step, so a failed check is an unavailability and never a scan that found nothing.
+    fn verify_preflight(
+        &self,
+        _grant: &ScannerGrant,
+        _stdout: &str,
+    ) -> Result<(), UnavailableReason> {
+        Ok(())
+    }
+
+    /// Build the scan's children from typed, validated inputs. The **only** place argv is authored.
     /// Returns an error — never a partially-built command — if any input fails validation.
-    fn argv(
+    ///
+    /// `scratch` is a per-call directory inside the scope, created before this is called and removed
+    /// afterwards; an adapter that needs somewhere to put intermediate state puts it there. `out` is
+    /// where the last step must leave its report.
+    fn steps(
         &self,
         grant: &ScannerGrant,
         req: &ScanRequest,
+        scratch: &Path,
         out: &Path,
-    ) -> Result<Vec<String>, String>;
+    ) -> Result<Vec<Vec<String>>, String>;
 
     /// Where this scanner writes its report.
     fn report_kind(&self) -> ReportKind {
@@ -149,12 +189,13 @@ pub trait ScannerAdapter: Send + Sync {
 pub fn adapter_for(name: &str) -> Option<&'static dyn ScannerAdapter> {
     match name {
         "opengrep" => Some(&opengrep::Opengrep),
+        "codeql" => Some(&codeql::CodeQl),
         _ => None,
     }
 }
 
 /// Every adapter bee ships. Used to decide which `exec.allow` entries are scanner grants.
-pub const KNOWN_SCANNERS: &[&str] = &["opengrep"];
+pub const KNOWN_SCANNERS: &[&str] = &["opengrep", "codeql"];
 
 /// The shared existence-and-pin check every adapter's `probe` delegates to.
 pub fn probe_binary(grant: &ScannerGrant) -> Result<(), UnavailableReason> {

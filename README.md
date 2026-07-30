@@ -125,7 +125,7 @@ cargo build --features astgrep,astgrep-rust              # just structural searc
 | `astgrep` + `astgrep-<lang>` | `ast_grep` | Structural search over the parse tree, so a match in a comment or a string literal is not a match. One feature per grammar — each is compiled C, so a build pays only for the languages it scans. |
 | `findings` | `record_finding`, `list_findings` | The durable finding ledger. |
 | `cvss` | `cvss` | Severity **computed** from a vector, never asserted by the model. |
-| `scanners` | `scan` | External scanner adapters (Opengrep today). Implies `findings`. |
+| `scanners` | `scan` | External scanner adapters — Opengrep for pattern rules, CodeQL for whole-program analysis. Implies `findings`. |
 | `gitlog` | `git_log` | Repository history via `gix` — `log` for the commits touching a path, `blame` for the commit that introduced one line. Read-only; runs in a scope-joined child like every other file tool, because `.git` is a directory of files. |
 | `sec` | — | Umbrella for all of the above. Grammars stay explicit. |
 
@@ -143,6 +143,25 @@ allow = ["!/home/you/.local/bin/opengrep"]      # `!` pins the inode
 [security.scanners.opengrep]
 rules = "/etc/bee/opengrep-rules"               # `auto` is refused: a scanning scope has no egress
 ```
+
+**CodeQL is the same shape, plus a version pin.** The grant names the bundle's own CLI; the pin is
+verified by running it before anything is analysed, so a bundle that is not the one the operator
+provisioned is an explicit unavailability rather than a thin set of results.
+
+```toml
+[exec]
+allow = ["!/opt/codeql-bundle/codeql/codeql"]
+
+[security.scanners.codeql]
+bundle_version = "codeql-bundle-v2.26.1"        # or "2.26.1" — either spelling of the same pin
+```
+
+Databases are built one way, `--build-mode=none`, so `actions`, `csharp`, `java`, `javascript`,
+`python`, and `ruby` are analysable and everything else is **declined by name**. Extracting a
+compiled language means intercepting the build's process spawns, which would mean admitting every
+compiler and linker that build happens to invoke — an unbounded widening of the very scope bee
+exists to hold. Half-support would be worse than none: a thin database yields few findings, which
+reads exactly like clean code.
 
 **Findings outlive the session.** They land in `.bee/findings/ledger.jsonl` — append-only, one JSON
 object per line, meant to be committed and reviewed in a pull request. Re-running merges rather than

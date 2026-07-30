@@ -10,13 +10,35 @@ pub trait ScannerAdapter: Send + Sync {
     /// Stable name, used in policy grants and in `FindingSource::Scanner(name)`.
     fn name(&self) -> &'static str;
 
-    /// Can this scanner run right now? Checks existence, pin, and any provisioned artefact.
+    /// Can this scanner answer THIS request right now? Existence, pin, provisioned artefacts,
+    /// and whether the thing being asked for is something this adapter will do at all.
     /// Runs **before** argv construction, so unavailability is reported without spawning.
-    fn probe(&self, grant: &ScannerGrant) -> Result<(), UnavailableReason>;
+    ///
+    /// It takes the request because availability is not purely a property of the installation:
+    /// a CodeQL bundle that is present, pinned, and correct still cannot analyse a language
+    /// whose extraction requires observing a build (FR-011).
+    fn probe(&self, grant: &ScannerGrant, req: &ScanRequest) -> Result<(), UnavailableReason>;
 
-    /// Build the child's argv from typed, validated inputs. The ONLY place argv is authored.
+    /// A child to run before the scan, whose stdout `verify_preflight` reads. `None` — the
+    /// default — means there is nothing to ask the binary before using it. Some facts can only
+    /// be had by asking the tool, and asking it is running it; it is spawned in scope like any
+    /// other child rather than probed from the harness (Constitution III).
+    fn preflight(&self, grant: &ScannerGrant) -> Option<Vec<String>> { None }
+
+    /// Judge what `preflight` printed. An `Err` stops the scan before its first step, so a
+    /// failed check is an unavailability and never a scan that found nothing.
+    fn verify_preflight(&self, grant: &ScannerGrant, stdout: &str)
+        -> Result<(), UnavailableReason> { Ok(()) }
+
+    /// Build the scan's children from typed, validated inputs. The ONLY place argv is authored.
     /// Returns an error — never a partially-built command — if any input fails validation.
-    fn argv(&self, grant: &ScannerGrant, req: &ScanRequest, out: &Path) -> Result<Vec<String>, String>;
+    /// One entry per child, run in order; every step must succeed before the next one runs.
+    /// Opengrep needs one step, CodeQL needs create-then-analyse.
+    ///
+    /// `scratch` is a per-call directory inside the scope, created before this is called and
+    /// removed afterwards. `out` is where the last step must leave its report.
+    fn steps(&self, grant: &ScannerGrant, req: &ScanRequest, scratch: &Path, out: &Path)
+        -> Result<Vec<Vec<String>>, String>;
 
     /// Where this scanner writes its report, relative to the scratch dir handed to it.
     fn report_kind(&self) -> ReportKind;   // Sarif for both Opengrep and CodeQL
@@ -45,7 +67,7 @@ This is the discipline `src/search.rs` already states for ripgrep, generalised:
 > None of ripgrep's command-executing options (`--pre`, `--search-zip`) are exposed — the model
 > drives this only through `SearchArgs`, and there is nothing here that runs another program.
 
-Validation performed in `argv()`, all of which return `Err` rather than a degraded command:
+Validation performed in `steps()`, all of which return `Err` rather than a degraded command:
 - `target` resolves inside the scope after symlink resolution
 - `grant.rules`, when set, resolves inside the scope and is not `auto` (research R6)
 - no argument begins with `-` unless the adapter itself emitted it
@@ -149,29 +171,61 @@ the network (cached under `~/.opengrep/cli`), and a scanning scope has no egress
 opaquely. Measured: the same target scanned with a local ruleset produced a ~600-byte report versus
 1.9 MB with `auto`.
 
-## CodeQL adapter (US6, deferred)
+## CodeQL adapter (US6)
 
 Consumes an operator-provisioned, version-pinned **bundle** — `codeql-bundle-<platform>.tar.zst` from
 `github/codeql-action` releases, which ships the CLI, matching queries, and precompiled query packs.
 `codeql-action` v4.37.3 pins `codeql-bundle-v2.26.1` / CLI `2.26.1` (`src/defaults.json`).
 
 ```text
-probe : <bundle>/codeql/codeql version --format=json  →  compare against grant.bundle_version
-        mismatch or absent ⇒ Unavailable { BundleMismatch { expected, found } }
+probe     : pin + bundle presence + a version pinned at all + is this language analysable
+            no process is spawned to answer any of it
 
-argv  : database create <db> --language=<lang> --build-mode=none --source-root=<target>
-        database analyze <db> --format=sarif-latest --output=<out> <query-suite>
+preflight : codeql version --format=json  →  compare against grant.bundle_version
+            mismatch, unreadable, or unpinned ⇒ Unavailable { BundleMismatch { expected, found } }
+
+steps     : database create  <db> --language=<lang> --build-mode=none --source-root=<target>
+            database analyze <db> --format=sarif-latest --output=<out> <query-suite>
 ```
+
+The granted binary **is** the bundle's CLI, so the inode pin already covers what runs; the
+`[security.scanners.codeql] bundle` path is optional, and when set it is checked to contain the
+granted binary — otherwise the version verified belongs to a different CodeQL than the one that
+scans. `bundle_version` accepts either spelling (`codeql-bundle-v2.26.1` or `2.26.1`), because the
+operator has the bundle version to hand while the CLI only ever reports the CLI version. An
+**unpinned** bundle yields no preflight and no command: nothing unverified is reached by any route.
+`grant.rules`, when set, names a query suite and replaces the default `codeql/<lang>-queries` pack.
+
+The database lives in the per-call scratch directory and is removed with it — it is large, and it is
+built out of the code under analysis.
 
 **Only `build-mode: none` languages are supported.** `databaseInitCluster`
 (`codeql-action/src/codeql.ts:547`) pushes `--begin-tracing` and `--trace-process-name` for compiled
 languages, because extraction works by **intercepting the build's process spawns**. That requires
 admitting every compiler, linker, and build tool the target's build happens to invoke — an unbounded,
 un-attenuable widening that surrenders SC-006 and violates Constitution II. A request for a traced
-language is declined explicitly (`Unavailable`), because half-support is worse than none.
+language is declined explicitly (`Unavailable { LanguageRequiresBuild }`), because half-support is
+worse than none: a traced language extracted without tracing yields a thin database, and a thin
+database yields few findings, which reads exactly like clean code.
 
-`rust` is a builtin CodeQL language (`codeql-action/src/languages/builtin.json`), so bee can
-eventually analyse itself.
+**How the supported set is decided, and why it is a static list.** CodeQL answers this by a
+filesystem fact — `isTracedLanguage` (`codeql-action/src/codeql.ts:535`) stats
+`<extractor>/tools/tracing-config.lua` in the provisioned distribution. bee cannot read that from the
+harness (Constitution III), and asking the CLI would cost two more children per scan, so
+`BUILDLESS_LANGUAGES` is a list in `src/scanners/codeql.rs` instead. Safe to trade because it
+**fails closed**: an unlisted language is declined, so staleness costs coverage and never
+correctness.
+
+| Language | Analysable | Why |
+|---|---|---|
+| `actions`, `javascript`, `python`, `ruby` | yes | scanned languages — never traced under any build mode |
+| `java`, `csharp` | yes | first-class `build-mode: none` extractors (`src/analyze.ts:129-147`) |
+| `cpp`, `swift` | no | traced |
+| `go` | no | documented as not yet supporting build-mode none (`src/config-utils.ts:849`) |
+| `rust` | not yet | a builtin language and very likely buildless, but "likely" is not evidence — it goes in when a real bundle says so, and then bee can analyse itself |
+
+CodeQL's own alias table is applied first (`src/languages/builtin.json`), so `typescript` reaches the
+`javascript` extractor and `kotlin` the `java` one rather than being declined over spelling.
 
 ## Untrusted output (FR-015/016)
 
