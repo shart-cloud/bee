@@ -28,6 +28,15 @@ pub const UNAVAILABLE_PREFIX: &str = "did not run:";
 /// The phrase every "ran and broke" renders with.
 pub const FAILED_PREFIX: &str = "failed:";
 
+/// The `expected` an adapter reports when the operator pinned no version at all.
+///
+/// A missing pin is a *kind* of bundle mismatch — there is no version the bundle is allowed to be —
+/// so it travels as [`UnavailableReason::BundleMismatch`] rather than a variant of its own
+/// (contract `scanner-adapter.md`: "mismatch, unreadable, or unpinned ⇒ `BundleMismatch`"). It reads
+/// nothing like a version, so it cannot be confused with one, and [`UnavailableReason`]'s `Display`
+/// gives it the sentence an operator can act on.
+pub const UNPINNED: &str = "(unpinned)";
+
 /// The outcome of one security-tool invocation. `T` is the tool's success payload — `Vec<Finding>`,
 /// `Vec<Match>`, `Severity`, and so on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -104,6 +113,18 @@ impl std::fmt::Display for UnavailableReason {
                     f,
                     "the binary at {} no longer matches its pinned identity; refusing to execute it",
                     path.display()
+                )
+            }
+            // No pin at all comes first: with nothing to compare against, neither of the two
+            // sentences below is true — a bundle may well be present, and there is no expected
+            // version to name.
+            UnavailableReason::BundleMismatch { expected, .. } if expected == UNPINNED => {
+                write!(
+                    f,
+                    "no bundle version is pinned: set the scanner's `bundle_version` to the \
+                     provisioned bundle's version (for example `codeql-bundle-v2.26.1`). Running \
+                     an unverified analysis bundle is refused, because its queries decide what \
+                     counts as a finding"
                 )
             }
             UnavailableReason::BundleMismatch { expected, found } => match found {

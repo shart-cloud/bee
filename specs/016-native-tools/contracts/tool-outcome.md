@@ -32,12 +32,18 @@ pub enum UnavailableReason {
     NotGranted { name: String },
     /// The binary at the granted path no longer matches its pinned identity (FR-009).
     PinMismatch { path: PathBuf },
-    /// A required provisioned artefact is absent or the wrong version (FR-011).
+    /// A required provisioned artefact is absent, the wrong version, or unpinned (FR-011). The
+    /// unpinned case carries `expected: UNPINNED` — there is no version it was allowed to be — and
+    /// renders as the setting that would pin it rather than as a version comparison.
     BundleMismatch { expected: String, found: Option<String> },
     /// The requested language has no grammar in this build.
     LanguageUnsupported { lang: String, compiled_in: Vec<String> },
     /// The path is not inside a repository (US5 scenario 3).
     NotARepository { path: PathBuf },
+    /// The requested language can only be analysed by observing a build, which bee will not do
+    /// (FR-011, US6 scenario 3). Distinct from `LanguageUnsupported`: that one is a build that
+    /// lacks a grammar, this one is a deliberate refusal no rebuild changes.
+    LanguageRequiresBuild { lang: String, supported: Vec<String> },
 }
 ```
 
@@ -53,9 +59,12 @@ This is enforced three ways:
 
 1. **Type-level.** Construction sites for `Completed` are confined to the success arm of each tool's
    worker. `?` on any fallible step yields `Failed`; a probe failure yields `Unavailable`.
-2. **Test.** `tests/scanner_adapter.rs` asserts each of the seven `UnavailableReason` variants is
-   produced by its triggering condition and that none of them serialises to something a caller could
-   mistake for a clean scan.
+2. **Test.** `tests/scanner_adapter.rs` asserts each of the eight `UnavailableReason` variants is
+   produced by its triggering condition, and `tests/fail_closed_tools.rs` asserts via `every_reason()`
+   that none of them serialises to something a caller could mistake for a clean scan. `every_reason()`
+   holds exactly one entry per variant — the audit-slug check depends on it — so a second *spelling*
+   of a variant (the unpinned `BundleMismatch`, which renders through its own arm) earns its own test
+   beside that list rather than an extra entry in it.
 3. **Rendering.** The model-facing and operator-facing renderings of `Unavailable` and `Failed` never
    contain the phrase used for a clean result. A clean scan reads *"scanned N files, no findings"*;
    an unavailable one reads *"did not run: <reason>"*.

@@ -50,7 +50,10 @@ pub struct ScanRequest {
     pub target: PathBuf,
     /// Language hint, where the scanner needs one.
     pub lang: Option<String>,
-    /// Wall-clock budget. Exceeded ⇒ `Failed`, never a partial `Completed`.
+    /// Wall-clock budget for the **whole scan**, not an allowance each child draws afresh: the
+    /// `scan` tool turns it into a deadline and gives every child what is left of it, so a
+    /// multi-step scanner cannot run to a multiple of the ceiling its operator set. Exceeded ⇒
+    /// `Failed`, never a partial `Completed`.
     pub timeout: Duration,
 }
 ```
@@ -178,11 +181,12 @@ Consumes an operator-provisioned, version-pinned **bundle** — `codeql-bundle-<
 `codeql-action` v4.37.3 pins `codeql-bundle-v2.26.1` / CLI `2.26.1` (`src/defaults.json`).
 
 ```text
-probe     : pin + bundle presence + a version pinned at all + is this language analysable
+probe     : pin + a version pinned at all + bundle presence + is this language analysable
             no process is spawned to answer any of it
+            unpinned ⇒ Unavailable { BundleMismatch { expected: UNPINNED, found: None } }
 
 preflight : codeql version --format=json  →  compare against grant.bundle_version
-            mismatch, unreadable, or unpinned ⇒ Unavailable { BundleMismatch { expected, found } }
+            mismatch or unreadable ⇒ Unavailable { BundleMismatch { expected, found } }
 
 steps     : database create  <db> --language=<lang> --build-mode=none --source-root=<target>
             database analyze <db> --format=sarif-latest --output=<out> <query-suite>
@@ -193,7 +197,9 @@ The granted binary **is** the bundle's CLI, so the inode pin already covers what
 granted binary — otherwise the version verified belongs to a different CodeQL than the one that
 scans. `bundle_version` accepts either spelling (`codeql-bundle-v2.26.1` or `2.26.1`), because the
 operator has the bundle version to hand while the CLI only ever reports the CLI version. An
-**unpinned** bundle yields no preflight and no command: nothing unverified is reached by any route.
+**unpinned** bundle is refused by `probe` as `Unavailable` — nothing has run at that point, so it is
+never a `Failed` — and yields no preflight and no command besides: nothing unverified is reached by
+any route.
 `grant.rules`, when set, names a query suite and replaces the default `codeql/<lang>-queries` pack.
 
 The database lives in the per-call scratch directory and is removed with it — it is large, and it is

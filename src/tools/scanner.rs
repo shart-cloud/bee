@@ -202,6 +202,12 @@ impl Tool for ScanTool {
             lang: args.lang,
             timeout: budget,
         };
+        // The budget is a ceiling on the *scan*, not an allowance each child draws afresh. A CodeQL
+        // scan is a version check plus two children; handing each one the full budget would let a
+        // scan run to three times the limit its operator set, which is not a limit. So the budget
+        // becomes a deadline here, and every child gets what is left of it.
+        let deadline = std::time::Instant::now() + budget;
+        let remaining = || deadline.saturating_duration_since(std::time::Instant::now());
 
         // ── 3. Can this scanner answer this request at all? ─────────────────────────────────────
         // Before argv construction and before any spawn, so unavailability costs no process — and,
@@ -250,14 +256,16 @@ impl Tool for ScanTool {
 
         // ── 4. Preflight: ask the binary what it is, in scope, before trusting its answers ──────
         if let Some(argv) = adapter.preflight(grant) {
-            let probe = match run_child_timed(sandbox, &program, &argv, budget).await {
+            let probe = match run_child_timed(sandbox, &program, &argv, remaining()).await {
                 Ok(r) => r,
-                Err(ChildError::TimedOut(d)) => {
+                Err(ChildError::TimedOut(_)) => {
                     cleanup();
+                    // The budget, not the slice of it this child got: the operator set the former
+                    // and would have to work backwards from the latter.
                     return failed(format!(
-                        "{} did not answer a version check within {}s",
+                        "{} timed out on a version check within its {}s scan budget",
                         args.scanner,
-                        d.as_secs()
+                        budget.as_secs()
                     ));
                 }
                 Err(ChildError::Spawn(e)) => {
@@ -287,18 +295,18 @@ impl Tool for ScanTool {
         // analysed, and analysing it anyway would produce an empty report — a clean scan by
         // accident, which is the one outcome this tool may never manufacture (FR-012).
         for (i, argv) in steps.iter().enumerate() {
-            let run = match run_child_timed(sandbox, &program, argv, budget).await {
+            let run = match run_child_timed(sandbox, &program, argv, remaining()).await {
                 Ok(r) => r,
-                Err(ChildError::TimedOut(d)) => {
+                Err(ChildError::TimedOut(_)) => {
                     // No partial answer: whatever it wrote is by definition incomplete, and
                     // presenting an incomplete scan as a scan is the failure this feature is built
                     // against.
                     let _ = std::fs::remove_file(&report_path);
                     cleanup();
                     return failed(format!(
-                        "{} timed out after {}s; no partial findings are reported",
+                        "{} timed out within its {}s scan budget; no partial findings are reported",
                         args.scanner,
-                        d.as_secs()
+                        budget.as_secs()
                     ));
                 }
                 Err(ChildError::Spawn(e)) => {
