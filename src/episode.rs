@@ -294,28 +294,11 @@ pub async fn run_loop(
             // (e.g. a loaded skill's `requires`). The grant applies (or is refused) in place; the
             // call then executes normally under the possibly-widened scope.
             if let (Some(esc), Some(active)) = (opts.escalation.as_ref(), active_policy.as_mut()) {
-                let ev = crate::hooks::StepEvent::BeforeToolCall(tc);
-                if let crate::hooks::Flow::Escalate(delta) =
-                    crate::hooks::dispatch(&esc.hooks, &ev).await
+                if let Some(out) = crate::grants::escalate::proactive_step(
+                    esc, active, tc, index, sandbox, registry,
+                )
+                .await
                 {
-                    let skill = tc
-                        .arguments
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("skill")
-                        .to_string();
-                    let out = crate::grants::escalate::escalate(
-                        active,
-                        crate::grants::GrantOrigin::SkillRequires { skill },
-                        delta,
-                        esc.default_ttl,
-                        index,
-                        esc.consent.as_ref(),
-                        esc.timeout,
-                        sandbox,
-                        registry,
-                    )
-                    .await;
                     emit(opts, format!("  escalate(proactive): {out:?}"));
                 }
             }
@@ -344,36 +327,16 @@ pub async fn run_loop(
                 if let (Some(esc), Some(active)) =
                     (opts.escalation.as_ref(), active_policy.as_mut())
                 {
-                    let denial = audit
-                        .iter()
-                        .find(|e| e.decision == "denied")
-                        .map(|e| (e.op.clone(), e.target.clone()));
-                    if let Some((op, target)) = denial {
-                        let ev = crate::hooks::StepEvent::KernelDenial {
-                            op: &op,
-                            target: &target,
-                            call: tc,
-                        };
-                        if let crate::hooks::Flow::Escalate(delta) =
-                            crate::hooks::dispatch(&esc.hooks, &ev).await
+                    if let Some((op, target)) = crate::grants::escalate::first_denial(&audit) {
+                        if let Some(out) = crate::grants::escalate::reactive_step(
+                            esc, active, &op, &target, tc, index, sandbox, registry,
+                        )
+                        .await
                         {
-                            let out = crate::grants::escalate::escalate(
-                                active,
-                                crate::grants::GrantOrigin::ReactiveDenial {
-                                    op: op.clone(),
-                                    target: target.clone(),
-                                },
-                                delta,
-                                esc.default_ttl,
-                                index,
-                                esc.consent.as_ref(),
-                                esc.timeout,
-                                sandbox,
-                                registry,
-                            )
-                            .await;
                             emit(opts, format!("  escalate(reactive): {out:?}"));
-                            // Retry the call exactly once under the widened scope (SC-005).
+                            // Retry the call exactly once under the widened scope (SC-005). Only on
+                            // a genuine widening: `AlreadyHeld` changed nothing, so the retry would
+                            // be denied exactly as the first attempt was.
                             let left = deadline.saturating_duration_since(Instant::now());
                             if out.is_granted() && !left.is_zero() {
                                 if let Ok(r) =

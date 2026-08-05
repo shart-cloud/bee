@@ -44,11 +44,18 @@ pub struct LoopEscalation {
 pub enum EscalateOutcome {
     /// Granted; the scope was reloaded and the lease recorded under this id.
     Granted(GrantId),
+    /// Every capability asked for was already held, so nothing was asked of the operator and nothing
+    /// was reloaded. Distinct from [`EscalateOutcome::Granted`]: no lease exists to narrow later,
+    /// and a caller that retries on a grant must not retry on this — the scope did not change, so
+    /// the retry would fail exactly as the first attempt did.
+    AlreadyHeld,
     /// Refused (beyond ceiling, denied by consent/timeout, or a reload failure). No state changed.
     Refused(String),
 }
 
 impl EscalateOutcome {
+    /// True only when this escalation *widened* the scope. `AlreadyHeld` is deliberately false: it
+    /// is the answer to "did anything change", and nothing did.
     pub fn is_granted(&self) -> bool {
         matches!(self, EscalateOutcome::Granted(_))
     }
@@ -71,6 +78,16 @@ pub async fn escalate(
 ) -> EscalateOutcome {
     if delta.is_empty() {
         return EscalateOutcome::Refused("empty grant".to_string());
+    }
+
+    // 0. Ask only for what is not already held. A skill's `requires` is resolved at startup and
+    //    re-proposed on every `skill` call, so without this the operator is prompted again for
+    //    capabilities they already approved — once per call. Tools are registry membership rather
+    //    than policy, so they are filtered against the live registry instead of the policy.
+    let mut delta = active.unmet(&delta);
+    delta.tools.retain(|t| !registry.contains(t));
+    if delta.is_empty() {
+        return EscalateOutcome::AlreadyHeld;
     }
 
     // 1. Attenuation ceiling — unpromptable. A beyond-ceiling request never reaches consent.
@@ -115,6 +132,100 @@ pub async fn escalate(
         crate::tools::register_named(registry, tool, None);
     }
     EscalateOutcome::Granted(id)
+}
+
+/// The proactive escalation step (US2), shared by both loops.
+///
+/// Dispatches [`StepEvent::BeforeToolCall`] and, if a hook proposes a grant, runs the widen cycle
+/// before the call executes. Returns `None` when escalation is off or no hook proposed anything —
+/// the overwhelmingly common case, and the one that must cost nothing.
+///
+/// This exists because `run_loop` and `run_exchange` are not one loop and should not be forced into
+/// one: the episode loop is non-streaming, deadline-bounded and builds a transcript; the REPL loop
+/// streams, is budget-bounded, and carries a steering queue. What they genuinely share is the
+/// escalation *step*, so that is what is extracted (007 T009). The `Sandbox`/`ActivePolicy` mutation
+/// stays in one place either way, which is the property that mattered.
+pub async fn proactive_step(
+    esc: &LoopEscalation,
+    active: &mut ActivePolicy,
+    call: &crate::provider::ToolCall,
+    turn: u32,
+    sandbox: &mut Sandbox,
+    registry: &mut ToolRegistry,
+) -> Option<EscalateOutcome> {
+    let ev = StepEvent::BeforeToolCall(call);
+    let Flow::Escalate(delta) = crate::hooks::dispatch(&esc.hooks, &ev).await else {
+        return None;
+    };
+    let skill = call
+        .arguments
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("skill")
+        .to_string();
+    Some(
+        escalate(
+            active,
+            GrantOrigin::SkillRequires { skill },
+            delta,
+            esc.default_ttl,
+            turn,
+            esc.consent.as_ref(),
+            esc.timeout,
+            sandbox,
+            registry,
+        )
+        .await,
+    )
+}
+
+/// The reactive escalation step (US1), shared by both loops.
+///
+/// Dispatches [`StepEvent::KernelDenial`] for the first denial in this call's drained audit and, if
+/// a hook proposes a grant scoped to the denied resource, runs the widen cycle. The caller decides
+/// whether to retry — it owns the deadline and the transcript — but must retry **only** on
+/// [`EscalateOutcome::is_granted`], and only once (SC-005).
+#[allow(clippy::too_many_arguments)]
+pub async fn reactive_step(
+    esc: &LoopEscalation,
+    active: &mut ActivePolicy,
+    op: &str,
+    target: &str,
+    call: &crate::provider::ToolCall,
+    turn: u32,
+    sandbox: &mut Sandbox,
+    registry: &mut ToolRegistry,
+) -> Option<EscalateOutcome> {
+    let ev = StepEvent::KernelDenial { op, target, call };
+    let Flow::Escalate(delta) = crate::hooks::dispatch(&esc.hooks, &ev).await else {
+        return None;
+    };
+    Some(
+        escalate(
+            active,
+            GrantOrigin::ReactiveDenial {
+                op: op.to_string(),
+                target: target.to_string(),
+            },
+            delta,
+            esc.default_ttl,
+            turn,
+            esc.consent.as_ref(),
+            esc.timeout,
+            sandbox,
+            registry,
+        )
+        .await,
+    )
+}
+
+/// The first denial in a drained audit batch, as `(op, target)`. Both loops locate the reactive
+/// trigger the same way; only one of them should own the spelling of "the first denial".
+pub fn first_denial(audit: &[bee_core::AuditEvent]) -> Option<(String, String)> {
+    audit
+        .iter()
+        .find(|e| e.decision == "denied")
+        .map(|e| (e.op.clone(), e.target.clone()))
 }
 
 fn access_word(a: Access) -> &'static str {

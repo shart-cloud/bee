@@ -79,6 +79,44 @@ pub struct ReplConfig {
     /// animates, and how long a takeover may live. Resolved once at startup from CLI > env >
     /// scenario > default.
     pub visual: crate::config::VisualConfig,
+    /// Dynamic capability grants (007-dynamic-grants). `None` ⇒ escalation is off and the exchange
+    /// behaves exactly as before. An interactive session is where this earns its keep: unlike an
+    /// episode, the operator is present, so consent can be a prompt rather than a pre-authorizing
+    /// ceiling file.
+    pub escalation: Option<ReplEscalation>,
+}
+
+/// Session-lifetime escalation state for the REPL.
+///
+/// A grant outlives the exchange that requested it — the point of a capability is that the next
+/// message can use it — but [`run_exchange`] takes `&ReplConfig`, so the mutable half lives behind a
+/// lock rather than in the signature. The turn counter is monotonic across exchanges for the same
+/// reason: a `Ttl::Turns` lease measured per-exchange would silently reset every time the user
+/// pressed enter.
+pub struct ReplEscalation {
+    /// The static half: base, ceiling, hooks, consent sink, timeout, default TTL.
+    pub config: crate::grants::escalate::LoopEscalation,
+    /// The mutable half. `tokio::sync::Mutex` because it is held across the consent `await`.
+    pub active: tokio::sync::Mutex<crate::grants::ActivePolicy>,
+    /// Turns elapsed since the session began, for lease TTL accounting.
+    turn: std::sync::atomic::AtomicU32,
+}
+
+impl ReplEscalation {
+    /// Build session state from an escalation config, starting the active policy at its `base`.
+    pub fn new(config: crate::grants::escalate::LoopEscalation) -> Self {
+        let active = crate::grants::ActivePolicy::new(config.base.clone(), config.ceiling.clone());
+        ReplEscalation {
+            config,
+            active: tokio::sync::Mutex::new(active),
+            turn: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    /// The current session turn, incrementing it for the next caller.
+    fn next_turn(&self) -> u32 {
+        self.turn.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 impl Default for ReplConfig {
@@ -97,6 +135,7 @@ impl Default for ReplConfig {
             refresh_tools: None,
             skills: Arc::new(crate::skills::SkillRegistry::default()),
             visual: crate::config::VisualConfig::default(),
+            escalation: None,
         }
     }
 }
@@ -401,6 +440,26 @@ async fn consume_stream(
     }
 }
 
+/// Tell the user what an escalation did. Only a grant or a refusal is worth a line: `AlreadyHeld` is
+/// the ordinary case — a skill re-stating capabilities it was given at startup — and narrating it on
+/// every call would be noise that trains the user to ignore the ones that matter.
+fn report_escalation(
+    output: &dyn ReplOutput,
+    subject: &str,
+    outcome: &crate::grants::escalate::EscalateOutcome,
+) {
+    use crate::grants::escalate::EscalateOutcome;
+    match outcome {
+        EscalateOutcome::Granted(id) => {
+            output.info(&format!("capability granted for {subject} (lease {id})"))
+        }
+        EscalateOutcome::Refused(reason) => {
+            output.info(&format!("capability refused for {subject} — {reason}"))
+        }
+        EscalateOutcome::AlreadyHeld => {}
+    }
+}
+
 /// Run one user→agent exchange: inject `user_message`, then run the agent turn loop until the agent
 /// responds with text only (control back to the user), the model-call budget is exhausted, or the
 /// provider errors. Before each model call the steering queue is drained into the conversation, so a
@@ -553,7 +612,27 @@ pub async fn run_exchange(
             tool_calls += 1;
             output.tool_call(&tc.name, &tc.arguments);
 
-            let result = match tokio::time::timeout(
+            // Proactive escalation (007, US2): a hook may request a grant before this call runs —
+            // a loaded skill's `requires`, above all. In an interactive session the consent sink is
+            // a prompt, which is why the cycle only ever asks for what is not already held.
+            let turn_no = config.escalation.as_ref().map(|e| e.next_turn());
+            if let (Some(esc), Some(turn_no)) = (config.escalation.as_ref(), turn_no) {
+                let mut active = esc.active.lock().await;
+                if let Some(out) = crate::grants::escalate::proactive_step(
+                    &esc.config,
+                    &mut active,
+                    tc,
+                    turn_no,
+                    sandbox,
+                    registry,
+                )
+                .await
+                {
+                    report_escalation(output, "capability", &out);
+                }
+            }
+
+            let mut result = match tokio::time::timeout(
                 Duration::from_secs(config.tool_timeout_secs),
                 registry.execute(tc, sandbox),
             )
@@ -569,7 +648,44 @@ pub async fn run_exchange(
             // Correlate the kernel audit events this call produced (FR-008). `settle` lets the async
             // demux path deliver this call's events; it is a no-op for the sync sandboxes.
             sandbox.settle().await;
-            let audit = sandbox.drain_audit();
+            let mut audit = sandbox.drain_audit();
+
+            // Reactive escalation (007, US1): a kernel denial may be escalated and the call retried
+            // exactly once under the widened scope, so the user sees one result rather than a
+            // denial followed by a mysterious success.
+            if let (Some(esc), Some(turn_no)) = (config.escalation.as_ref(), turn_no) {
+                if let Some((op, target)) = crate::grants::escalate::first_denial(&audit) {
+                    let mut active = esc.active.lock().await;
+                    if let Some(out) = crate::grants::escalate::reactive_step(
+                        &esc.config,
+                        &mut active,
+                        &op,
+                        &target,
+                        tc,
+                        turn_no,
+                        sandbox,
+                        registry,
+                    )
+                    .await
+                    {
+                        report_escalation(output, &format!("{op} {target}"), &out);
+                        if out.is_granted() {
+                            if let Ok(r) = tokio::time::timeout(
+                                Duration::from_secs(config.tool_timeout_secs),
+                                registry.execute(tc, sandbox),
+                            )
+                            .await
+                            {
+                                sandbox.settle().await;
+                                let retry_audit = sandbox.drain_audit();
+                                result = r;
+                                audit = retry_audit;
+                            }
+                        }
+                    }
+                }
+            }
+
             denials += audit.iter().filter(|e| e.decision == "denied").count() as u32;
             output.tool_result(&result, &audit);
             // If the tool produced a visualization (the `render` tool), surface it — routed by its
