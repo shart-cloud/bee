@@ -50,9 +50,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: ${{ !env.ACT }} # needs GitHub's cache backend; skipped under `act` for local runs
       - name: clippy (default features)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --locked --all-targets -- -D warnings
       - name: clippy (mcp feature)
-        run: cargo clippy --features mcp --all-targets -- -D warnings
+        run: cargo clippy --features mcp --locked --all-targets -- -D warnings
 
   test:
     name: build & test
@@ -64,13 +64,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: ${{ !env.ACT }} # needs GitHub's cache backend; skipped under `act` for local runs
       - name: build (workspace)
-        run: cargo build --workspace
+        run: cargo build --workspace --locked
       - name: test (workspace, default features)
         # No ANTHROPIC_API_KEY is set, so the live-provider smoke test self-skips (it only runs when
         # the key is present). Everything else is offline (MockModel + host sandbox).
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
       - name: test (mcp feature)
-        run: cargo test --features mcp
+        run: cargo test --features mcp --locked
 
   enforce-check:
     name: enforce type-check (best-effort)
@@ -91,10 +91,23 @@ jobs:
           components: rust-src
       - uses: Swatinem/rust-cache@v2
         if: ${{ !env.ACT }} # needs GitHub's cache backend; skipped under `act` for local runs
+      - name: Install LLVM 18
+        # bpf-linker links against a system LLVM via llvm-sys, and its build script looks for
+        # `llvm-config` on PATH — the runner image ships clang but not the -dev headers or
+        # llvm-config, so this job failed with "could not find llvm-config". 18 is the version
+        # pinned below and the one the project is developed against; it is in Ubuntu 24.04's
+        # default repos, so no apt.llvm.org bootstrap is needed. libpolly is required by llvm-sys.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-18-dev libpolly-18-dev
+          echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
       - name: Install bpf-linker
         # LLVM-matched linker for the BPF object. `cargo install` is cached by rust-cache across runs.
-        run: cargo install bpf-linker
+        # PINNED: bpf-linker tracks LLVM releases, so an unpinned install silently moves to a version
+        # wanting an LLVM the runner does not have — which is how this job broke. 0.10.3 is the
+        # version the eBPF object is actually built with locally, against LLVM 18.
+        run: cargo install bpf-linker --version 0.10.3 --locked
       - name: cargo check --features enforce
         # Runs crates/userspace/build.rs, which compiles + embeds the bee-lsm object, then
         # type-checks the enforce user-space path in the application package.
-        run: cargo check --features enforce
+        run: cargo check --features enforce --locked

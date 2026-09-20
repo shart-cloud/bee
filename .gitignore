@@ -6,7 +6,11 @@ release/
 *.rs.bk
 *.rlib
 *.prof*
-Cargo.lock
+# Cargo.lock is COMMITTED, not ignored. `bee` ships a binary, so the lock is the
+# reproducible-build record — and CI has no other pin: it resolves from scratch on a
+# clean runner. Leaving it out broke CI when `bisync` (every version, via
+# gix-protocol <- gix =0.86.0) was yanked from crates.io; a committed lock keeps
+# resolving because cargo honours a yanked version already recorded in it.
 
 # eBPF build artifacts
 *.o
