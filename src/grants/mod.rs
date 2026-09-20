@@ -197,6 +197,50 @@ impl ActivePolicy {
             .map_err(|e| format!("exceeds capability ceiling: {e}"))
     }
 
+    /// The part of `delta` that `active` does not already grant.
+    ///
+    /// A skill's `requires` block is resolved once at startup (006-skills) and again by
+    /// [`escalate::SkillEscalationHook`] every time the model calls `skill` — so without this, the
+    /// second pass re-proposes capabilities the first already granted. That is harmless with a
+    /// non-interactive sink, which approves silently, and is not harmless at all with a prompting
+    /// one: the operator is asked to re-approve what they already approved, once per call. So a
+    /// delta is narrowed to what is genuinely new before consent is consulted, and an escalation
+    /// with nothing left in it never becomes a prompt.
+    ///
+    /// Filesystem rules are compared **key for key**, not by prefix containment, even though the
+    /// compiler resolves them most-specific-first. That is the conservative direction: a request for
+    /// `/srv/x` under a held `/srv` is treated as unmet and escalates redundantly, which costs a
+    /// prompt. Reading it the other way would mean suppressing a request the compiler might not
+    /// actually have covered, which costs a capability the model was told it had.
+    ///
+    /// `tools` are registry membership rather than policy, so they pass through untouched — the
+    /// caller filters them against the live [`crate::tools::ToolRegistry`].
+    pub fn unmet(&self, delta: &GrantDelta) -> GrantDelta {
+        let mut out = GrantDelta {
+            tools: delta.tools.clone(),
+            ..Default::default()
+        };
+        for (path, &want) in &delta.filesystem {
+            let held = self.active.filesystem.get(path).copied();
+            // Held at least as permissively as asked ⇒ already granted.
+            if held.is_some_and(|h| more_permissive(h, want) == h) {
+                continue;
+            }
+            out.filesystem.insert(path.clone(), want);
+        }
+        for e in &delta.exec {
+            if !self.active.exec.allow.contains(e) {
+                out.exec.push(e.clone());
+            }
+        }
+        for n in &delta.net {
+            if !self.active.network.allow.contains(n) {
+                out.net.push(n.clone());
+            }
+        }
+        out
+    }
+
     fn mint_id(&mut self) -> GrantId {
         let id = format!("g{}", self.next_id);
         self.next_id += 1;
@@ -284,6 +328,83 @@ mod tests {
         let mut d = GrantDelta::default();
         d.filesystem.insert(path.to_string(), access);
         d
+    }
+
+    // ── `unmet` — what is left of a delta once what is already held is taken out ────────────────
+
+    #[test]
+    fn unmet_drops_what_is_already_held_at_the_same_or_greater_access() {
+        let base = policy("base", &[("/a", Access::Write), ("/b", Access::Read)]);
+        let ap = ActivePolicy::new(base.clone(), base);
+
+        // Held at exactly the asked access, and held more permissively than asked: both satisfied.
+        assert!(ap.unmet(&fs_delta("/a", Access::Write)).is_empty());
+        assert!(ap.unmet(&fs_delta("/a", Access::Read)).is_empty());
+        assert!(ap.unmet(&fs_delta("/b", Access::Read)).is_empty());
+    }
+
+    #[test]
+    fn unmet_keeps_an_upgrade_and_anything_unheld() {
+        let base = policy("base", &[("/b", Access::Read)]);
+        let ap = ActivePolicy::new(base.clone(), base);
+
+        // Read held, write asked — an upgrade is a widening, not a re-request.
+        assert_eq!(
+            ap.unmet(&fs_delta("/b", Access::Write))
+                .filesystem
+                .get("/b"),
+            Some(&Access::Write)
+        );
+        // Never mentioned at all.
+        assert_eq!(
+            ap.unmet(&fs_delta("/c", Access::Read)).filesystem.get("/c"),
+            Some(&Access::Read)
+        );
+    }
+
+    #[test]
+    fn unmet_compares_paths_key_for_key_rather_than_by_prefix() {
+        // `/srv` is held, `/srv/x` is asked. The compiler would resolve the child under the parent,
+        // so this *is* a redundant request — but `unmet` keeps it anyway. Erring this way costs a
+        // consent prompt; erring the other way would suppress a request whose coverage was only
+        // assumed, and hand the model a capability nobody granted.
+        let base = policy("base", &[("/srv", Access::Write)]);
+        let ap = ActivePolicy::new(base.clone(), base);
+        assert_eq!(
+            ap.unmet(&fs_delta("/srv/x", Access::Write))
+                .filesystem
+                .get("/srv/x"),
+            Some(&Access::Write)
+        );
+    }
+
+    #[test]
+    fn unmet_filters_exec_and_net_against_what_is_allowed() {
+        let mut base = policy("base", &[]);
+        base.exec.allow = vec!["/usr/bin/git".to_string()];
+        base.network.allow = vec!["example.com:443".to_string()];
+        let ap = ActivePolicy::new(base.clone(), base);
+
+        let delta = GrantDelta {
+            exec: vec!["/usr/bin/git".into(), "/usr/bin/cargo".into()],
+            net: vec!["example.com:443".into(), "crates.io:443".into()],
+            ..Default::default()
+        };
+        let left = ap.unmet(&delta);
+        assert_eq!(left.exec, vec!["/usr/bin/cargo".to_string()]);
+        assert_eq!(left.net, vec!["crates.io:443".to_string()]);
+    }
+
+    #[test]
+    fn unmet_leaves_tools_alone_because_they_are_not_policy() {
+        // Registry membership is Layer 1; `ActivePolicy` has no view of it, so the caller filters.
+        let base = policy("base", &[]);
+        let ap = ActivePolicy::new(base.clone(), base);
+        let delta = GrantDelta {
+            tools: vec!["bash".into()],
+            ..Default::default()
+        };
+        assert_eq!(ap.unmet(&delta).tools, vec!["bash".to_string()]);
     }
 
     #[test]

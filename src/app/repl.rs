@@ -202,6 +202,35 @@ async fn repl(args: ReplArgs) -> ExitCode {
         &format!("repl-{}", std::process::id()),
     );
 
+    // Dynamic capability grants (007-dynamic-grants). The floor is the resolved policy — the one the
+    // scope is about to compile — so escalation can only ever widen what is actually enforced. The
+    // ceiling is the operator's; absent one it equals the base, which disables widening entirely.
+    //
+    // Consent here is the same interactive prompt that gated the startup grants, not the episode
+    // path's `AllowWithinCeiling`: the operator is sitting in front of this session, so a capability
+    // asked for mid-session is a question, not a pre-authorization.
+    let escalation = resolved_policy.as_ref().map(|base| {
+        let ceiling = cfg.ceiling.clone().unwrap_or_else(|| base.clone());
+        let hooks: Vec<Box<dyn bee::hooks::LoopHook>> = vec![
+            Box::new(bee::grants::escalate::DenialEscalationHook {
+                enabled: cfg.ceiling.is_some(),
+            }),
+            Box::new(bee::grants::escalate::SkillEscalationHook::new(
+                skills.clone(),
+            )),
+        ];
+        bee::repl::ReplEscalation::new(bee::grants::escalate::LoopEscalation {
+            base: base.clone(),
+            ceiling,
+            hooks,
+            consent: std::sync::Arc::new(
+                prompt_consent as fn(&bee::skills::GrantRequest<'_>) -> bool,
+            ),
+            timeout: std::time::Duration::from_secs(120),
+            default_ttl: bee::grants::Ttl::Forever,
+        })
+    });
+
     let (mut sbox, policy_label) =
         match session::build_sandbox(resolved_policy, cfg.policy_path.as_deref(), strip_env) {
             Ok(pair) => pair,
@@ -246,6 +275,7 @@ async fn repl(args: ReplArgs) -> ExitCode {
         refresh_tools: mcp_refresh,
         skills: skills.clone(),
         visual: cfg.visual,
+        escalation,
         ..ReplConfig::default()
     };
 

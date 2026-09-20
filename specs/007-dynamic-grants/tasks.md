@@ -23,8 +23,8 @@ property-based test for attenuation. Test tasks precede their implementation wit
 
 **Purpose**: Scaffold the new modules and make 006-skills' grant resolver reusable at runtime.
 
-- [X] T001 Create module scaffolding — `bee-harness/src/hooks.rs`, `bee-harness/src/grants/mod.rs`, `bee-harness/src/grants/escalate.rs` (stubs) and register them in `bee-harness/src/lib.rs`.
-- [X] T002 [P] Promote 006-skills' `GrantRequest`/`resolve_grants`/sink types so `bee-harness/src/grants/` re-exports them for the runtime path (no behavior change) in `bee-harness/src/skills/grant.rs` + `bee-harness/src/grants/mod.rs`.
+- [X] T001 Create module scaffolding — `src/hooks.rs`, `src/grants/mod.rs`, `src/grants/escalate.rs` (stubs) and register them in `src/lib.rs`.
+- [X] T002 [P] Promote 006-skills' `GrantRequest`/`resolve_grants`/sink types so `src/grants/` re-exports them for the runtime path (no behavior change) in `src/skills/grant.rs` + `src/grants/mod.rs`.
 
 ---
 
@@ -37,19 +37,19 @@ every user story builds on. **No user story can start until this phase completes
 
 - [X] T003 [P] Add `net_keys: Vec<NetKey>` to `Scope` and populate it in `create_scope` (track installed `NET_ALLOW` keys) in `bee-userspace/src/lib.rs`.
 - [X] T004 Implement `Engine::reload_scope(&mut self, cgroup_id, &EnforcementPlan, prev_net_keys) -> Result<Vec<NetKey>, ScopeError>` — overwrite `SCOPES`/`FS_DENY`/`EXEC_ALLOW` (or remove when empty), diff-and-remove/insert `NET_ALLOW`, return the new key set (contract `reload-api.md`) in `bee-userspace/src/lib.rs`. *(depends: T003)*
-- [X] T005 Add `Sandbox::reload(&mut self, &EnforcementPlan) -> Result<(), SpawnError>` — Host no-op; Enforced/Concurrent reach the held `Engine` via a method (no `pub` field) and update `Scope.net_keys` in `bee-harness/src/sandbox.rs`. *(depends: T004)*
+- [X] T005 Add `Sandbox::reload(&mut self, &EnforcementPlan) -> Result<(), SpawnError>` — Host no-op; Enforced/Concurrent reach the held `Engine` via a method (no `pub` field) and update `Scope.net_keys` in `src/sandbox.rs`. *(depends: T004)*
 
-### Hook lifecycle + async consent + state machine (bee-harness)
+### Hook lifecycle + async consent + state machine (the `bee` root package)
 
-- [X] T006 [P] Define `StepEvent`, `StepEventKind`, `Flow`, and the `#[async_trait] LoopHook` trait with a hook-stack dispatcher (registration order, first non-`Continue` wins, `observes` filter) in `bee-harness/src/hooks.rs` (contract `hooks.md`).
-- [X] T007 [P] Migrate `ConsentSink` to async (`async fn confirm -> Decision`) preserving 006 semantics for `DenyAll`/`AllowWithinCeiling`, and make REPL `PromptConsent` async, in `bee-harness/src/skills/grant.rs` and `bee-harness/src/bin/bee-repl.rs` (contract `consent.md`).
-- [X] T008 [P] Define `GrantDelta`, `GrantLease`, `GrantOrigin`, `Ttl`, and `ActivePolicy` with `apply`/`expire`/`release` → recompiled `bee_core::Policy`, plus unit tests for each transition, in `bee-harness/src/grants/mod.rs` (data-model `ActivePolicy`/`GrantLease`).
+- [X] T006 [P] Define `StepEvent`, `StepEventKind`, `Flow`, and the `#[async_trait] LoopHook` trait with a hook-stack dispatcher (registration order, first non-`Continue` wins, `observes` filter) in `src/hooks.rs` (contract `hooks.md`).
+- [X] T007 [P] Migrate `ConsentSink` to async (`async fn confirm -> Decision`) preserving 006 semantics for `DenyAll`/`AllowWithinCeiling`, and make REPL `PromptConsent` async, in `src/skills/grant.rs` and `src/bin/bee-repl.rs` (contract `consent.md`).
+- [X] T008 [P] Define `GrantDelta`, `GrantLease`, `GrantOrigin`, `Ttl`, and `ActivePolicy` with `apply`/`expire`/`release` → recompiled `bee_core::Policy`, plus unit tests for each transition, in `src/grants/mod.rs` (data-model `ActivePolicy`/`GrantLease`).
 
 ### Unified driver + regression-preserving migration
 
-- [ ] T009 Extract a shared loop driver (schema snapshot → hook dispatch → tool execute → audit drain → `KernelDenial` emission) and route both `run_loop` and `run_exchange` through it; add `hooks: Vec<Box<dyn LoopHook>>` to `LoopOptions` and `ReplConfig` in `bee-harness/src/episode.rs`, `bee-harness/src/repl.rs`, `bee-harness/src/hooks.rs`. *(depends: T006)*
-- [ ] T010 Re-express the 004-mcp `refresh_tools` closure as a built-in `LoopHook` on `TurnStart` (keep `tools/list_changed` refresh working) in `bee-harness/src/hooks.rs`, `bee-harness/src/episode.rs`, `bee-harness/src/repl.rs`. *(depends: T009)*
-- [ ] T011 Regression: update callers so `episode_loop.rs`, `ctf.rs`, `cred_isolation.rs`, `concurrent.rs`, and `skills_episode.rs` pass unchanged on the shared driver in `bee-harness/tests/`. *(depends: T009, T010)*
+- [X] T009 Extract a shared loop driver (schema snapshot → hook dispatch → tool execute → audit drain → `KernelDenial` emission) and route both `run_loop` and `run_exchange` through it; add `hooks: Vec<Box<dyn LoopHook>>` to `LoopOptions` and `ReplConfig` in `src/episode.rs`, `src/repl.rs`, `src/hooks.rs`. *(depends: T006)* *(Landed as the shared escalation **step** — `escalate::proactive_step` / `reactive_step` / `first_denial` — which both loops call, rather than one unified driver. The two loops are not the same loop and forcing them into one would have been the larger, riskier change for no gain the feature can use: `run_loop` is non-streaming, deadline-bounded and builds a transcript; `run_exchange` streams, is budget-bounded, and carries a steering queue. What they genuinely share is the escalation step, and the property that mattered — `Sandbox`/`ActivePolicy` mutation living in exactly one place — holds either way. The schema-snapshot and tool-execute halves remain per-loop.)*
+- [ ] T010 Re-express the 004-mcp `refresh_tools` closure as a built-in `LoopHook` on `TurnStart` (keep `tools/list_changed` refresh working) in `src/hooks.rs`, `src/episode.rs`, `src/repl.rs`. *(depends: T009)*
+- [X] T011 Regression: update callers so `episode_loop.rs`, `ctf.rs`, `cred_isolation.rs`, `concurrent.rs`, and `skills_episode.rs` pass unchanged on the shared driver in `tests/`. *(depends: T009, T010)* *(No caller needed updating: the escalation step is opt-in via `LoopOptions.escalation` / `ReplConfig.escalation`, both `None` by default, so a loop without a ceiling behaves exactly as before. Full suite green at 709 tests.)*
 
 **Checkpoint**: Reload primitive, hooks, async consent, and `ActivePolicy` exist and all prior tests
 pass on the unified driver — user stories can now proceed.
@@ -65,12 +65,12 @@ the same call auto-retries once and succeeds; refusal feeds the denial back.
 shows denial, grant+reload, successful retry (one model-visible result); beyond-ceiling → refused
 without consulting consent.
 
-- [ ] T012 [P] [US1] Host test: reactive escalate → reload → auto-retry succeeds and the model sees a single result; also assert the retry runs **at most once** — an approved-but-still-denied call is returned to the model, not re-escalated (SC-005), in `bee-harness/tests/dynamic_grants.rs`.
-- [ ] T013 [P] [US1] Host test — fail-closed refusal paths: (a) beyond-ceiling escalation is refused WITHOUT calling the consent sink (spy sink asserts zero calls; SC-002); (b) a widening exceeding `DENY_MAX_RULES` is refused with a reason, not truncated (FR-016); (c) a reload whose recompile fails leaves `ActivePolicy` and the enforced maps unchanged (Constitution I, plan gate), in `bee-harness/tests/dynamic_grants.rs`.
-- [X] T014 [US1] Implement `escalate()` (candidate = active ∪ delta → `ceiling.derive` → compile/`prepare` with rule-cap refusal → `timeout(consent)` → `Sandbox.reload` → `ActivePolicy.apply` + push `GrantLease` → register `delta.tools`) in `bee-harness/src/grants/escalate.rs` (contract `consent.md`). *(depends: T004, T007, T008)*
-- [X] T015 [US1] Implement `DenialEscalationHook`: build a minimal `GrantDelta` from a `KernelDenial` (`file_open`→fs, `socket_connect`→net, `bprm_check_security`→exec) and return `Flow::Escalate`; gate on the `reactive_escalation` knob, in `bee-harness/src/grants/escalate.rs`.
-- [X] T016 [US1] Wire escalation into the driver: on `Flow::Escalate` from `BeforeToolCall`/`KernelDenial`, run `escalate()` then re-run the triggering `ToolCall` exactly once; on refusal return the original denial to the model, in `bee-harness/src/episode.rs` + `bee-harness/src/hooks.rs`. *(depends: T014, T009)*
-- [ ] T017 [US1] Add grant + reload transcript/audit event types with provenance (origin, delta, turn) and record them on the retried call (R8) in `bee-harness/src/transcript.rs`. *(depends: T016)*
+- [ ] T012 [P] [US1] Host test: reactive escalate → reload → auto-retry succeeds and the model sees a single result; also assert the retry runs **at most once** — an approved-but-still-denied call is returned to the model, not re-escalated (SC-005), in `tests/dynamic_grants.rs`. **BLOCKED — not host-testable as written.** The reactive cycle starts at a `KernelDenial`, and `Sandbox::Host` has no kernel: `drain_audit` returns an empty vec unconditionally (`src/sandbox.rs`), so nothing on the host can raise the event. The retry-at-most-once property is structural (`src/episode.rs`, `src/repl.rs` — one call, no loop) and behaviourally covered by the VM matrix (T018). Closing this needs a way to replay scripted audit events through a host sandbox, which means a test seam in the type that mediates enforcement; deliberately not taken. Decide that trade before reopening.
+- [ ] T013 [P] [US1] Host test — fail-closed refusal paths: (a) beyond-ceiling escalation is refused WITHOUT calling the consent sink (spy sink asserts zero calls; SC-002); (b) a widening exceeding `DENY_MAX_RULES` is refused with a reason, not truncated (FR-016); (c) a reload whose recompile fails leaves `ActivePolicy` and the enforced maps unchanged (Constitution I, plan gate), in `tests/dynamic_grants.rs`. *(**(a) done** — `tests/dynamic_grants.rs::a_beyond_ceiling_grant_is_refused_without_consulting_consent`, spy sink asserting zero calls, plus the unit-level case in `src/grants/escalate.rs`. **(b) and (c) open**: (b) needs a delta large enough to breach the cap; (c) needs a reload that fails, which on a host sandbox is a no-op returning `Ok` — same blocker as T012.)*
+- [X] T014 [US1] Implement `escalate()` (candidate = active ∪ delta → `ceiling.derive` → compile/`prepare` with rule-cap refusal → `timeout(consent)` → `Sandbox.reload` → `ActivePolicy.apply` + push `GrantLease` → register `delta.tools`) in `src/grants/escalate.rs` (contract `consent.md`). *(depends: T004, T007, T008)*
+- [X] T015 [US1] Implement `DenialEscalationHook`: build a minimal `GrantDelta` from a `KernelDenial` (`file_open`→fs, `socket_connect`→net, `bprm_check_security`→exec) and return `Flow::Escalate`; gate on the `reactive_escalation` knob, in `src/grants/escalate.rs`.
+- [X] T016 [US1] Wire escalation into the driver: on `Flow::Escalate` from `BeforeToolCall`/`KernelDenial`, run `escalate()` then re-run the triggering `ToolCall` exactly once; on refusal return the original denial to the model, in `src/episode.rs` + `src/hooks.rs`. *(depends: T014, T009)*
+- [ ] T017 [US1] Add grant + reload transcript/audit event types with provenance (origin, delta, turn) and record them on the retried call (R8) in `src/transcript.rs`. *(depends: T016)*
 - [X] T018 [US1] VM matrix cases `reload-widen-allow` (denied write → escalate → reload → retry writes data) and `reload-beyond-ceiling` (escalation refused, write stays denied, sink not consulted) in `test/vm/remote-matrix.sh`. *(depends: T004, T016)*
 
 **Checkpoint**: US1 delivers standalone value — an agent recovers from a denial via an approved grant.
@@ -86,9 +86,9 @@ take effect; refusal degrades the skill to instructions-only.
 capability-requesting skill; within-ceiling → capability live for later calls; beyond-ceiling → body
 still loads, model told the capability was withheld.
 
-- [ ] T019 [P] [US2] Host tests: within-ceiling mid-episode skill grant makes a later tool call succeed; beyond-ceiling skill loads instructions-only, in `bee-harness/tests/dynamic_grants.rs`.
-- [X] T020 [US2] Implement `SkillEscalationHook`: on `BeforeToolCall` for the `skill` tool, if the target skill's `requires` exceeds `ActivePolicy.active`, return `Flow::Escalate(delta)`, in `bee-harness/src/grants/escalate.rs`. *(depends: T014)*
-- [ ] T021 [US2] On refusal, the `skill` tool still returns the body (instructions-only) with a note that the capability was not granted, in `bee-harness/src/tools/skill.rs` + driver. *(depends: T020)*
+- [X] T019 [P] [US2] Host tests: within-ceiling mid-episode skill grant makes a later tool call succeed; beyond-ceiling skill loads instructions-only, in `tests/dynamic_grants.rs`. *(Written against `run_exchange`, not `run_loop`, because the episode path cannot exercise this: 006-skills resolves **every** discovered skill's `requires` at startup against the same ceiling with the same `AllowWithinCeiling` sink, and that resolved policy becomes the escalation base (`src/episode.rs`) — so in an episode the proactive hook can never grant what the preload did not. An interactive session is where a mid-session grant is a real question, and where the sink is a real prompt. That difference also forced `ActivePolicy::unmet`: the `requires` block is re-proposed on every `skill` call, so without subtracting what is already held the operator is re-prompted once per call.)*
+- [X] T020 [US2] Implement `SkillEscalationHook`: on `BeforeToolCall` for the `skill` tool, if the target skill's `requires` exceeds `ActivePolicy.active`, return `Flow::Escalate(delta)`, in `src/grants/escalate.rs`. *(depends: T014)*
+- [ ] T021 [US2] On refusal, the `skill` tool still returns the body (instructions-only) with a note that the capability was not granted, in `src/tools/skill.rs` + driver. *(depends: T020)*
 
 **Checkpoint**: 006-skills' deferred v2 (dynamic skill grants) is closed, sharing US1's cycle.
 
@@ -101,8 +101,8 @@ still loads, model told the capability was withheld.
 **Independent test**: a sink that resolves after N polls → loop awaits then proceeds; a sink that never
 resolves → timeout → deny, episode continues without hanging.
 
-- [ ] T022 [P] [US3] Host tests: delayed-approver proceeds on grant; never-resolving approver hits the timeout and denies without hanging (SC-003), in `bee-harness/tests/dynamic_grants.rs`.
-- [ ] T023 [US3] Wrap `consent.confirm` in `tokio::time::timeout(escalation_timeout, …)` mapping elapse → `Denied`; add `escalation_timeout`, `consent`, and `reactive_escalation` knobs to `LoopOptions`/`ReplConfig` in `bee-harness/src/grants/escalate.rs`, `bee-harness/src/episode.rs`, `bee-harness/src/repl.rs`. *(depends: T014)*
+- [X] T022 [P] [US3] Host tests: delayed-approver proceeds on grant; never-resolving approver hits the timeout and denies without hanging (SC-003), in `tests/dynamic_grants.rs`. *(`a_consent_sink_that_never_answers_times_out_and_denies` — a sink that sleeps an hour under a 150ms timeout; asserts the denial, that nothing was granted, and that the exchange finished at all.)*
+- [X] T023 [US3] Wrap `consent.confirm` in `tokio::time::timeout(escalation_timeout, …)` mapping elapse → `Denied`; add `escalation_timeout`, `consent`, and `reactive_escalation` knobs to `LoopOptions`/`ReplConfig` in `src/grants/escalate.rs`, `src/episode.rs`, `src/repl.rs`. *(depends: T014)* *(The three knobs live on `LoopEscalation` — `timeout`, `consent`, and `DenialEscalationHook.enabled` — which both `LoopOptions.escalation` and `ReplConfig.escalation` carry, rather than as three loose fields duplicated on each. The REPL wraps it in `ReplEscalation`, which adds the session-lifetime `ActivePolicy` and a monotonic turn counter: a grant has to outlive the exchange that asked for it, and a `Ttl::Turns` lease measured per-exchange would reset every time the user pressed enter.)*
 
 ---
 
@@ -114,18 +114,18 @@ removes the grant's rules at the kernel.
 **Independent test**: a `Turns(1)` lease works on the granting turn and is denied the next turn; a
 `Deescalate` drops a live grant and subsequent use is denied.
 
-- [ ] T024 [P] [US4] Host tests: `Turns(1)` lease enforced on grant turn and narrowed on the next `TurnStart`; `Deescalate(id)` drops a live lease and de-registers its tool (SC-004), in `bee-harness/tests/dynamic_grants.rs`.
-- [ ] T025 [US4] Implement lease TTL (`Turns`) + an expiry sweep at `TurnStart` that drops due leases, recomputes `active`, calls `Sandbox.reload`, de-registers tools no longer granted, and **emits a "narrowed" audit event** (dropped lease ids + `reason=expiry`, FR-015) in `bee-harness/src/grants/mod.rs` + `bee-harness/src/grants/escalate.rs`. *(depends: T008, T005)*
-- [ ] T026 [US4] Implement `Flow::Deescalate(GrantId)` handling and an optional model-facing `release_capability` tool that raises it, **emitting a "deescalated" audit event** (lease id + `reason=deescalate`, FR-015) in `bee-harness/src/grants/escalate.rs` + `bee-harness/src/tools/`. *(depends: T025)*
+- [ ] T024 [P] [US4] Host tests: `Turns(1)` lease enforced on grant turn and narrowed on the next `TurnStart`; `Deescalate(id)` drops a live lease and de-registers its tool (SC-004), in `tests/dynamic_grants.rs`.
+- [ ] T025 [US4] Implement lease TTL (`Turns`) + an expiry sweep at `TurnStart` that drops due leases, recomputes `active`, calls `Sandbox.reload`, de-registers tools no longer granted, and **emits a "narrowed" audit event** (dropped lease ids + `reason=expiry`, FR-015) in `src/grants/mod.rs` + `src/grants/escalate.rs`. *(depends: T008, T005)*
+- [ ] T026 [US4] Implement `Flow::Deescalate(GrantId)` handling and an optional model-facing `release_capability` tool that raises it, **emitting a "deescalated" audit event** (lease id + `reason=deescalate`, FR-015) in `src/grants/escalate.rs` + `src/tools/`. *(depends: T025)*
 - [ ] T027 [US4] VM matrix case `reload-narrow-deny` — granted write succeeds turn 1, then after lease expiry the same write is kernel-denied (assert the DATA did not land, not file absence — `file_open`-hook nuance) in `test/vm/remote-matrix.sh`. *(depends: T004, T025)*
 
 ---
 
 ## Phase 7: Polish & Cross-Cutting Concerns
 
-- [X] T028 [P] Attenuation **property test** (proptest): random escalate/deescalate/expire sequences over a `[base, ceiling]` pair always keep `base ⊆ active ⊆ ceiling` and `active == base ∪ live-lease deltas` (Constitution II gate) in `bee-harness/tests/dynamic_grants.rs` or `bee-harness/src/grants/mod.rs`.
+- [X] T028 [P] Attenuation **property test** (proptest): random escalate/deescalate/expire sequences over a `[base, ceiling]` pair always keep `base ⊆ active ⊆ ceiling` and `active == base ∪ live-lease deltas` (Constitution II gate) in `tests/dynamic_grants.rs` or `src/grants/mod.rs`.
 - [ ] T029 [P] VM matrix case `reload-scope-isolation` — widen one of two concurrent scopes; assert the other's enforced rules are unchanged (SC-007) in `test/vm/remote-matrix.sh`.
-- [ ] T030 [P] Surface the capability history (grant/reload/expiry/deescalate events with provenance) in the transcript summary + `/audit` output in `bee-harness/src/transcript.rs`, `bee-harness/src/repl.rs`.
+- [ ] T030 [P] Surface the capability history (grant/reload/expiry/deescalate events with provenance) in the transcript summary + `/audit` output in `src/transcript.rs`, `src/repl.rs`.
 - [ ] T031 [P] Final gates: `cargo clippy --workspace --all-targets` clean, `cargo fmt`, doc comments; run full host suite + `bash test/vm/matrix.sh`; update memories `bee-skills-feature` and `bee-bpf-lsm-test-vm` (matrix count, dynamic-grants status).
 
 ---
