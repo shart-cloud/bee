@@ -31,7 +31,7 @@
 use std::path::{Path, PathBuf};
 
 use super::{probe_binary, validate_target, ScanRequest, ScannerAdapter, ScannerGrant};
-use crate::tools::outcome::UnavailableReason;
+use crate::tools::outcome::{UnavailableReason, UNPINNED};
 
 pub struct CodeQl;
 
@@ -113,20 +113,33 @@ impl ScannerAdapter for CodeQl {
     }
 
     /// Four questions, none of which costs a process: is the pinned binary still the pinned binary,
-    /// is the bundle where the operator said, was a version pinned at all, and is this a language
-    /// bee will analyse.
+    /// was a version pinned at all, is the bundle where the operator said, and is this a language
+    /// bee will analyse. Each is a reason the scan *could not run* — so each is `Unavailable`, and
+    /// none of them is reported as a scan that ran and broke.
     fn probe(&self, grant: &ScannerGrant, req: &ScanRequest) -> Result<(), UnavailableReason> {
         probe_binary(grant)?;
+
+        // Was a version pinned at all. This is a refusal to *run*, not a run that broke — nothing
+        // has executed at this point — so it is `Unavailable`, and it belongs here rather than in
+        // `steps`, which is reached only after this method has already passed the request as
+        // answerable (contract `scanner-adapter.md`).
+        if grant.bundle_version.is_none() {
+            return Err(UnavailableReason::BundleMismatch {
+                expected: UNPINNED.to_string(),
+                found: None,
+            });
+        }
 
         // A bundle path is optional — the granted binary is the bundle's CLI, so the pin already
         // covers what actually runs. When the operator *does* name one, it has to be the bundle the
         // granted binary came out of, or the version verified below belongs to a different CodeQL
         // than the one that will do the scanning.
         if let Some(bundle) = &grant.bundle {
+            // Unwrap-free: the no-pin case returned above, so a pin is present by construction.
             let expected = grant
                 .bundle_version
                 .clone()
-                .unwrap_or_else(|| "(unpinned)".to_string());
+                .unwrap_or_else(|| UNPINNED.to_string());
             if !bundle.exists() {
                 return Err(UnavailableReason::BundleMismatch {
                     expected,
@@ -233,12 +246,14 @@ impl ScannerAdapter for CodeQl {
     ) -> Result<Vec<Vec<String>>, String> {
         validate_target(&req.target)?;
 
+        // `probe` refuses an unpinned bundle as `Unavailable` before anything reaches here, which is
+        // where that refusal is *stated* — this is the same belt-and-braces the language check below
+        // gets, for the same reason: `steps` authors a command line, so it re-checks what it is
+        // about to write rather than trusting a caller to have asked first.
         if grant.bundle_version.is_none() {
             return Err(
-                "no bundle version pinned for codeql: set `[security.scanners.codeql] \
-                 bundle_version` to the provisioned bundle's version (for example \
-                 `codeql-bundle-v2.26.1`). Running an unverified analysis bundle is refused, \
-                 because its queries decide what counts as a finding."
+                "no bundle version pinned for codeql: refusing to build a command for an \
+                 unverified analysis bundle"
                     .to_string(),
             );
         }
@@ -399,6 +414,23 @@ mod tests {
         assert!(err.to_string().contains("2.26.1"));
     }
 
+    /// The refusal an unpinned bundle earns is "could not run", not "ran and broke". Nothing has
+    /// executed when it fires, and the two render with different prefixes and different audit slugs
+    /// — so the distinction is the operator's, not a detail of where the check happened to live.
+    #[test]
+    fn an_unpinned_bundle_could_not_run_rather_than_ran_and_broke() {
+        let mut f = fixture();
+        f.grant.bundle_version = None;
+        let err = CodeQl.probe(&f.grant, &req(&f, "python")).unwrap_err();
+        let UnavailableReason::BundleMismatch { expected, found } = &err else {
+            panic!("expected a bundle mismatch, got {err:?}");
+        };
+        assert_eq!(expected, UNPINNED);
+        assert!(found.is_none());
+        assert_eq!(err.slug(), "bundle_mismatch");
+        assert!(err.to_string().contains("bundle_version"), "{err}");
+    }
+
     #[test]
     fn a_binary_outside_the_configured_bundle_is_refused() {
         let mut f = fixture();
@@ -511,11 +543,13 @@ mod tests {
         f.grant.bundle_version = None;
         // Nothing to verify against...
         assert!(CodeQl.preflight(&f.grant).is_none());
-        // ...and therefore nothing to run.
+        // ...and therefore nothing to run. The sentence naming `bundle_version` belongs to the
+        // `Unavailable` that `probe` returns (asserted above); what `steps` owes is a refusal to
+        // author a command line, whichever route reached it.
         let err = CodeQl
             .steps(&f.grant, &req(&f, "python"), &f.scratch, &f.out)
             .unwrap_err();
-        assert!(err.contains("bundle_version"), "{err}");
+        assert!(err.contains("unverified analysis bundle"), "{err}");
     }
 
     #[test]

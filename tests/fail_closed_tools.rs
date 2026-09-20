@@ -38,7 +38,41 @@ fn every_reason() -> Vec<UnavailableReason> {
         UnavailableReason::NotARepository {
             path: "/tmp/notarepo".into(),
         },
+        UnavailableReason::LanguageRequiresBuild {
+            lang: "cpp".into(),
+            supported: vec!["python".into(), "ruby".into()],
+        },
     ]
+}
+
+/// The no-pin spelling of a mismatch renders through its own arm, so it gets its own test rather
+/// than a second entry in `every_reason` — it is the same variant, and that list is one-per-variant
+/// so the slug check above means something.
+///
+/// Two obligations: it must not read like a clean scan (the invariant this file exists for), and it
+/// must name the setting that fixes it. A refusal an operator cannot act on is only marginally
+/// better than a silent one.
+#[test]
+fn an_unpinned_bundle_names_the_setting_that_would_pin_it() {
+    let rendered = render_empty(ToolOutcome::unavailable(
+        UnavailableReason::BundleMismatch {
+            expected: bee::tools::outcome::UNPINNED.into(),
+            found: None,
+        },
+    ));
+    assert!(rendered.is_error);
+    assert!(rendered.content.starts_with(UNAVAILABLE_PREFIX));
+    assert!(!rendered.content.contains(CLEAN_PREFIX));
+    assert!(
+        rendered.content.contains("bundle_version"),
+        "an unpinned bundle must name the setting: {}",
+        rendered.content
+    );
+    assert!(
+        !rendered.content.contains("expected version"),
+        "there is no expected version when nothing was pinned: {}",
+        rendered.content
+    );
 }
 
 fn render_empty(outcome: ToolOutcome<Vec<String>>) -> bee::tools::ToolResult {

@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use bee::scanners::{self, ScannerGrant};
 use bee::security::{ScannerConfig, SecurityConfig};
-use bee::tools::outcome::CLEAN_PREFIX;
+use bee::tools::outcome::{CLEAN_PREFIX, UNAVAILABLE_PREFIX};
 use bee::tools::scanner::ScanTool;
 use bee::tools::Tool;
 
@@ -43,15 +43,28 @@ fn sandbox() -> bee::Sandbox {
 /// from `database analyze`. Every invocation is appended to `argv.log`, so a test can assert both
 /// what bee built and — more often — that bee built nothing at all.
 fn stub_codeql(dir: &Path, reported_version: &str) -> PathBuf {
+    stub_codeql_taking(dir, reported_version, 0)
+}
+
+/// The same stub, but every invocation takes `secs` first. A CodeQL scan is three children, so this
+/// is what makes the difference between a budget that bounds the *scan* and one each child draws
+/// afresh observable at all.
+fn stub_codeql_taking(dir: &Path, reported_version: &str, secs: u32) -> PathBuf {
     let path = dir.join("codeql");
     let log = dir.join("argv.log");
     let version_json = format!(r#"{{"version":"{reported_version}"}}"#);
+    let delay = if secs > 0 {
+        format!("sleep {secs}\n")
+    } else {
+        String::new()
+    };
     std::fs::write(
         &path,
         format!(
             r#"#!/bin/sh
 printf '%s\n' "$@" >> {log}
 printf -- '--- end of invocation\n' >> {log}
+{delay}
 
 if [ "$1" = "version" ]; then
   printf '%s\n' '{version}'
@@ -80,6 +93,7 @@ exit 1
 "#,
             log = log.display(),
             version = version_json,
+            delay = delay,
             body = FIXTURE,
         ),
     )
@@ -153,6 +167,35 @@ fn fixture(reported_version: &str, pinned: Option<&str>, bundle: Option<PathBuf>
 /// The ordinary case: a correctly pinned bundle.
 fn pinned_fixture() -> Fixture {
     fixture(PINNED_CLI, Some(PINNED), None)
+}
+
+/// A correctly pinned bundle whose every child takes `secs`, under a `budget`-second ceiling.
+fn slow_fixture(secs: u32, budget: u64) -> Fixture {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let bin = stub_codeql_taking(&dir, PINNED_CLI, secs);
+    let target = dir.join("src");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("vuln.py"), "import subprocess\n").unwrap();
+
+    let mut security = SecurityConfig::default();
+    security.scanners.insert(
+        "codeql".to_string(),
+        ScannerConfig {
+            bundle: None,
+            bundle_version: Some(PINNED.to_string()),
+            timeout_secs: Some(budget),
+            ..Default::default()
+        },
+    );
+    let grants = scanners::grants_from_policy(Some(&policy_granting(&bin)), &security);
+    Fixture {
+        _tmp: tmp,
+        dir: dir.clone(),
+        grants,
+        ledger: bee::findings::Ledger::at(dir.join("findings")),
+        target,
+    }
 }
 
 async fn scan_lang(f: &Fixture, lang: &str) -> bee::ToolResult {
@@ -250,10 +293,44 @@ async fn an_unpinned_bundle_yields_no_scan_and_says_which_setting_is_missing() {
     assert!(r.is_error);
     assert!(r.content.contains("bundle_version"), "{}", r.content);
     assert!(!r.content.contains(CLEAN_PREFIX), "{}", r.content);
+    // "could not run", not "ran and broke". Nothing executed — the invocation log below says so —
+    // and the two states carry different audit slugs, so an operator grepping for setup problems
+    // must not have to look among the crashes to find this one.
+    assert!(
+        r.content.starts_with(UNAVAILABLE_PREFIX),
+        "an unpinned bundle is a refusal to run, not a failed run: {}",
+        r.content
+    );
     assert!(
         invocations(&f).is_empty(),
         "with nothing to verify against, there is nothing to run"
     );
+}
+
+/// The operator's `timeout_secs` bounds the **scan**, not each child of it.
+///
+/// A CodeQL scan is three children — version, create, analyze. Given the budget afresh, each of
+/// them fits inside it comfortably and the scan runs to three times the ceiling while every
+/// individual child looks well-behaved. That is not a ceiling; it is a ceiling per child, which is
+/// a different and much weaker promise than the one `timeout_secs` makes.
+#[tokio::test]
+async fn the_budget_bounds_the_whole_scan_not_each_child_of_it() {
+    // Two seconds a child, three children, a three-second ceiling: comfortably within budget
+    // per-child, comfortably over it in total.
+    let f = slow_fixture(2, 3);
+    let started = std::time::Instant::now();
+    let r = scan_lang(&f, "python").await;
+    let elapsed = started.elapsed();
+
+    assert!(r.is_error, "the scan outran its budget: {}", r.content);
+    assert!(!r.content.contains(CLEAN_PREFIX), "{}", r.content);
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "the scan took {elapsed:?} under a 3s budget — the budget is being handed to each child \
+         afresh rather than bounding the scan"
+    );
+    // And nothing partial was kept: the report a half-finished scan leaves behind is not a result.
+    assert!(!f.ledger.log_path().exists());
 }
 
 // ── US6 scenario 3 · a language that can only be analysed by watching a build ────────────────────
