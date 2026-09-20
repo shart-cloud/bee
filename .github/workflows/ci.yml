@@ -50,9 +50,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: ${{ !env.ACT }} # needs GitHub's cache backend; skipped under `act` for local runs
       - name: clippy (default features)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --locked --all-targets -- -D warnings
       - name: clippy (mcp feature)
-        run: cargo clippy --features mcp --all-targets -- -D warnings
+        run: cargo clippy --features mcp --locked --all-targets -- -D warnings
 
   test:
     name: build & test
@@ -64,13 +64,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: ${{ !env.ACT }} # needs GitHub's cache backend; skipped under `act` for local runs
       - name: build (workspace)
-        run: cargo build --workspace
+        run: cargo build --workspace --locked
       - name: test (workspace, default features)
         # No ANTHROPIC_API_KEY is set, so the live-provider smoke test self-skips (it only runs when
         # the key is present). Everything else is offline (MockModel + host sandbox).
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
       - name: test (mcp feature)
-        run: cargo test --features mcp
+        run: cargo test --features mcp --locked
 
   enforce-check:
     name: enforce type-check (best-effort)
@@ -97,4 +97,4 @@ jobs:
       - name: cargo check --features enforce
         # Runs crates/userspace/build.rs, which compiles + embeds the bee-lsm object, then
         # type-checks the enforce user-space path in the application package.
-        run: cargo check --features enforce
+        run: cargo check --features enforce --locked
